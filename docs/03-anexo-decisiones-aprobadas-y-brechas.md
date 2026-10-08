@@ -27,11 +27,11 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 - Un Trabajo puede relacionarse con varias Cotizaciones. Son válidos tanto `Cliente → Cotización → Trabajo` como `Cliente → Trabajo`.
 - El Trabajo puede registrar información general, actividades, materiales utilizados, fotografías, observaciones y herramientas.
 - Las fotografías pueden clasificarse como `ANTES`, `DURANTE`, `DESPUÉS` u `OTRA`.
-- Al entregar el Trabajo, la ejecución queda cerrada históricamente. El Informe y la Cuenta de Cobro pueden generarse después.
+- Al entregar el Trabajo, se registra que la ejecución terminó. El cierre comercial/histórico de la operación ocurre cuando también está completamente pagada la Cuenta de Cobro correspondiente. El Informe y la Cuenta de Cobro pueden generarse después.
 
 ### 2.3 Informes
 
-- El Informe describe lo realmente ejecutado; la Cotización describe lo previsto.
+- El Informe describe lo realmente ejecutado; la Cotización describe lo previsto. El Informe es opcional y puede ser interno o entregarse al Cliente.
 - Un Informe puede agrupar varios Trabajos del mismo Cliente. Cada Trabajo conserva su propio registro y trazabilidad.
 
 ### 2.4 Cuenta de Cobro y pagos
@@ -41,10 +41,11 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 - Puede emitirse directamente para un Cliente sin Cotización ni Trabajo relacionado. Caso aprobado: atención de emergencia que el Cliente paga de inmediato; basta con registrar la Cuenta de Cobro y el Pago. No se exige crear Cotización, Trabajo, Informe ni fotografías para este flujo.
 - Estados aprobados: `PENDIENTE`, `PARCIAL`, `PAGADA` y `CANCELADA`.
 - Crear una Cuenta de Cobro no registra un pago. Los pagos son eventos independientes.
-- Normalmente se registra un Pago por Cuenta de Cobro. Como excepción, se pueden seleccionar dos o más Cuentas del mismo Cliente y registrar un solo Pago global para el saldo conjunto. Ese Pago genera un solo comprobante para el conjunto y no se desglosa por Cuenta; no se crean pagos ni importes individuales por cada Cuenta.
-- Todo Pago debe estar asignado a una o varias Cuentas de Cobro; no existen pagos sueltos ni pagos para otros tipos de documentos.
-- Al cancelar/anular un Pago, el sistema revierte su efecto en las Cuentas asignadas y recalcula sus saldos y estados. Si era el primer Pago, la Cuenta vuelve a `PENDIENTE` con el saldo total pendiente. El Pago cancelado se conserva en el historial y deja de contar para los saldos; cancelar no elimina el registro.
-- Corregir el importe de un Pago aplica la diferencia al mismo Pago y a la misma Cuenta o conjunto de Cuentas seleccionado originalmente. Si aumenta, se suma la diferencia; si disminuye, se resta. El Pago y su historial se conservan; no se crea un Pago independiente ni se elimina el registro original. Un Pago global para varias Cuentas del mismo Cliente conserva un único importe y comprobante, sin desglose ni prorrateo por Cuenta; la diferencia se aplica al saldo conjunto.
+- Normalmente se registra un Pago contra una Cuenta de Cobro. Para agrupar varias Cuentas del mismo Cliente se utiliza el **Consolidado de Cuentas de Cobro**, que conserva intactas las Cuentas originales, usa sus valores históricos, agrupa sus saldos y permite registrar pagos contra el saldo consolidado. No existe un mecanismo paralelo para registrar un Pago directamente sobre varias Cuentas.
+- Todo Pago se registra contra una Cuenta individual o un Consolidado; no existen pagos sueltos ni pagos asignados directamente a varias Cuentas originales.
+- Al cancelar/anular un Pago, el sistema revierte su efecto en el documento asociado y lo excluye de su cálculo. Si era el primer Pago de una Cuenta individual, esta vuelve a `PENDIENTE` con el saldo total pendiente. El Pago cancelado se conserva en el historial; cancelar no elimina el registro.
+- Corregir el importe de un Pago aplica la diferencia al mismo Pago y a la misma Cuenta individual o Consolidado al que se registró. Si aumenta, se suma la diferencia; si disminuye, se resta. El Pago y su historial se conservan; no se crea un Pago independiente ni se elimina el registro original.
+- Un Reembolso es un nuevo movimiento de dinero; no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro utilizado y observación. V1 no añade un estado `REEMBOLSADA`.
 
 ### 2.5 Retenciones y cálculo
 
@@ -56,7 +57,7 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 
 ### 2.6 Clientes y perfiles profesionales
 
-- Cada Cliente pertenece a un Perfil Profesional. El mismo Cliente real puede existir como registro independiente en perfiles distintos.
+- Existe una sola cartera de Clientes global al Usuario/Titular. Un Cliente no pertenece a un Perfil Profesional y puede utilizarse desde varios Perfiles del mismo usuario; no se duplica por Perfil. Cada operación/documento conserva el Perfil Profesional que le corresponde.
 - Los datos comerciales del Cliente son valores predeterminados; cada operación conserva los valores que usó.
 - El lugar de ejecución pertenece al Trabajo y puede diferir de la dirección fiscal o principal del Cliente.
 - Un usuario puede administrar varios Perfiles Profesionales. Estos no representan automáticamente entidades jurídicas separadas; la identidad fiscal pertenece al titular/usuario.
@@ -90,6 +91,16 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 - La identidad pertenece a la cuenta de usuario, no al dispositivo. Android debe permitir trabajo offline y sincronización posterior, con IDs globalmente únicos generables offline, operaciones idempotentes, cola, reintentos, manejo de conflictos, trazabilidad y recuperación al cambiar o perder el dispositivo.
 - La prevención de duplicados y registros fantasma es un requisito de diseño, basado en los problemas observados en Xpendz.
 
+### 2.10 Decisiones funcionales aclaradas recientemente
+
+- La cartera de Clientes es única y global al Usuario/Titular. Un Cliente no pertenece a un Perfil Profesional y puede utilizarse desde varios Perfiles del mismo usuario; no se duplica por Perfil. El Perfil pertenece a cada operación/documento.
+- El Inventario pertenece globalmente al Usuario/Titular, no a los Perfiles Profesionales. Se organiza en Materiales y Herramientas; el usuario crea categorías separadas para cada tipo, sin valores predeterminados. El tipo define el comportamiento y la categoría solo organiza.
+- Los Métodos de Cobro pertenecen globalmente al Usuario/Titular y no a los Perfiles Profesionales. El usuario los crea y administra; CotixGo no inserta métodos predeterminados. Ayudas y ejemplos visuales no crean registros. Se pueden usar para pagos recibidos y reembolsos.
+- El flujo `Cotizar → Ejecutar → Documentar → Cobrar` es orientador, no una secuencia rígida. Los documentos opcionales no deben bloquear los demás.
+- El Informe puede entregarse al Cliente o ser solo para organización/histórico interno. Es opcional: un Trabajo puede entregarse y una Cuenta de Cobro generarse sin Informe.
+- El congelamiento representa el cierre comercial e histórico, no una consecuencia automática de cada cambio de estado. La operación queda cerrada cuando el Trabajo fue entregado y la Cuenta de Cobro correspondiente se pagó completamente. Una garantía posterior no reabre automáticamente documentos.
+- Se mantiene como principio de producto: `Cotizar → Ejecutar → Documentar → Cobrar`. Las funciones adicionales deben simplificar el trabajo principal y no convertir CotixGo en un ERP rígido.
+
 ## 3. Brechas y alineación requerida en el modelo de datos
 
 | Tema | Estado del borrador actual | Alineación requerida |
@@ -98,14 +109,14 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 | Estados de Trabajo | El borrador enumera estados conceptuales distintos y deja nombres/transiciones para después. | Reemplazar el conjunto conceptual por los cinco estados aprobados. Las transiciones siguen pendientes si no están definidas en reglas aprobadas. |
 | Cuenta de Cobro ↔ Cotización | El borrador modela asociación con Trabajos, pero no una relación entre Cuenta de Cobro y Cotizaciones. | Añadir relación asociativa que permita cero o varias Cotizaciones, además de cero o varios Trabajos, conforme a las decisiones aprobadas. |
 | Cuenta de Cobro independiente | El borrador enumera relaciones con Trabajos y no deja explícito el caso de cobro directo sin Cotización ni Trabajo. | Admitir una Cuenta de Cobro vinculada al Cliente y al Perfil Profesional sin Cotización ni Trabajo. El flujo de emergencia puede registrar el pago sin crear Informe o fotografías. |
-| Retenciones e impuestos | El borrador inicial no reflejaba el alcance de impuestos/retenciones acordado. | La sección 6 fija motor compartido, impuesto sobre subtotal agregado de conceptos `SERVICIO`, valores predeterminados sobrescribibles por documento, retención sobre bruto original, orden, moneda, redondeo por línea y total de líneas redondeadas, y ausencia de descuentos en V1. |
-| Perfil y Cliente | Las entidades tienen `user_id`/perfil en varios puntos, pero no queda formalizada la pertenencia obligatoria de cada Cliente a un Perfil Profesional. | Hacer explícita la relación Perfil 1:N Cliente y el alcance por perfil de sus datos y documentos. |
+| Retenciones e impuestos | Las retenciones están aprobadas; no se aprobó un sistema de impuestos para V1. | Mantener las reglas aprobadas de retenciones. El tratamiento de impuestos, administrador, porcentajes y configuración permanece pendiente y no es requisito de V1. |
+| Perfil y Cliente | El borrador vinculaba Cliente con Perfil Profesional. | La cartera de Clientes pertenece al Usuario/Titular. Los documentos y operaciones usan el Perfil Profesional que les corresponde; un mismo Cliente puede utilizarse desde distintos perfiles. |
 | Moneda | No se identifica claramente moneda global de usuario ni moneda capturada por documento. | Añadir moneda a configuración de usuario y snapshot del documento, sin conversión implícita. |
 | Versiones de Cotización | El modelo tiene contenido y versiones potenciales, pero no especifica entidad o mecanismo para historial de modificaciones de cotizaciones abiertas. | Definir cómo se conserva cada versión antes de cerrar el modelo; cada versión debe preservar valores propios. |
 | Compra en borrador | El modelo dice que una compra confirmada genera entradas, pero no enumera estados ni prohibición explícita para borrador. | Reflejar que el borrador no afecta inventario y que confirmar genera movimientos. |
 | Condición de stock | El borrador menciona `Material` y movimientos, pero no representa claramente stock nuevo/usado coexistente y origen. | Modelar balances/movimientos por condición y origen sin convertir esa decisión en bloqueo de operación. |
 | Adjuntos | El modelo registra adjuntos genéricos, pero no formaliza categorías fotográficas aprobadas. | Incluir `ANTES`, `DURANTE`, `DESPUÉS`, `OTRA` como clasificación de evidencia. |
-| Cuenta de Cobro y snapshot | El modelo propone congelación al pago total, alineada con v0.2, pero debe convivir con estados aprobados y cambios permitidos con saldo pendiente. | Mantener separado estado comercial y condición de edición; no inferir reglas de edición adicionales. |
+| Cierre histórico | El modelo asumía que algunos estados individuales congelaban automáticamente documentos. | Representar el cierre de la operación cuando el Trabajo está entregado y la Cuenta de Cobro correspondiente está pagada; no asumir congelamiento automático por cada estado. |
 
 La tabla describe cambios de documentación requeridos, no decisiones de implementación de tablas ni esquema SQL.
 
@@ -114,13 +125,13 @@ La tabla describe cambios de documentación requeridos, no decisiones de impleme
 Estos asuntos no quedan resueltos por las reglas aprobadas disponibles. Las respuestas posteriores de la sección 6 cierran varias decisiones que antes aparecían como pendientes.
 
 1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema.
-2. Forma de registrar reembolsos y especificación visual/técnica del documento global de cobro. El documento global y su saldo residual conjunto están definidos funcionalmente en la sección 6. La corrección de un Pago aplicado a una Cuenta y la anulación de un Pago también están definidas en la sección 6.
+2. Especificación visual/técnica del Consolidado de Cuentas de Cobro y detalles de su relación con operaciones históricas, sin crear un mecanismo de pago directo sobre varias Cuentas.
 3. Regla de emisión/numeración definitiva de documentos cuando la creación ocurre offline; reserva de rangos y colisiones.
 4. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos.
 5. Si una Cuenta de Cobro puede combinar Cotizaciones y Trabajos en el mismo documento y cómo evitar doble cobro de un concepto.
-6. Catálogo y conversiones de unidades.
+6. Mecanismo técnico detallado para corregir o anular Pagos, respetando los efectos funcionales ya aprobados.
 7. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida.
-8. Alcance de perfiles en catálogo de servicios, materiales, herramientas y numeración documental cuando un usuario tiene varios perfiles.
+8. Alcance por Perfil Profesional del catálogo de servicios y la numeración documental cuando un usuario tiene varios perfiles. Clientes, Inventario y Métodos de Cobro son globales al Usuario/Titular.
 9. Campos definitivos y valores obligatorios de Cliente, Trabajo, Cotización y Cuenta de Cobro, aparte de los enumerados en reglas.
 
 ## 5. Próxima revisión documental
@@ -157,21 +168,20 @@ Esta sección recoge respuestas confirmadas en `08-matriz-decision-estados-y-cal
 
 - El estado de Cuenta de Cobro se actualiza automáticamente a `PARCIAL` o `PAGADA` según pagos aplicados y saldo.
 - Una Cuenta de Cobro con pagos aplicados no se puede cancelar.
-- Un Pago compartido puede asignarse a varias Cuentas del mismo Cliente y genera un solo comprobante; los anticipos se consideran pagos adelantados.
+- Para agrupar varias Cuentas del mismo Cliente se utiliza un **Consolidado de Cuentas de Cobro**. Este conserva intactas las Cuentas originales, usa sus valores históricos, agrupa los saldos y admite pagos contra el saldo consolidado. No hay un mecanismo de Pago directo sobre varias Cuentas.
 - Para registrar un anticipo, primero se crea la Cuenta de Cobro y el anticipo se asigna a esa Cuenta; no se permiten anticipos sin Cuenta o sin asignación.
-- No se permite aplicar más que el saldo pendiente ni dejar parte de un Pago sin asignar.
-- Un Pago se puede corregir o anular.
-- Todo Pago está asignado a una o varias Cuentas de Cobro. Al anularlo, el sistema revierte su efecto en esas Cuentas y recalcula automáticamente saldos y estados; si era el primer Pago, la Cuenta vuelve a `PENDIENTE` con saldo total pendiente. El Pago anulado y sus asignaciones se conservan en el historial, pero ya no cuentan para el cálculo.
-- Normalmente se registra un Pago por Cuenta de Cobro. Para consolidar varias Cuentas del mismo Cliente, CotixGo genera un documento global de cobro con el total conjunto y enlaces a las Cuentas seleccionadas. Los pagos pueden ser parciales y reducen un único saldo residual global de ese documento. No se distribuye el pago entre las Cuentas originales ni se calculan saldos residuales individuales para el cobro consolidado.
-- Los reembolsos se tratan como pagos adicionales conforme al comportamiento definido por el sistema.
+- No se permite registrar un Pago por encima del saldo pendiente de la Cuenta o del Consolidado al que se aplica.
+- Las reglas funcionales aprobadas permiten corregir o anular un Pago con los efectos descritos arriba. El mecanismo técnico detallado para hacerlo queda pendiente y no debe ampliarse por inferencia como funcionalidad V1.
+- Todo Pago se registra contra una Cuenta individual o un Consolidado. Al anular un Pago, se conserva en el historial y deja de contar en el cálculo del documento asociado.
+- Los pagos pueden ser parciales y no pueden superar el saldo del documento asociado. Los pagos al Consolidado reducen su saldo conjunto sin modificar ni distribuirse entre las Cuentas originales.
+- Un Reembolso es un nuevo movimiento de dinero; no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro utilizado y observación. V1 no añade un estado `REEMBOLSADA`.
 
 ### Cálculos y moneda
 
 - En V1 no se ofrecen descuentos.
-- El profesional ingresa el precio manualmente como bruto; el motor compartido de Cotizaciones y Cuentas de Cobro aplica impuestos y retenciones configurados. El cálculo inverso de neto devuelve un valor bruto único con la configuración vigente.
-- El administrador del sistema configura valores predeterminados para tipo y porcentaje de impuesto. Cada documento puede sobrescribir esa configuración; los impuestos se aplican al subtotal agregado de conceptos `SERVICIO` y se presentan en el documento.
-- Se calculan impuestos antes que retenciones. Las retenciones se calculan sobre el bruto original y solo sobre conceptos `SERVICIO`.
+- El precio se ingresa manualmente como bruto. Las retenciones aprobadas se aplican conforme a sus reglas documentadas.
+- El tratamiento de impuestos, tipos, porcentajes, administrador, valores predeterminados y configuración por documento **no está aprobado para V1** y permanece pendiente. No es requisito funcional ni se deben inventar reglas fiscales.
 - Las cantidades se redondean a dos decimales. Los importes se redondean por línea; el total es la suma de las líneas ya redondeadas.
-- Los documentos históricos conservan tasas y resultados de emisión; nuevas Cotizaciones usan la configuración vigente.
+- Los documentos históricos conservan los valores y resultados aprobados que correspondan al momento de emisión.
 - Moneda V1: código ISO 4217, dos decimales, símbolo visible y pagos en la moneda principal del usuario. Si cambia la moneda principal, los documentos existentes conservan su moneda.
-- El precio ingresado manualmente es bruto; el cálculo inverso permite determinar el bruto requerido para un neto objetivo.
+- El cálculo inverso permite determinar el bruto requerido para un neto objetivo usando las reglas de retenciones aprobadas; no incorpora impuestos no aprobados.

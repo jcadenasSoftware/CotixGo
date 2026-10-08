@@ -126,14 +126,10 @@ Por ello:
 El modelo conceptual inicial comprende:
 
 ### Identidad y configuración
-1. `User`
-2. `ProfessionalProfile`
+`User`, `ProfessionalProfile`
 
 ### Maestros
-3. `Client`
-4. `Service`
-5. `Material`
-6. `Tool`
+`Client`, `Service`, `Material`, `Tool`, `InventoryCategory` (categorías creadas por el usuario, separadas por tipo) y `CollectionMethod` (métodos administrados por el Usuario/Titular)
 
 ### Comercial
 7. `Quote`
@@ -157,11 +153,12 @@ El modelo conceptual inicial comprende:
 ### Cobro
 18. `CollectionAccount`
 19. `Payment`
-20. `PaymentAllocation`
+20. `ConsolidatedCollection`
+21. `Refund`
 
 ### Soporte de sincronización y trazabilidad
-21. `SyncOperation`
-22. `AuditEvent`
+22. `SyncOperation`
+23. `AuditEvent`
 
 Estas entidades son conceptuales. Algunas podrán implementarse como tablas, otras como estructuras auxiliares según la arquitectura final.
 
@@ -196,7 +193,9 @@ Un `User` puede tener:
 - muchas compras;
 - muchos informes;
 - muchas Cuentas de Cobro;
-- muchos pagos.
+- muchos pagos;
+- métodos de cobro globales;
+- categorías globales para Materiales y Herramientas.
 
 ---
 
@@ -222,7 +221,6 @@ Ejemplos:
 - correo
 - dirección
 - logo
-- datos de pago
 - condiciones comerciales
 - configuración documental
 - estado activo/inactivo
@@ -251,6 +249,8 @@ Representa a la persona o empresa para quien se presta el servicio.
 - notas
 - estado
 - fechas
+
+La cartera de Clientes pertenece globalmente al Usuario/Titular. El mismo Cliente puede utilizarse desde varios Perfiles Profesionales del usuario; cada operación/documento identifica el Perfil que corresponde. No se duplica el Cliente por Perfil.
 
 ### Relaciones
 
@@ -299,14 +299,14 @@ Es un maestro de productividad, no un documento histórico.
 
 # 8. Material
 
-Representa un material consumible administrado por el profesional.
+Representa un material consumible administrado dentro del inventario global del Usuario/Titular, no por Perfil Profesional.
 
 ### Datos conceptuales
 
 - `id`
 - `user_id`
 - nombre
-- categoría
+- categoría de Material creada libremente por el usuario (la categoría organiza; no determina el comportamiento)
 - unidad
 - existencia actual
 - existencia mínima
@@ -327,13 +327,13 @@ No debe confundirse con el material históricamente incluido en una cotización 
 
 # 9. Tool
 
-Representa una herramienta o activo no consumible.
+Representa una herramienta o activo no consumible dentro del inventario global del Usuario/Titular, no por Perfil Profesional.
 
 ### Datos conceptuales
 
 - `id`
 - `user_id`
-- categoría
+- categoría de Herramienta creada libremente por el usuario (la categoría organiza; no determina el comportamiento)
 - nombre
 - marca
 - modelo
@@ -355,6 +355,10 @@ Representa una herramienta o activo no consumible.
 
 La funcionalidad completa de mantenimiento queda fuera del alcance actual.
 
+Las categorías de Materiales y de Herramientas son listas distintas creadas libremente por el Usuario/Titular. No existen categorías predeterminadas. El tipo Material/Herramienta define el comportamiento; la categoría solo organiza.
+
+`CollectionMethod` representa un Método de Cobro global del Usuario/Titular. El usuario crea y administra sus métodos; al instalar CotixGo no se crean registros predeterminados. Puede utilizarse al registrar pagos recibidos y reembolsos. Los ejemplos y ayudas de la interfaz no se convierten en datos iniciales.
+
 ---
 
 # 10. Quote
@@ -373,8 +377,6 @@ Representa la propuesta comercial presentada al cliente.
 - período de vigencia
 - estado comercial
 - subtotal
-- descuentos
-- impuestos
 - total
 - condiciones
 - observaciones
@@ -441,8 +443,6 @@ Puede corresponder a:
 - cantidad
 - unidad
 - precio unitario
-- descuento
-- impuesto
 - subtotal
 - orden
 - origen del material cuando aplique
@@ -488,6 +488,8 @@ Un trabajo puede estar relacionado con:
 - una cotización posterior de alcance adicional;
 - varias cotizaciones relacionadas.
 
+La relación es opcional; el Cliente basta para crear el Trabajo.
+
 Para preservar esta flexibilidad, la relación debe modelarse mediante una entidad asociativa conceptual `JobQuote`.
 
 ### Estado operativo
@@ -502,9 +504,9 @@ Estados conceptuales:
 
 La lista definitiva y sus transiciones se formalizarán después.
 
-### Regla de congelación
+### Regla de cierre histórico
 
-Al entregarse el trabajo, la información histórica que corresponda debe quedar protegida contra modificaciones retroactivas.
+No se asume que entregar el Trabajo congele automáticamente los documentos relacionados. La operación queda cerrada e histórica cuando el Trabajo fue entregado y la Cuenta de Cobro correspondiente está completamente pagada. Una garantía posterior no reabre automáticamente documentos.
 
 ---
 
@@ -712,7 +714,7 @@ Puede existir un estado de ajuste pendiente.
 
 # 20. Report
 
-Representa un informe profesional.
+Representa un informe que puede entregarse al Cliente o utilizarse solo para organización/histórico interno. Es opcional.
 
 ### Datos conceptuales
 
@@ -732,7 +734,7 @@ Representa un informe profesional.
 
 ### Regla
 
-El informe debe construirse a partir de información ya registrada en los trabajos.
+El informe puede construirse a partir de información ya registrada en los trabajos. No es requisito para entregar el Trabajo ni para generar una Cuenta de Cobro.
 
 Puede incluir información de uno o varios trabajos.
 
@@ -777,7 +779,6 @@ El nombre técnico puede ser `CollectionAccount`, pero la interfaz utilizará si
 - fecha de vencimiento
 - estado
 - subtotal
-- impuestos
 - total
 - saldo pendiente
 - condiciones
@@ -786,6 +787,8 @@ El nombre técnico puede ser `CollectionAccount`, pero la interfaz utilizará si
 - contenido histórico
 - fecha de confirmación
 - fechas
+
+Puede crearse directamente para un Cliente sin Cotización, Trabajo o Informe. Los Métodos de Cobro se pueden seleccionar al registrar pagos recibidos o reembolsos; no existen métodos predeterminados y los ejemplos de interfaz no crean registros.
 
 ### Relación con trabajos
 
@@ -829,55 +832,52 @@ Representa el evento real de recepción de dinero.
 - `user_id`
 - fecha
 - monto total
-- método de pago
+- Método de Cobro del Usuario/Titular
+- Cuenta de Cobro individual o documento global de cobro asociado
 - referencia
 - observaciones
 - fechas
 
 ### Regla crítica
 
-Un pago no pertenece necesariamente a una sola Cuenta de Cobro.
-
-La distribución se modela aparte.
+Normalmente corresponde a una Cuenta de Cobro. Si se consolida el cobro de varias Cuentas del mismo Cliente, el Pago se registra contra el documento global y reduce su saldo residual conjunto; no se reparte entre las Cuentas originales.
 
 ---
 
-# 25. PaymentAllocation
+# 25. ConsolidatedCollection
 
-Representa la aplicación de una parte de un pago a una Cuenta de Cobro.
+Representa conceptualmente un documento global para cobrar el saldo conjunto de dos o más Cuentas de Cobro del mismo Cliente. Su especificación visual y técnica sigue pendiente.
 
 ### Datos conceptuales
 
 - `id`
-- `payment_id`
-- `collection_account_id`
-- monto aplicado
+- `client_id`
+- lista de Cuentas de Cobro incluidas
+- total conjunto
+- saldo residual global
 - fecha
-- observaciones
+- estado
 - fechas
 
 ### Reglas
 
-Un pago puede tener:
+El Consolidado conserva intactas las Cuentas originales y utiliza sus valores históricos. Los Pagos se registran contra el Consolidado y reducen su saldo conjunto; no se registran directamente sobre varias Cuentas originales.
 
-- una asignación;
-- varias asignaciones.
+---
 
-Una Cuenta de Cobro puede recibir:
+## Reembolso
 
-- ningún pago;
-- un pago;
-- varios pagos.
+Representa un Reembolso como un nuevo movimiento de dinero asociado al Pago que devuelve, sin modificar ni eliminar el registro original.
 
-Por tanto:
+### Datos conceptuales
 
-**Payment ↔ CollectionAccount = muchos a muchos**
+- fecha;
+- valor;
+- Método de Cobro utilizado;
+- observación;
+- referencia al Pago original.
 
-mediante `PaymentAllocation`.
-
-El total de las asignaciones de un pago no debe superar el monto del pago.
-
-El total aplicado a una Cuenta de Cobro no debe superar su saldo disponible, salvo que en el futuro se defina explícitamente el manejo de excedentes.
+El Reembolso puede ser parcial o total. V1 no agrega un estado `REEMBOLSADA`. El Pago conserva sus propios fecha, valor, método y observaciones.
 
 ---
 
@@ -904,19 +904,21 @@ USER
  │    │    └── ReportJob ─── Job
  │    │
  │    └── CollectionAccount
- │         ├── CollectionAccountJob ─── Job
- │         └── PaymentAllocation ─── Payment
+ │         └── CollectionAccountJob ─── Job
  │
  ├── Service
- ├── Material
+ ├── Material ─── InventoryCategory
  │    ├── Purchase
  │    │    └── PurchaseItem
  │    └── InventoryMovement
  │
  ├── Tool
  │
+ ├── Tool ─────── InventoryCategory
+ ├── CollectionMethod
  ├── Payment
- │    └── PaymentAllocation
+ ├── ConsolidatedCollection
+ └── Refund
  │
  ├── SyncOperation
  └── AuditEvent
@@ -958,10 +960,10 @@ Job N ─── N CollectionAccount
 ## Cobro
 
 ```text
-Payment N ─── N CollectionAccount
+Payment ─── CollectionAccount (individual)
+Payment ─── ConsolidatedCollection ─── N CollectionAccount
+Refund ─── Payment (referencia al original)
 ```
-
-mediante `PaymentAllocation`.
 
 ## Inventario
 
@@ -997,7 +999,7 @@ Su objetivo es conservar la información necesaria para que un documento histór
 - contacto;
 - dirección;
 - logo;
-- datos de pago;
+- Método de Cobro seleccionado cuando corresponda;
 - condiciones comerciales;
 - demás información documental.
 
@@ -1007,8 +1009,7 @@ Su objetivo es conservar la información necesaria para que un documento histór
 - cantidad;
 - unidad;
 - precio;
-- descuentos;
-- impuestos;
+- retenciones aprobadas;
 - totales;
 - condiciones relevantes.
 
@@ -1024,38 +1025,9 @@ El mecanismo físico del snapshot se decidirá en el diseño técnico.
 
 ---
 
-# 29. Documentos y congelación
+# 29. Documentos y cierre histórico
 
-El modelo debe separar:
-
-1. estado comercial/operativo;
-2. condición de edición/congelación.
-
-Ejemplo:
-
-```text
-Cuenta de Cobro
-   │
-   ├── estado: PENDIENTE
-   └── edición: ABIERTA
-```
-
-Posteriormente:
-
-```text
-Cuenta de Cobro
-   │
-   ├── estado: PAGADA
-   └── edición: CONGELADA
-```
-
-La congelación no debe reemplazar el estado comercial.
-
-### Regla general
-
-Mientras el proceso siga abierto y la regla del documento lo permita, pueden existir cambios.
-
-Cuando se alcance el evento de congelación correspondiente, el documento histórico deja de ser editable.
+El congelamiento representa el cierre comercial e histórico de la operación. No se infiere automáticamente de cada cambio de estado. La operación queda cerrada cuando el Trabajo fue entregado y la Cuenta de Cobro correspondiente está completamente pagada. No se ha definido una regla general de edición por documento a partir de este cierre. Una garantía posterior no reabre automáticamente documentos históricos.
 
 ---
 
@@ -1202,18 +1174,17 @@ Su objetivo inicial es permitir diagnosticar cambios y problemas de sincronizaci
 - Crear una Cuenta de Cobro no significa recibir dinero.
 - Puede relacionarse con varios trabajos.
 - Puede quedar pendiente, parcial o pagada.
-- Una Cuenta de Cobro totalmente pagada queda congelada.
+- El cierre histórico ocurre cuando el Trabajo se entregó y la Cuenta correspondiente está completamente pagada; no se infiere congelamiento automático de cada documento por estado.
 
 ## Pagos
 
 - Un pago es un evento independiente.
-- Puede distribuirse entre varias Cuentas de Cobro.
-- Las asignaciones representan la aplicación del dinero.
+- Para varias Cuentas del mismo Cliente se genera un documento global; el pago reduce su saldo residual conjunto sin distribución entre las Cuentas originales.
 
 ## Historial
 
 - Los cambios de maestros no modifican documentos históricos.
-- Los documentos congelados no deben editarse.
+- Una garantía posterior no reabre automáticamente documentos históricos.
 - Los IDs técnicos no cambian.
 
 ---
@@ -1224,7 +1195,6 @@ Para evitar sobre-modelar el sistema, no se crearán entidades independientes pa
 
 - Dashboard;
 - estados;
-- categorías simples;
 - indicadores;
 - filtros;
 - pestañas de navegación;
@@ -1241,9 +1211,9 @@ Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
 1. transiciones completas permitidas de cada entidad y sus actores;
 2. transiciones/estados restantes de Compras, archivos y sincronización;
-3. relación de versiones de Informe y representación detallada de correcciones de Pago;
-4. base y conceptos gravables de impuestos, configuración por línea/documento y precio manual bruto/neto;
-5. instante exacto de vencimiento de Cotización y efecto de su aprobación sobre la creación del Trabajo;
+3. relación de versiones de Informe y mecanismo técnico detallado para corregir o anular Pagos, sin ampliar las reglas funcionales aprobadas;
+4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
+5. instante exacto de vencimiento de Cotización;
 6. momento exacto de asignación de número documental y estrategia de numeración offline;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
@@ -1252,11 +1222,11 @@ Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 11. estructura exacta de `SyncOperation`;
 12. estructura exacta de `AuditEvent`;
 13. campos finales de cada entidad;
-14. unidades, precisión de cantidades y catálogos;
+14. precisión de cantidades;
 15. almacenamiento físico y política de retención de fotografías/archivos;
-16. relación exacta entre perfil profesional y documentos;
+16. campos y reglas de relación pendientes entre perfil profesional y documentos, sin afectar la propiedad global del inventario y Métodos de Cobro;
 17. reglas de permisos futuras si se incorpora colaboración multiusuario;
-18. relación y trazabilidad de reembolsos registrados como pagos adicionales.
+18. relación y trazabilidad del Reembolso con el Pago original; sus reglas funcionales básicas están definidas, pero no implica modificar el Pago.
 
 Estos puntos no deben inventarse en la implementación: deberán resolverse en los documentos correspondientes.
 
@@ -1271,7 +1241,7 @@ Especialmente:
 - no asumir 1 cotización = 1 trabajo;
 - no asumir 1 trabajo = 1 informe;
 - no asumir 1 trabajo = 1 Cuenta de Cobro;
-- no asumir 1 pago = 1 Cuenta de Cobro;
+- permitir pago por una Cuenta o por un Consolidado de Cuentas de Cobro del mismo Cliente; los pagos al Consolidado no se distribuyen entre las Cuentas originales;
 - no asumir que material utilizado = inventario consumido;
 - no asumir que catálogo actual = información histórica.
 
@@ -1303,10 +1273,11 @@ Este anexo complementa el borrador v0.1 y prevalece cuando corrige una propuesta
 - Al aprobar una Compra, el sistema incrementa inventario. Una Compra aprobada puede anularse mediante movimiento inverso, editarse o archivarse. La Compra y su comprobante pertenecen a Compras/Inventario; aprobarla no emite un Informe de Trabajo.
 - El estado de `CollectionAccount` cambia automáticamente a `PARCIAL` o `PAGADA` según pagos aplicados. No se cancela si tiene pagos aplicados. No se permiten pagos mayores al saldo ni pagos parcialmente sin asignar.
 - Un anticipo requiere que primero exista la Cuenta de Cobro a la que se asignará; no se admiten pagos sin Cuenta o sin asignación.
-- V1 no maneja descuentos. El precio se ingresa manualmente como bruto; los impuestos se calculan antes que las retenciones. Las retenciones se calculan sobre el bruto original de conceptos `SERVICIO`. Los importes se redondean por línea y el total es la suma de líneas redondeadas; las cantidades se redondean a dos decimales.
-- El administrador del sistema configura valores predeterminados de impuesto; cada documento puede sobrescribirlos. Los impuestos se calculan sobre el subtotal agregado de conceptos `SERVICIO` y se muestran en el documento. Los documentos conservan tasas y resultados históricos.
-- Normalmente hay un Pago por Cuenta de Cobro. Para consolidar varias Cuentas del mismo Cliente, CotixGo genera un documento global con el total conjunto y enlaces a las Cuentas seleccionadas. Los pagos, incluso parciales, reducen el saldo residual global de ese documento sin distribuirse entre las Cuentas originales. Al anular un Pago, se revierte su efecto sobre el documento asociado; el Pago se conserva en el historial y se excluye de los cálculos. Los reembolsos se tratan como pagos adicionales.
+- V1 no maneja descuentos. El precio se ingresa manualmente como bruto y se aplican las reglas aprobadas de retenciones. El tratamiento de impuestos, administrador, porcentajes y configuración fiscal no está aprobado para V1 y permanece pendiente.
+- Normalmente hay un Pago contra una Cuenta. Para agrupar varias Cuentas del mismo Cliente se utiliza el Consolidado, que conserva intactas las originales y sus valores históricos y gestiona el saldo conjunto. Los Pagos contra el Consolidado pueden ser parciales; no se registran directamente sobre varias Cuentas.
+- Al anular un Pago, se conserva en el historial y deja de contar en el cálculo del documento asociado. Corregir un Pago modifica su importe con trazabilidad, no crea un Reembolso.
+- Un Reembolso es un nuevo movimiento de dinero; no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro y observación. V1 no agrega un estado `REEMBOLSADA`.
 - Al corregir el importe de un Pago, se suma o resta la diferencia al mismo Pago y a la Cuenta de Cobro o documento global asociado.
 - La moneda usa código ISO 4217, dos decimales y símbolo visible. Pagos en moneda principal del usuario; documentos existentes conservan la moneda original.
 
-Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; validaciones residuales de transiciones; catálogo y conversiones de unidades. Estos asuntos no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
+Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; mecanismo técnico detallado para corregir o anular Pagos, sin convertir detalles no aprobados en funcionalidad V1; validaciones residuales de transiciones; precisión de cantidades. Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.

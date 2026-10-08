@@ -78,6 +78,7 @@ El contrato de API deberá especificar, antes o durante implementación controla
 
 - autenticación y renovación de sesión;
 - autorización por usuario y Perfil Profesional;
+- respetar el alcance de propiedad: Clientes, Inventario y Métodos de Cobro pertenecen al Usuario/Titular; cada operación/documento identifica el Perfil Profesional que le corresponde;
 - formato común de error y validación;
 - operaciones idempotentes y clave de operación;
 - sincronización incremental, cursores y versiones;
@@ -89,7 +90,7 @@ El contrato de API deberá especificar, antes o durante implementación controla
 
 Cada punto no definido es **PENDIENTE DE DECISIÓN**; esta lista es el índice del futuro contrato, no una especificación inventada.
 
-El administrador del sistema configura los valores predeterminados de tipo y porcentaje de impuesto. Los impuestos aplican al subtotal agregado de conceptos Servicio; cada documento puede sobrescribir los valores predeterminados y conserva la configuración aplicada como dato histórico. **PENDIENTE DE DECISIÓN:** qué rol representa al administrador y qué interfaz usa.
+El tratamiento de impuestos, incluidos tipos, porcentajes, valores predeterminados y cualquier administrador/configuración, **no está aprobado para V1**. Si se considera en otra etapa, sus reglas deben permanecer **PENDIENTE DE DECISIÓN**; no constituye requisito funcional actual.
 
 ## 4. Seguridad, privacidad y disponibilidad
 

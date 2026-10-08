@@ -23,8 +23,8 @@ La idea central es:
 Y el flujo operativo fundamental es:  
 ***Cotizar → Ejecutar → Documentar → Cobrar***  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANklEQVR4nO3OMQ2AABAAsSNhRAF6EPYDLhGADSywEZJWQZeZ2aszAAD+4l6rrTq+ngAA8Nr1AIWsBDYDm5cLAAAAAElFTkSuQmCC)  
-**2. Flujo oficial del producto**  
-El flujo principal aprobado es:  
+**2. Flujo principal del producto**  
+El flujo orientador del producto es:  
 CLIENTE  
     │  
     ▼  
@@ -40,7 +40,7 @@ CLIENTE
     └── Observaciones  
     │  
     ▼  
- INFORME  
+ INFORME (opcional)  
     │  
     ▼  
  CUENTA DE COBRO  
@@ -57,7 +57,7 @@ COMPRA
     ▼  
  CONSUMO REAL EN TRABAJO  
    
-El inventario es soporte de la operación; no es el centro de la experiencia del usuario.  
+El flujo expresa el recorrido habitual, no una secuencia obligatoria: Cotización y Trabajo pueden existir sin depender uno del otro; el Informe es opcional y puede ser interno o entregarse al Cliente; la Cuenta de Cobro puede generarse sin Cotización, Trabajo o Informe. El inventario es soporte de la operación; no es el centro de la experiencia del usuario.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANElEQVR4nO3OQQmAUBBAwSd8bOHVnBvBkAaxgjcRZhLMNjNHdQUAwF/cq9qr8+sJAACvrQctgQNH4A++9QAAAABJRU5ErkJggg==)  
 **3. Módulos aprobados**  
 Los módulos funcionales definidos hasta este momento son:  
@@ -74,6 +74,7 @@ Los módulos de analítica interna o reportes administrativos pueden considerars
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANklEQVR4nO3OQQmAABRAsSfYxZo/jVEMYQLPJrCCNxG2BFtmZquOAAD4i3Ot7mr/egIAwGvXA4rLBc059ysnAAAAAElFTkSuQmCC)  
 **4. Clientes**  
 Un cliente representa a la persona o empresa para quien se presta el servicio.  
+Existe una sola cartera de Clientes global al Usuario/Titular. El Cliente no pertenece a un Perfil Profesional y puede utilizarse desde distintos Perfiles del mismo usuario; el Perfil se selecciona en cada operación o documento. No se debe duplicar un Cliente por cambiar de Perfil.  
 Un cliente puede estar relacionado con:  
 - cotizaciones;  
 - trabajos;  
@@ -94,10 +95,10 @@ Un perfil profesional puede aportar a los documentos:
 - correo;  
 - dirección;  
 - logo;  
-- datos de pago;  
+- información comercial y documental;  
 - condiciones comerciales;  
 - configuración documental.  
-Una cotización, informe o Cuenta de Cobro debe poder identificar el perfil profesional con el que fue emitido.  
+Una cotización, informe o Cuenta de Cobro debe poder identificar el perfil profesional con el que fue emitido. El inventario y los Métodos de Cobro pertenecen globalmente al Usuario/Titular y no a los Perfiles Profesionales.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANklEQVR4nO3OMQ2AABAAsSNBACPiUML0NpGACyywEZJWQZeZ2aszAAD+4l6rrTq+ngAA8Nr1AL/SBEZwuCSwAAAAAElFTkSuQmCC)  
 **6. Cotizaciones**  
 Una cotización representa la **propuesta comercial** presentada al cliente.  
@@ -107,7 +108,7 @@ Puede contener:
 - materiales;  
 - cantidades;  
 - precios;  
-- descuentos o impuestos cuando correspondan;  
+- retenciones aprobadas (V1 no ofrece descuentos). El tratamiento de impuestos no está aprobado para V1 y permanece pendiente;  
 - totales;  
 - condiciones;  
 - estado.  
@@ -193,8 +194,8 @@ Ejemplo:
 Estas diferencias son importantes para evitar inconsistencias.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANElEQVR4nO3OQQmAABRAsSdYxKa/i8WMIR7ECt5E2BJsmZmt2gMA4C+Otbqr8+sJAACvXQ85PAYartXEogAAAABJRU5ErkJggg==)  
 **10. Trabajo**  
-El Trabajo representa la **ejecución real** de una cotización aprobada.  
-Normalmente se origina a partir de una cotización aprobada, pero no debe considerarse una simple copia de la cotización.  
+El Trabajo representa la **ejecución real** de un servicio.  
+Puede originarse a partir de una cotización aprobada o crearse directamente para un Cliente, sin Cotización. No debe considerarse una simple copia de la cotización.  
 Debe permitir registrar información real de ejecución, incluyendo:  
 - cliente;  
 - cotización de origen;  
@@ -206,7 +207,7 @@ Debe permitir registrar información real de ejecución, incluyendo:
 - observaciones;  
 - información de cierre.  
 El Trabajo es el punto central que conecta:  
-**Cotización + ejecución + inventario + informe + cobro.**  
+**Cotización opcional + ejecución + inventario + documentación opcional + cobro.**  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANklEQVR4nO3OMQ2AABAAsSNBACP6MMH6NpGACyywEZJWQZeZ2aszAAD+4l6rrTq+ngAA8Nr1AL+6BElk4wV6AAAAAElFTkSuQmCC)  
 **11. Actividades**  
 Durante la ejecución el usuario debe poder registrar las actividades realizadas.  
@@ -231,7 +232,7 @@ El usuario debe poder seleccionar posteriormente cuáles fotografías forman par
 Las fotografías y evidencias deben estar vinculadas al Trabajo y no depender de que el usuario recuerde todo al finalizar.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OMQ2AABAAsSNhYMMAKlD4OzrxgQU2QtIq6DIzR3UFAMBf3Gu1VefXEwAAXtsfSqADWz4G/HUAAAAASUVORK5CYII=)  
 **13. Informes**  
-El Informe es un documento profesional que documenta lo realizado en un Trabajo.  
+El Informe documenta lo realizado en uno o varios Trabajos y puede servir para entregar al Cliente o para organización e histórico interno del profesional. Es opcional: el Trabajo puede entregarse y la Cuenta de Cobro puede generarse sin Informe.  
 El Informe **no debe ser un formulario independiente que obligue al usuario a volver a introducir toda la información**.  
 Debe construirse a partir de los datos ya registrados durante la ejecución:  
 TRABAJO  
@@ -248,13 +249,12 @@ TRABAJO
          └── Generar PDF  
    
 El usuario puede revisar y completar el contenido antes de generar el documento final.  
-Esto es especialmente importante para trabajos en los que el cliente exige un informe posterior.  
+El usuario decide si lo genera y si lo entrega al Cliente.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OQQmAABRAsSeYxKS/kJkED6bwYAVvImwJtszMVu0BAPAXx1rd1fn1BACA164HHDwF+DpPyKwAAAAASUVORK5CYII=)  
 **14. Inventario**  
-El inventario es de uso interno.  
-Tiene dos grandes conceptos:  
+El inventario es de uso interno y pertenece globalmente al Usuario/Titular, no a sus Perfiles Profesionales. Se divide estructuralmente en Materiales y Herramientas.  
 **Materiales**  
-Son consumibles.  
+Son consumibles y el usuario puede crear libremente sus categorías; CotixGo no impone categorías predeterminadas.  
 Pueden tener información como:  
 - categoría;  
 - unidad;  
@@ -265,7 +265,7 @@ Pueden tener información como:
 - ubicación;  
 - notas.  
 **Herramientas**  
-Son activos y no consumibles.  
+Son activos y no consumibles; el usuario puede crear libremente sus categorías, sin categorías predeterminadas impuestas por CotixGo.  
 Pueden tener información como:  
 - categoría;  
 - marca;  
@@ -315,7 +315,7 @@ No en 100 m ni en 92 m.
 **17. Cuenta de Cobro**  
 En CotixGo se utilizará oficialmente el término colombiano:  
 ***Cuenta de Cobro***  
-La Cuenta de Cobro representa una obligación de pago derivada del trabajo realizado.  
+La Cuenta de Cobro representa una obligación de pago. Puede vincularse a una Cotización o Trabajo, o crearse directamente para un Cliente sin esos documentos (por ejemplo, una atención de emergencia).  
 Debe poder manejar conceptos como:  
 - cliente;  
 - trabajo asociado;  
@@ -342,6 +342,7 @@ La Cuenta de Cobro debe poder representar situaciones como:
 - parcialmente pagada;  
 - pagada;  
 - cancelada.  
+Los Métodos de Cobro pertenecen globalmente al Usuario/Titular. El usuario los crea y administra; CotixGo no incluye métodos predeterminados al instalarse. La interfaz puede orientar mediante textos de ayuda y ejemplos, pero esos ejemplos no se guardan como registros iniciales. Los métodos pueden usarse al registrar pagos recibidos y reembolsos.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OMQ2AABAAsSPBCUbfEm6YmFDBhAU2QtIq6DIzW7UHAMBfnGt1V8fXEwAAXrse/w8F7pbTa1oAAAAASUVORK5CYII=)  
 **18. Dashboard**  
 El Dashboard es una vista operacional.  
@@ -700,22 +701,13 @@ CotixGo debe permitir:
 
 Esto permite manejar trabajos cobrados por partes o agrupaciones de trabajos.
 
-**31.1 Pagos aplicables a varias Cuentas de Cobro**
+**31.1 Consolidado de Cuentas de Cobro**
 
-Un único Pago puede corresponder a varias Cuentas de Cobro.
+Normalmente se registra un Pago contra una Cuenta de Cobro. Para agrupar varias Cuentas del mismo Cliente, se utiliza un **Consolidado de Cuentas de Cobro**: conserva intactas las Cuentas originales, toma sus valores históricos, agrupa sus saldos y permite registrar pagos contra el saldo consolidado. No existe un mecanismo paralelo para registrar un Pago directamente sobre varias Cuentas.
 
-Por ejemplo:
+**31.2 Reembolsos**
 
-```text
-Pago recibido
-   ├── Cuenta de Cobro A → parte del pago
-   ├── Cuenta de Cobro B → parte del pago
-   └── Cuenta de Cobro C → parte del pago
-```
-
-Por ello, el modelo no debe asumir que un Pago pertenece obligatoriamente a una única Cuenta de Cobro.
-
-Debe existir una forma de registrar la distribución del pago entre las Cuentas de Cobro correspondientes.
+Un Reembolso es un nuevo movimiento de dinero y conserva intacto el Pago original. Puede ser parcial o total y registra fecha, valor, Método de Cobro utilizado y observación. No se cambia ni elimina el Pago original y V1 no crea un estado `REEMBOLSADA`.
 
 ---
 
@@ -785,8 +777,7 @@ Como mínimo, según corresponda al documento:
 - cantidad;
 - unidad;
 - precio unitario;
-- descuentos;
-- impuestos;
+- componentes y resultados de retenciones aprobadas; cualquier tratamiento de impuestos permanece pendiente y no es requisito de V1;
 - totales;
 - información relevante sobre el origen de materiales.
 
@@ -802,23 +793,19 @@ El documento histórico no debe depender de que los datos maestros actuales cont
 
 ---
 
-**34. Congelación documental**
+**34. Cierre histórico de la operación**
 
-La posibilidad de editar información depende del ciclo de vida del proceso.
+El congelamiento representa el cierre comercial e histórico de la operación. No se debe asumir que cada cambio de estado congela automáticamente todos los documentos relacionados.
 
 **Trabajo**
 
 El Trabajo puede permanecer editable mientras esté en ejecución.
 
-Después de la **entrega del Trabajo**, su contenido documental queda congelado conforme a las reglas que se definan para el estado final.
+Cuando el Trabajo haya sido entregado y la Cuenta de Cobro correspondiente esté completamente pagada, la operación queda cerrada e histórica. Los documentos históricos no deben modificarse como si la operación siguiera abierta.
 
 **Cuenta de Cobro**
 
-La Cuenta de Cobro puede continuar evolucionando mientras exista un saldo pendiente y el proceso lo permita.
-
-Cuando la Cuenta de Cobro queda **totalmente pagada**, el registro documental correspondiente queda congelado.
-
-Los pagos ya registrados y los documentos congelados no deben modificarse retroactivamente por cambios posteriores en datos maestros.
+El Trabajo, Informe, Cotización y Cuenta de Cobro no se congelan automáticamente de manera individual por cada cambio de estado. Una garantía posterior no reabre automáticamente ninguno de esos documentos. Los datos históricos conservan la información de su momento de emisión o registro.
 
 ---
 

@@ -5,6 +5,7 @@
  **Propósito:** Documento base para producto, arquitectura y desarrollo.  
    
  **Audiencia principal:** Joel, diseño, arquitectura y Devin.  
+**Nota de vigencia:** Este documento v0.1 se conserva únicamente como antecedente. Para reglas vigentes se deben usar `01-reglas-de-negocio-v0.2.md`, `03-anexo-decisiones-aprobadas-y-brechas.md` y su consolidado en `08-matriz-decision-estados-y-calculos.md`; cualquier diferencia con estos documentos posteriores queda supersedida.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANklEQVR4nO3OMQ2AABAAsSPBCj5fFgpQwYwEZiywEZJWQZeZ2ao9AAD+4lyruzq+ngAA8Nr1AMTRBeEgNK9YAAAAAElFTkSuQmCC)  
 **1. Propósito de CotixGo**  
 CotixGo es una herramienta profesional de campo para trabajadores independientes y pequeños proveedores de servicios.  

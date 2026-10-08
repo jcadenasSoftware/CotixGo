@@ -10,11 +10,11 @@ Permitir que el profesional prepare cotizaciones, gestione clientes y trabajos, 
 
 CotixGo debe sentirse como una herramienta que ayuda al profesional a estar preparado; no como una aplicación contable ni como un mini-ERP.
 
-Flujo principal:
+Flujo orientador, no obligatorio:
 
 ```text
 Cliente → Cotización (opcional) → Trabajo → Actividades / Materiales / Fotos
-        → Informe → Cuenta de Cobro → Pagos
+        → Informe (opcional, incluso interno) → Cuenta de Cobro → Pagos
 ```
 
 Flujo de control interno:
@@ -23,7 +23,7 @@ Flujo de control interno:
 Compra → Inventario → Consumo propio registrado explícitamente en el Trabajo
 ```
 
-El Informe y la Cuenta de Cobro pueden crearse después de entregar el Trabajo. Un Trabajo no requiere Cotización.
+Un Trabajo no requiere Cotización. El Informe es opcional; el Trabajo puede entregarse sin Informe y una Cuenta de Cobro puede generarse sin Informe. Los documentos opcionales no bloquean el flujo. Una Cuenta de Cobro también puede crearse directamente para un Cliente sin Cotización ni Trabajo.
 
 ## 2. Módulos incluidos
 
@@ -44,9 +44,8 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 
 ### 2.2 Clientes
 
-- Crear y mantener registros de clientes por Perfil Profesional.
+- Mantener una cartera única de Clientes global al Usuario/Titular. Un Cliente no pertenece a un Perfil Profesional y puede utilizarse desde varios Perfiles del mismo usuario; no duplicarlo por Perfil.
 - Datos contemplados: identificación, nombre, nombre comercial, teléfonos, correos, dirección principal/fiscal, ciudad, país, notas y estado activo/archivado.
-- Permitir que un mismo cliente real exista como registros separados en perfiles diferentes.
 - Usar configuraciones comerciales del Cliente como valores predeterminados; cada documento conserva los valores efectivamente usados.
 - La dirección de ejecución se registra en el Trabajo y no se deduce necesariamente del domicilio del Cliente.
 
@@ -75,11 +74,13 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 - Clasificar fotografías como `ANTES`, `DURANTE`, `DESPUÉS` u `OTRA`.
 - Distinguir lo cotizado, lo ejecutado y lo consumido del inventario.
 - Registrar explícitamente consumo propio; materiales suministrados por el Cliente no generan movimiento de inventario propio.
-- Al entregar el Trabajo, cerrar históricamente la ejecución. El Informe y la Cuenta de Cobro pueden generarse luego.
+- Al entregar el Trabajo, registrar que la ejecución terminó. El Informe y la Cuenta de Cobro pueden generarse luego.
 
 ### 2.5 Inventario
 
-- Control interno no restrictivo.
+- Control interno no restrictivo y global al Usuario/Titular, no asociado a Perfiles Profesionales.
+- Estructura: `Inventario → Materiales / Herramientas`. El tipo determina el comportamiento funcional; la categoría solo organiza.
+- Permitir al usuario crear libremente categorías separadas para Materiales y Herramientas. No cargar categorías predeterminadas; los ejemplos solo orientan.
 - Consultar materiales y existencias; contemplar condición nueva/usada y origen del material.
 - Mantener movimientos históricos explicables.
 - Permitir ajustes para cargar el inventario existente en la bodega del profesional y para corregir existencias.
@@ -106,38 +107,41 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 - Estados aprobados: `PENDIENTE`, `PARCIAL`, `PAGADA`, `CANCELADA`.
 - Separar la creación de la Cuenta del evento de pago, incluso cuando el Cliente paga inmediatamente.
 - Aplicar las reglas compartidas de retenciones, conceptos de servicio, bruto/neto y moneda.
-- En V1 no hay descuentos. El profesional ingresa el precio manualmente; impuestos se calculan antes que retenciones, y las retenciones se calculan sobre el bruto original de conceptos `SERVICIO`.
-- El administrador del sistema configura valores predeterminados de tipo y porcentaje de impuesto, sobrescribibles por documento. Los impuestos se aplican al subtotal agregado de conceptos `SERVICIO` y se muestran en el documento.
-- Los importes se redondean por línea y el total es la suma de las líneas redondeadas. Las cantidades se redondean a dos decimales. El precio ingresado manualmente es bruto.
-- Conservar snapshot histórico al emitir; congelar según reglas aprobadas.
+- En V1 no hay descuentos. El profesional ingresa el precio como bruto y se aplican las reglas aprobadas de retenciones. El tratamiento de impuestos y cualquier configuración fiscal permanecen pendientes; no son requisitos aprobados de V1.
+- Los importes se redondean por línea y el total es la suma de las líneas redondeadas. Las cantidades se redondean a dos decimales.
+- Conservar la información histórica de emisión. No asumir que cada cambio de estado congela automáticamente documentos relacionados.
+- Gestionar Métodos de Cobro globales del Usuario/Titular, independientes de Perfiles Profesionales. El usuario los crea y administra; no hay métodos predeterminados. La interfaz puede mostrar ayuda y ejemplos sin insertar registros iniciales. Los métodos pueden utilizarse al registrar pagos recibidos y reembolsos.
 
 ### 2.8 Perfiles Profesionales
 
 - Permitir varios perfiles comerciales por usuario.
-- Cada perfil aporta identidad comercial, descripción/actividad, logo, información comercial, clientes, servicios, documentos y configuración comercial.
+- Cada perfil aporta identidad comercial, descripción/actividad, logo, información comercial, servicios, documentos y configuración comercial. No es propietario de Clientes, Inventario ni Métodos de Cobro.
 - No asumir que un perfil equivale a una persona jurídica independiente.
 - Conservar en cada documento histórico los datos del perfil usados al emitir, incluido logo.
 
 ### 2.9 Informes
 
-- Crear a partir de datos registrados durante la ejecución; no volver a introducir desde cero toda la información.
+- Informe opcional: crear a partir de datos registrados durante la ejecución, sin volver a introducir desde cero toda la información. Puede entregarse al Cliente o ser exclusivamente para organización/histórico interno del profesional.
 - Estados: `BORRADOR` y `EMITIDO`. Un Informe emitido no se edita; una corrección crea una versión nueva.
 - La nueva versión del Informe se enlaza a la anterior mediante un campo de referencia; la versión anterior se conserva como referencia.
 - Describir lo realmente ejecutado, no lo originalmente cotizado.
 - Revisar/completar el contenido y seleccionar evidencias antes de generar el documento.
 - Permitir agrupar varios Trabajos del mismo Cliente en un Informe, manteniendo identidad y trazabilidad individual por Trabajo.
+- No exigir un Informe para entregar un Trabajo o generar una Cuenta de Cobro.
 
 ### 2.10 Pagos
 
 El registro de pagos es una capacidad del flujo de Cuenta de Cobro aunque no figure como módulo independiente en la lista de nueve módulos.
 
 - Registrar el evento real de recepción de dinero por separado de la Cuenta de Cobro.
-- Normalmente se registra un Pago por Cuenta de Cobro. Como excepción, se puede registrar un Pago global para dos o más Cuentas del mismo Cliente; es un solo importe, genera un solo comprobante y no se desglosa por Cuenta.
+- Normalmente se registra un Pago contra una Cuenta de Cobro. Para agrupar Cuentas del mismo Cliente se utiliza el Consolidado de Cuentas de Cobro, que conserva intactas las Cuentas originales, usa sus valores históricos y permite gestionar el saldo consolidado y registrar pagos contra este. No existe un pago directo paralelo sobre varias Cuentas.
 - Actualizar automáticamente el estado a `PARCIAL` o `PAGADA` según pagos asignados. No cancelar una Cuenta con pagos aplicados.
 - No permitir pagos mayores al saldo ni dejar una parte del Pago sin asignar.
-- Al cancelar/anular un Pago, conservarlo junto con sus asignaciones en el historial, excluirlo de los cálculos, revertir su efecto y recalcular automáticamente saldos y estados. Si era el primer Pago, la Cuenta vuelve a `PENDIENTE` con el saldo total pendiente.
-- Al corregir el importe de un Pago, aplicar la diferencia al mismo Pago y a la Cuenta de Cobro o documento global al que se registró. Un Pago global puede ser parcial y reduce el saldo residual global del documento consolidado; no se desglosa por Cuenta.
-- Los pagos adelantados se tratan como anticipos y un Pago distribuido entre varias Cuentas se considera compartido. El sistema gestiona correcciones/anulaciones de pagos y asignaciones con trazabilidad; los reembolsos se tratan como pagos adicionales.
+- Al cancelar/anular un Pago, conservarlo en el historial y excluirlo del cálculo del documento asociado.
+- Al corregir el importe de un Pago, aplicar la diferencia al mismo Pago y al documento asociado (una Cuenta o un Consolidado). Un pago contra Consolidado puede ser parcial; afecta su saldo conjunto y no altera las Cuentas originales.
+- El mecanismo técnico detallado para correcciones y anulaciones de Pagos queda pendiente; no se deben agregar comportamientos no aprobados como funcionalidad V1.
+- Un Reembolso es un nuevo movimiento de dinero y no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro utilizado y observación. V1 no tiene estado `REEMBOLSADA`.
+- Los pagos adelantados se tratan como anticipos y deben asignarse a una Cuenta de Cobro creada previamente.
 - Para registrar un anticipo, se crea primero la Cuenta de Cobro y luego se asigna el Pago a esa Cuenta; no se admiten pagos sin Cuenta o asignación.
 
 ### 2.11 Herramientas
@@ -157,6 +161,8 @@ El seguimiento de herramientas es opcional dentro del control operativo/inventar
 - La colaboración multiusuario/permisos avanzados no está definida para V1.
 
 ## 4. Criterios de alcance
+
+La operación se considera cerrada e histórica cuando el Trabajo fue entregado y la Cuenta de Cobro correspondiente está completamente pagada. Esta condición no implica congelar automáticamente cada documento relacionado en cada transición de estado. Una garantía posterior no reabre automáticamente Trabajo, Informe, Cotización o Cuenta de Cobro.
 
 - Los nueve módulos enumerados son módulos funcionales aprobados, pero las reglas detalladas de este documento solo comprometen los comportamientos descritos.
 - Si una pantalla o comportamiento del diseño visual existente parece contradecir una regla de negocio, prevalece la regla aprobada y se registra la diferencia para revisión.
