@@ -1,0 +1,161 @@
+openapi: 3.0.3
+info:
+  title: CotixGo API
+  description: >-
+    API REST del backend CotixGo (PHP + MySQL, Hostinger). Borrador v0 de E0:
+    solo /health está implementado; auth y sync son stubs declarados que se
+    completan cuando se apruebe el contrato de endpoints.
+  version: 0.1.0
+servers:
+  - url: https://api.cotixgo.example
+    description: Producción (Hostinger) — URL real pendiente.
+  - url: http://localhost:8080
+    description: Desarrollo local (php -S).
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Servicio operativo.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: cotixgo-api
+
+  /auth/login:
+    post:
+      summary: Inicio de sesión (stub — contrato pendiente)
+      description: Declarado para reservar la ruta; request/response se aprueban con el contrato de autenticación.
+      x-status: draft
+      responses:
+        '200':
+          description: Sesión iniciada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /sync/push:
+    post:
+      summary: Envío de operaciones offline (stub — contrato pendiente)
+      description: >-
+        Lote de SyncOperation del dispositivo. Incluye numeración provisional:
+        el backend asigna el número oficial sobre el mismo entity_id al
+        confirmar documentos emitidos offline.
+      x-status: draft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncPushRequest'
+      responses:
+        '200':
+          description: Operaciones procesadas (aceptadas, rechazadas o en conflicto).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncPushResponse'
+
+  /sync/pull:
+    get:
+      summary: Descarga incremental de cambios (stub — contrato pendiente)
+      description: Devuelve cambios desde un cursor de sincronización.
+      x-status: draft
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cambios desde el cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncPullResponse'
+
+components:
+  schemas:
+    AuthSession:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+    SyncOperation:
+      type: object
+      required: [operation_id, entity_type, entity_id, type]
+      properties:
+        operation_id:
+          type: string
+          description: UUID único por operación; garantiza idempotencia.
+        entity_type: { type: string }
+        entity_id:
+          type: string
+          description: UUID de la entidad (estable entre provisional y oficial).
+        type: { type: string }
+        payload: { type: object }
+    SyncPushRequest:
+      type: object
+      required: [operations]
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncOperation'
+    SyncOperationResult:
+      type: object
+      properties:
+        operation_id: { type: string }
+        status:
+          type: string
+          enum: [APPLIED, REJECTED, CONFLICT]
+        official_number:
+          type: string
+          description: Número oficial asignado cuando aplica (TIPO-AAAAMM-NNN).
+          example: COT-202610-023
+    SyncPushResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncOperationResult'
+    SyncPullResponse:
+      type: object
+      properties:
+        changes:
+          type: array
+          items: { type: object }
+        next_cursor: { type: string }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object }
+  responses:
+    Unauthorized:
+      description: No autenticado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
