@@ -1,6 +1,6 @@
 # CotixGo — Arquitectura y tecnologías
 
-**Versión:** 1.0  
+**Versión:** 1.1  
 **Estado:** Stack y principios aprobados; detalles técnicos pendientes donde se indica.
 
 ## 1. Plataformas y stack
@@ -15,7 +15,12 @@
 | Archivos | Hostinger | Almacenamiento de fotografías y documentos, sujeto a diseño técnico. |
 | Control de versiones | Git/GitHub | Historial y colaboración sobre el código cuando comience la implementación. |
 
-No hay versiones de lenguaje, framework, runtime, servidor o base de datos fijadas en la documentación disponible. No escoger versiones incompatibles u obsoletas: validar compatibilidad al iniciar implementación y documentar las versiones seleccionadas.
+No hay versiones de lenguaje, framework, runtime, servidor o base de datos fijadas en la documentación disponible, salvo las excepciones siguientes. No escoger versiones incompatibles u obsoletas: validar compatibilidad al iniciar implementación y documentar las versiones seleccionadas.
+
+Decisiones técnicas aprobadas:
+
+- **Package Android:** `com.cotixgo.app` como `applicationId` y namespace del proyecto.
+- **JDK de build:** JDK 21 LTS para los builds Android/Gradle (configuración vía `gradle.properties`/`org.gradle.java.home` o toolchain del proyecto). No se usa JBR 25 ni se migra a Gradle/AGP 9.x solo por tener JDK 25 instalado.
 
 ## 2. Principios de arquitectura
 
@@ -110,3 +115,10 @@ Estos asuntos deben documentarse antes de exponer datos reales a usuarios. Devin
 ## 5. Decisiones técnicas que deben registrarse al implementar
 
 Cuando se autorice la implementación, registrar versiones soportadas, librerías seleccionadas, arquitectura de módulos, ambientes, configuración de despliegue, estrategia de migraciones, observabilidad, backups y procedimiento de publicación. Esas elecciones deben respetar el stack y las reglas ya aprobadas.
+
+## 6. Historial de cambios
+
+| Versión | Fecha | Cambio | Motivo | Estado |
+|---|---|---|---|---|
+| 1.0 | 30/09/2026 | Arquitectura y tecnologías aprobadas. | Definir stack y principios. | Aprobado. |
+| 1.1 | 08/10/2026 | Decisiones técnicas aprobadas: package Android `com.cotixgo.app` (D15) y JDK 21 LTS para builds Android/Gradle (D16). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |

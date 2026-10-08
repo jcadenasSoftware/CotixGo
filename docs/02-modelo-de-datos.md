@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v0.1
+## Documento de diseño v0.3
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -155,10 +155,11 @@ El modelo conceptual inicial comprende:
 19. `Payment`
 20. `ConsolidatedCollection`
 21. `Refund`
+22. `PaymentAdjustment`
 
 ### Soporte de sincronización y trazabilidad
-22. `SyncOperation`
-23. `AuditEvent`
+23. `SyncOperation`
+24. `AuditEvent`
 
 Estas entidades son conceptuales. Algunas podrán implementarse como tablas, otras como estructuras auxiliares según la arquitectura final.
 
@@ -830,17 +831,21 @@ Representa el evento real de recepción de dinero.
 
 - `id`
 - `user_id`
+- `client_id`
 - fecha
 - monto total
 - Método de Cobro del Usuario/Titular
-- Cuenta de Cobro individual o documento global de cobro asociado
+- Cuenta de Cobro individual o Consolidado asociado cuando corresponda (opcional)
+- estado de asignación (`UNASSIGNED`/`ASSIGNED`)
 - referencia
 - observaciones
 - fechas
 
 ### Regla crítica
 
-Normalmente corresponde a una Cuenta de Cobro. Si se consolida el cobro de varias Cuentas del mismo Cliente, el Pago se registra contra el documento global y reduce su saldo residual conjunto; no se reparte entre las Cuentas originales.
+Un Pago puede existir sin documento asociado: cuando el dinero se recibe antes de que exista la Cuenta de Cobro, el Pago queda registrado como no asignado, vinculado al Cliente, y no afecta saldos de documentos hasta su asociación posterior. La asociación posterior se realiza mediante operaciones propias y auditadas (`assign`/`unassign`/`reassign`). Si el importe del pago supera el saldo pendiente del destino, se aplica únicamente lo necesario para cubrirlo y el excedente permanece sin asignar, perteneciendo al mismo Pago; nunca existe dinero aplicado simultáneamente a dos documentos.
+
+Normalmente un Pago corresponde a una Cuenta de Cobro individual. Si se consolida el cobro de varias Cuentas del mismo Cliente, el Pago se registra contra el documento global y reduce su saldo residual conjunto; no se reparte entre las Cuentas originales.
 
 ---
 
@@ -881,6 +886,32 @@ El Reembolso puede ser parcial o total. V1 no agrega un estado `REEMBOLSADA`. El
 
 ---
 
+## PaymentAdjustment
+
+Representa la corrección o anulación de un `Payment` ya registrado. Es el mecanismo propuesto para la capacidad aprobada de V1 de corregir/anular pagos sin destruir el historial.
+
+### Datos conceptuales
+
+- `id`
+- `payment_id`
+- tipo: `CORRECTION` | `ANNULMENT`
+- valor anterior
+- valor nuevo (cuando corresponda)
+- motivo
+- usuario que realizó la operación
+- dispositivo
+- operación de origen
+- fecha/hora
+
+### Reglas
+
+- Toda corrección o anulación se registra como un nuevo evento; el registro original del Pago no se modifica silenciosamente ni se elimina.
+- Una `CORRECTION` conserva valor anterior y nuevo; el monto efectivo del Pago pasa a ser el nuevo valor y el saldo del documento asociado se recalcula.
+- Una `ANNULMENT` excluye el Pago del cálculo del documento asociado; el Pago permanece en el historial (anular no elimina).
+- Un Reembolso es un caso distinto: es un nuevo movimiento de dinero sobre un Pago correcto y no utiliza `PaymentAdjustment`.
+
+---
+
 # 26. Relación general del modelo
 
 La estructura conceptual principal queda:
@@ -918,7 +949,8 @@ USER
  ├── CollectionMethod
  ├── Payment
  ├── ConsolidatedCollection
- └── Refund
+ ├── Refund
+ └── PaymentAdjustment
  │
  ├── SyncOperation
  └── AuditEvent
@@ -962,6 +994,8 @@ Job N ─── N CollectionAccount
 ```text
 Payment ─── CollectionAccount (individual)
 Payment ─── ConsolidatedCollection ─── N CollectionAccount
+Payment ─── (sin asignación) ─── Client   (pago recibido antes del documento)
+Payment 1 ─── N PaymentAdjustment
 Refund ─── Payment (referencia al original)
 ```
 
@@ -1056,11 +1090,26 @@ CC
 - debe ser seguro frente a concurrencia y sincronización;
 - debe contemplar creación offline.
 
-### Punto pendiente de diseño técnico
+### Numeración provisional offline — decisión aprobada
 
-La estrategia exacta para reservar/asignar números consecutivos offline requiere definición en el contrato de sincronización.
+Todo documento numerable recibe de inmediato un identificador provisional con formato:
 
-El modelo no debe asumir que un dispositivo puede reservar de forma segura un consecutivo central sin una estrategia explícita.
+```text
+TIPO-PEND-XXXX
+```
+
+Por ejemplo `COT-PEND-8F3A`. El provisional:
+
+- aparece en la interfaz;
+- puede usarse en un PDF provisional;
+- identifica al mismo documento (no genera un segundo documento);
+- no compite con la numeración oficial.
+
+Cuando exista conectividad, el backend asigna el número oficial sobre el mismo `entity_id` (`COT-PEND-8F3A` → `COT-202610-023`). El modelo representa el estado del número (provisional/oficial) por documento.
+
+### Secuencia oficial — decisión aprobada
+
+La numeración oficial es global por Usuario/Titular + tipo de documento + período, independiente del Perfil Profesional. No existen secuencias por perfil. Los detalles de endpoint y campos quedan para el contrato de API.
 
 ---
 
@@ -1211,10 +1260,10 @@ Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
 1. transiciones completas permitidas de cada entidad y sus actores;
 2. transiciones/estados restantes de Compras, archivos y sincronización;
-3. relación de versiones de Informe y mecanismo técnico detallado para corregir o anular Pagos, sin ampliar las reglas funcionales aprobadas;
+3. relación de versiones de Informe; la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
 5. instante exacto de vencimiento de Cotización;
-6. momento exacto de asignación de número documental y estrategia de numeración offline;
+6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
 9. timestamps y control de versiones;
@@ -1241,7 +1290,7 @@ Especialmente:
 - no asumir 1 cotización = 1 trabajo;
 - no asumir 1 trabajo = 1 informe;
 - no asumir 1 trabajo = 1 Cuenta de Cobro;
-- permitir pago por una Cuenta o por un Consolidado de Cuentas de Cobro del mismo Cliente; los pagos al Consolidado no se distribuyen entre las Cuentas originales;
+- permitir pago por una Cuenta, por un Consolidado de Cuentas de Cobro del mismo Cliente, o un pago sin documento asociado registrado antes de la Cuenta; los pagos al Consolidado no se distribuyen entre las Cuentas originales;
 - no asumir que material utilizado = inventario consumido;
 - no asumir que catálogo actual = información histórica.
 
@@ -1255,7 +1304,7 @@ Una Cuenta de Cobro puede existir para un Cliente sin Cotización y sin Trabajo 
 
 Por tanto, las asociaciones de `CollectionAccount` con Cotizaciones y Trabajos son opcionales. La Cuenta debe conservar su Cliente y Perfil Profesional conforme al snapshot histórico. Esta aclaración complementa el modelo v0.1; no resuelve las demás decisiones pendientes de este documento.
 
-**CotixGo — Modelo de Datos v0.1**
+**CotixGo — Modelo de Datos v0.2**
 
 **Estado:** BORRADOR PARA REVISIÓN
 
@@ -1272,12 +1321,25 @@ Este anexo complementa el borrador v0.1 y prevalece cuando corrige una propuesta
 - `Report` representa el Informe de Trabajo, con estados `BORRADOR` y `EMITIDO`. Después de emitirse no se edita; una corrección crea una nueva versión enlazada por referencia y la anterior se conserva.
 - Al aprobar una Compra, el sistema incrementa inventario. Una Compra aprobada puede anularse mediante movimiento inverso, editarse o archivarse. La Compra y su comprobante pertenecen a Compras/Inventario; aprobarla no emite un Informe de Trabajo.
 - El estado de `CollectionAccount` cambia automáticamente a `PARCIAL` o `PAGADA` según pagos aplicados. No se cancela si tiene pagos aplicados. No se permiten pagos mayores al saldo ni pagos parcialmente sin asignar.
-- Un anticipo requiere que primero exista la Cuenta de Cobro a la que se asignará; no se admiten pagos sin Cuenta o sin asignación.
-- V1 no maneja descuentos. El precio se ingresa manualmente como bruto y se aplican las reglas aprobadas de retenciones. El tratamiento de impuestos, administrador, porcentajes y configuración fiscal no está aprobado para V1 y permanece pendiente.
+- Un Pago puede existir sin Cuenta de Cobro asociada: un pago recibido antes de la Cuenta (anticipo) queda registrado sin asignación, vinculado al Cliente, y se asocia posteriormente mediante operaciones auditadas (`assign`/`unassign`/`reassign`). Si el pago supera el saldo del destino se aplica solo lo necesario y el excedente permanece sin asignar dentro del mismo Pago.
+- V1 no maneja descuentos. El precio se ingresa manualmente como bruto. Las retenciones de V1 se calculan sobre los conceptos clasificados como `SERVICIO`; los conceptos `MATERIAL` quedan fuera de la base. La base de cada retención se determina por su configuración `applies_to`; `OTRO` no está incluido ni excluido universalmente. El tratamiento de impuestos, administrador, porcentajes y configuración fiscal no está aprobado para V1 y permanece pendiente.
 - Normalmente hay un Pago contra una Cuenta. Para agrupar varias Cuentas del mismo Cliente se utiliza el Consolidado, que conserva intactas las originales y sus valores históricos y gestiona el saldo conjunto. Los Pagos contra el Consolidado pueden ser parciales; no se registran directamente sobre varias Cuentas.
-- Al anular un Pago, se conserva en el historial y deja de contar en el cálculo del documento asociado. Corregir un Pago modifica su importe con trazabilidad, no crea un Reembolso.
+- Al anular un Pago, se conserva en el historial y deja de contar en el cálculo del documento asociado. Corregir un Pago se registra mediante un evento `PaymentAdjustment` con valor anterior, valor nuevo, motivo, usuario, dispositivo, operación y fecha; no crea un Reembolso ni modifica silenciosamente el registro original.
 - Un Reembolso es un nuevo movimiento de dinero; no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro y observación. V1 no agrega un estado `REEMBOLSADA`.
-- Al corregir el importe de un Pago, se suma o resta la diferencia al mismo Pago y a la Cuenta de Cobro o documento global asociado.
+- Al corregir el importe de un Pago, el saldo de la Cuenta de Cobro o del Consolidado asociado se recalcula con el nuevo valor efectivo.
 - La moneda usa código ISO 4217, dos decimales y símbolo visible. Pagos en moneda principal del usuario; documentos existentes conservan la moneda original.
+- Todo documento numerable usa un identificador provisional `TIPO-PEND-XXXX` visible desde su creación hasta que el backend le asigna el número oficial sobre el mismo `entity_id`. La numeración oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional.
+- El catálogo de servicios se administra por Perfil Profesional.
+- La corrección y anulación de Pagos forman parte de V1 mediante el mecanismo documentado `PaymentAdjustment`.
 
-Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; mecanismo técnico detallado para corregir o anular Pagos, sin convertir detalles no aprobados en funcionalidad V1; validaciones residuales de transiciones; precisión de cantidades. Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
+Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; confirmación final del diseño de `PaymentAdjustment`; validaciones residuales de transiciones; precisión de cantidades. Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
+
+---
+
+# 39. Historial de cambios
+
+| Versión | Fecha | Cambio | Motivo | Estado |
+|---|---|---|---|---|
+| v0.1 | 30/09/2026 | Modelo conceptual inicial. | Documento de diseño base. | Borrador para revisión. |
+| v0.2 | 08/10/2026 | Numeración provisional `TIPO-PEND-XXXX` y oficial global por usuario+tipo+período; `Payment` admite existir sin Cuenta de Cobro (anticipo) con asociación posterior; nueva entidad `PaymentAdjustment` para corrección/anulación de Pagos en V1; catálogo de servicios por Perfil Profesional; aclarada base de retención sobre conceptos `SERVICIO`; actualizados los pendientes. | Incorporación de decisiones aprobadas por el titular. | Cambio aprobado; el documento sigue en borrador. |
+| v0.3 | 08/10/2026 | D13-B: asignación de pagos sin asignar con aplicación parcial — el excedente sobre el saldo del destino permanece `UNASSIGNED` en el mismo Pago; D14-C: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento hardcodeado). | Aprobación de las decisiones pendientes de la etapa V1.1. | Cambio aprobado; el documento sigue en borrador. |

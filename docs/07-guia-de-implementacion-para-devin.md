@@ -1,6 +1,6 @@
 # CotixGo — Instrucción global y planificación inicial para Devin
 
-**Versión:** 2.0  
+**Versión:** 2.2  
 **Estado:** Preparado para iniciar la planificación; no autoriza todavía la implementación de código.  
 **Responsabilidad:** El usuario define y aprueba el producto; Devin prepara el plan y, después de su aprobación, implementa; el usuario y el equipo revisan cada entrega.
 
@@ -48,20 +48,21 @@ Reglas que deben mantenerse en todos los módulos:
 - Los Métodos de Cobro son globales al Usuario/Titular. El usuario los crea y administra; no insertar métodos predeterminados. Ayudas o ejemplos de interfaz no son datos iniciales. Se usan para pagos recibidos y reembolsos.
 - El Consolidado de Cuentas de Cobro es el único mecanismo para agrupar varias Cuentas del mismo Cliente. Conserva intactas las originales y sus valores históricos y gestiona el saldo conjunto. No registrar un Pago directamente sobre varias Cuentas como mecanismo paralelo.
 - Un Reembolso es un nuevo movimiento; no modificar ni eliminar el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro y observación. No crear un estado `REEMBOLSADA` en V1.
-- Las reglas funcionales expresamente aprobadas para corregir o anular Pagos se mantienen; cualquier mecanismo técnico adicional o detalle no aprobado queda pendiente y no debe convertirse en alcance V1 por inferencia.
+- La corrección y anulación de Pagos son funcionalidad V1 con trazabilidad, mediante el mecanismo documentado `payment_adjustments` (valor anterior, valor nuevo, motivo, usuario, dispositivo, operación, fecha; el registro original no se modifica ni elimina). No confundir con el Reembolso, que es un nuevo movimiento de dinero.
 - El Informe es opcional y puede ser interno o entregarse al Cliente. No exigirlo para entregar un Trabajo o generar una Cuenta de Cobro. Cotización, Trabajo, Informe y Cuenta de Cobro no deben formar una secuencia rígida.
 - El cierre comercial/histórico de la operación ocurre cuando el Trabajo fue entregado y la Cuenta de Cobro correspondiente está completamente pagada. No asumir que cada transición congela automáticamente documentos; una garantía posterior no los reabre automáticamente.
 - Archivar solo oculta; cualquier documento archivado se puede desarchivar. Nunca eliminar datos generados ni cambiar su historial. Anular una operación es distinto de archivarla.
 - Los documentos históricos conservan los valores usados al emitirlos. No recalcularlos silenciosamente con la configuración actual.
 - Cotizar, ejecutar y consumir inventario son cantidades/realidades distintas. No generar movimientos por una Cotización o un Informe.
-- Un Pago se registra contra una Cuenta individual o un Consolidado. Los pagos pueden ser parciales, pero no superar el saldo del documento asociado; no distribuirlos directamente entre Cuentas originales.
-- Las retenciones son las reglas aprobadas de V1. Los impuestos y cualquier administrador, tipo, porcentaje o valor predeterminado de impuestos no están aprobados como funcionalidad V1; no convertirlos en requisitos ni inventar reglas fiscales.
+- Un Pago se registra contra una Cuenta individual, un Consolidado, o queda sin asignación cuando el dinero se recibe antes de que exista el documento (vinculado al Cliente). La asociación posterior usa operaciones auditadas (`assign`/`unassign`/`reassign`); si el pago supera el saldo del destino se aplica solo lo necesario y el excedente permanece `UNASSIGNED` dentro del mismo pago. Los pagos registrados contra un documento no pueden superar su saldo ni quedar parcialmente sin aplicar a ese documento; no distribuirlos directamente entre Cuentas originales.
+- Todo documento numerable usa un identificador provisional `TIPO-PEND-XXXX` (ej. `COT-PEND-8F3A`) visible en interfaz y apto para PDF provisional; el backend asigna el número oficial `TIPO-AAAAMM-NNN` sobre el mismo documento/`entity_id` al sincronizar. La secuencia oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional. El catálogo de servicios se administra por Perfil Profesional.
+- Las retenciones de V1 se calculan sobre los conceptos `SERVICIO`; los `MATERIAL` quedan fuera de la base. La base de cada retención se determina por su configuración `applies_to`; `OTRO` no está incluido ni excluido universalmente — se comporta según esa configuración. Las tasas son configurables; no usar una tasa fija. Los impuestos y cualquier administrador, tipo, porcentaje o valor predeterminado de impuestos no están aprobados como funcionalidad V1; no convertirlos en requisitos ni inventar reglas fiscales.
 - Mantener `Cotizar → Ejecutar → Documentar → Cobrar` como principio orientador flexible. Las funciones adicionales deben simplificar el flujo principal y no convertir el producto en un ERP rígido.
 - Las decisiones que todavía figuren como **PENDIENTE DE DECISIÓN** no se resuelven mediante suposiciones de implementación.
 
 ## 4. Plataformas y tecnologías aprobadas
 
-- **Primera plataforma:** Android, Kotlin, Jetpack Compose y Room, con funcionamiento offline-first.
+- **Primera plataforma:** Android, Kotlin, Jetpack Compose y Room, con funcionamiento offline-first. `applicationId` y namespace: `com.cotixgo.app`. Builds con JDK 21 LTS.
 - **Backend:** API REST en PHP y base de datos MySQL en Hostinger.
 - **Archivos:** almacenamiento en Hostinger, sujeto a los límites de almacenamiento y sincronización que se definan.
 - **Fase posterior:** web con React, TypeScript y Next.js, usando el mismo backend/API.
@@ -105,3 +106,36 @@ Después de entregar el plan, espera la aprobación del usuario antes de escribi
 - Si encuentras una contradicción o una brecha nueva, detén únicamente el comportamiento afectado, explica el caso en lenguaje claro y ofrece opciones concretas; continúa las partes independientes.
 
 **Resultado esperado ahora:** un plan Android-first de CotixGo que el usuario pueda aprobar o corregir antes de iniciar la programación.
+
+## 8. Metodología permanente de documentación de decisiones
+
+Cuando el usuario apruebe una decisión nueva o modifique una existente:
+
+1. La decisión queda definida y aprobada por el usuario.
+2. Devin identifica qué documentación resulta afectada.
+3. Actualiza el texto vigente de los documentos correspondientes — no solo agrega notas de prevalencia.
+4. Si el cambio es significativo, incrementa la versión del documento.
+5. Registra el cambio en el historial del documento: versión, fecha, cambio realizado, motivo y estado de aprobación.
+6. Actualiza modelo de datos, arquitectura, contratos, matrices o pruebas si la decisión los afecta.
+7. Verifica que no queden contradicciones conocidas entre los documentos vigentes.
+8. Solo después la decisión puede utilizarse como referencia para implementar.
+
+La documentación vigente del repositorio es la fuente de referencia para las siguientes etapas; el proyecto no debe depender de recordar conversaciones. No crear un archivo nuevo por cada modificación pequeña: usar documentación vigente + versionado/historial cuando el cambio sea significativo.
+
+### Protocolo permanente de trabajo
+
+```text
+Definición → aprobación → documentación → planificación
+→ aprobación de etapa → implementación → pruebas
+→ evidencia → revisión → merge
+```
+
+La autorización para implementar una etapa debe ser explícita y la implementación se limita al alcance aprobado. Si aparece algo fuera del plan: STOP → consultar → aprobar/modificar → documentar → continuar. Si durante una etapa aparece una contradicción entre documentos, una decisión no documentada, una regla ambigua o una decisión técnica que pueda cambiar el comportamiento funcional, detente y consulta antes de implementarla.
+
+## 9. Historial de cambios
+
+| Versión | Fecha | Cambio | Motivo | Estado |
+|---|---|---|---|---|
+| 2.0 | 30/09/2026 | Guía de implementación para Devin. | Instrucción global para planificación Android-first. | Aprobado. |
+| 2.1 | 08/10/2026 | Reglas de §3 actualizadas (retenciones solo `SERVICIO`, numeración provisional/oficial, pago sin Cuenta, corrección de pagos V1, catálogo por Perfil); nueva §8 con metodología permanente de documentación de decisiones y protocolo de trabajo; historial de cambios. | Incorporación de decisiones aprobadas y metodología documental por el titular. | Aprobado. |
+| 2.2 | 08/10/2026 | D13-B: aplicación parcial en asignación de pagos con excedente `UNASSIGNED`; D14-C: base de retención por `applies_to`; D15: package `com.cotixgo.app`; D16: JDK 21 LTS para builds Android/Gradle (ambos en §4). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |

@@ -343,6 +343,9 @@ La Cuenta de Cobro debe poder representar situaciones como:
 - pagada;  
 - cancelada.  
 Los Métodos de Cobro pertenecen globalmente al Usuario/Titular. El usuario los crea y administra; CotixGo no incluye métodos predeterminados al instalarse. La interfaz puede orientar mediante textos de ayuda y ejemplos, pero esos ejemplos no se guardan como registros iniciales. Los métodos pueden usarse al registrar pagos recibidos y reembolsos.  
+**17.2 Retenciones en V1**  
+Las retenciones de V1 se calculan sobre los conceptos de la operación clasificados como `SERVICIO`; los conceptos `MATERIAL` quedan fuera de la base de retención. Las líneas se clasifican como `SERVICIO`, `MATERIAL` u `OTRO`, y la base de cada retención se determina mediante su configuración `applies_to`; `OTRO` no está incluido ni excluido universalmente. Las tasas son configurables y no existe una tasa fija; el motor debe soportar múltiples retenciones y, cuando corresponda, cálculo inverso desde el neto solicitado bajo la misma base.  
+Ejemplo aprobado: materiales $800.000 + servicios $600.000 con retención del 6% sobre servicios → retención $36.000, bruto $1.400.000, neto $1.364.000.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OMQ2AABAAsSPBCUbfEm6YmFDBhAU2QtIq6DIzW7UHAMBfnGt1V8fXEwAAXrse/w8F7pbTa1oAAAAASUVORK5CYII=)  
 **18. Dashboard**  
 El Dashboard es una vista operacional.  
@@ -586,6 +589,8 @@ Tipos definidos:
 
 El consecutivo corresponde al tipo de documento y al período correspondiente. No existe un único contador global para todos los documentos.
 
+La secuencia oficial es global por Usuario/Titular + tipo de documento + período, independiente del Perfil Profesional: no existen secuencias por perfil.
+
 **28.1 Número documental e identificador técnico son conceptos diferentes**
 
 El número visible del documento no debe utilizarse como identificador técnico principal.
@@ -611,6 +616,17 @@ La fecha en que se comienza a crear un documento y la fecha en que se confirma o
 Un documento puede permanecer como borrador antes de recibir su número documental definitivo, según las reglas de emisión de cada tipo de documento.
 
 Esto permite, por ejemplo, que un Trabajo iniciado a finales de un mes pueda quedar confirmado y numerado en el mes siguiente.
+
+**28.3 Identificador provisional de documentos creados offline**
+
+Todo documento numerable recibe de inmediato un identificador provisional claramente reconocible con formato `TIPO-PEND-XXXX` (por ejemplo `COT-PEND-8F3A`). El identificador provisional:
+
+- aparece en la interfaz;
+- puede utilizarse en un PDF provisional;
+- identifica al mismo documento y no genera un segundo documento;
+- no compite con la secuencia oficial.
+
+Cuando exista conectividad, el backend asigna el número oficial sobre el mismo documento/`entity_id` (por ejemplo `COT-PEND-8F3A` → `COT-202610-023`).
 
 ---
 
@@ -708,6 +724,14 @@ Normalmente se registra un Pago contra una Cuenta de Cobro. Para agrupar varias 
 **31.2 Reembolsos**
 
 Un Reembolso es un nuevo movimiento de dinero y conserva intacto el Pago original. Puede ser parcial o total y registra fecha, valor, Método de Cobro utilizado y observación. No se cambia ni elimina el Pago original y V1 no crea un estado `REEMBOLSADA`.
+
+**31.3 Pago recibido antes de la Cuenta de Cobro (anticipo)**
+
+Un anticipo es un adelanto o pago parcial recibido; no existe un módulo separado de anticipos. Un Pago puede registrarse aunque todavía no exista la Cuenta de Cobro correspondiente: queda vinculado al Cliente, sin afectar saldos de documentos, y se asocia posteriormente al documento correspondiente mediante operaciones auditadas (`assign`/`unassign`/`reassign`). Si el pago supera el saldo pendiente del destino, se aplica únicamente lo necesario para cubrirlo y el excedente permanece sin asignar dentro del mismo pago, disponible para futuras asignaciones; nunca existe dinero aplicado simultáneamente a dos documentos.
+
+**31.4 Corrección y anulación de Pagos**
+
+Corregir o anular un Pago registrado es funcionalidad de V1. El ajuste conserva valor anterior, valor nuevo, motivo, usuario, dispositivo, operación y fecha; el registro original no se modifica silenciosamente ni se elimina. Un Pago anulado permanece en el historial y deja de contar en el cálculo del documento asociado. Esto no debe confundirse con un Reembolso, que es un nuevo movimiento de dinero sobre un Pago correcto.
 
 ---
 
@@ -964,3 +988,11 @@ Este documento constituye la referencia funcional actual para las siguientes eta
 Los documentos técnicos posteriores deben implementar estas reglas y no contradecirlas.
 
 Este documento no constituye todavía el modelo físico de base de datos, el contrato técnico de API ni la implementación de CotixGo.
+
+**Historial de cambios**
+
+| Versión | Fecha | Cambio | Motivo | Estado |
+|---|---|---|---|---|
+| v0.2 | 30/09/2026 | Documento fundacional de reglas de negocio. | Base funcional aprobada. | Aprobado. |
+| v0.2 (enmienda) | 08/10/2026 | Nuevas subsecciones: 17.2 retenciones solo sobre `SERVICIO` con ejemplo aprobado; 28 secuencia oficial global por titular+tipo+período; 28.3 identificador provisional offline; 31.3 anticipo/pago sin Cuenta previa; 31.4 corrección/anulación de Pagos en V1. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
+| v0.2 (enmienda 2) | 08/10/2026 | 17.2: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento fijo) (D14-C); 31.3: mecánica de asignación aprobada con aplicación parcial — el excedente sobre el saldo permanece sin asignar dentro del mismo pago (D13-B). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |

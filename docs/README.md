@@ -17,6 +17,6 @@ Esta carpeta contiene la fuente de verdad funcional y técnica de CotixGo. El pa
 
 ## Estado
 
-La especificación funcional tiene una base aprobada y un anexo de decisiones posteriores. Android se planifica como primera plataforma, con backend PHP/MySQL en Hostinger desde el inicio y web en una fase posterior. El modelo y los tipos de datos siguen en nivel conceptual. Las decisiones que todavía no están tomadas se marcan explícitamente como **PENDIENTE DE DECISIÓN**; no deben resolverse por inferencia.
+La especificación funcional tiene una base aprobada y un anexo de decisiones posteriores. El 08/10/2026 todos los documentos fueron alineados con las decisiones V1.1 aprobadas por el titular: retenciones solo sobre conceptos `SERVICIO`, identificador provisional `TIPO-PEND-XXXX` y numeración oficial global por titular+tipo+período, pagos recibidos antes de la Cuenta de Cobro (anticipo), corrección/anulación de Pagos en V1 y catálogo de servicios por Perfil Profesional. Android se planifica como primera plataforma, con backend PHP/MySQL en Hostinger desde el inicio y web en una fase posterior. El modelo y los tipos de datos siguen en nivel conceptual. Las decisiones que todavía no están tomadas se marcan explícitamente como **PENDIENTE DE DECISIÓN**; no deben resolverse por inferencia.
 
 La tarea inicial de Devin es presentar un plan revisable; no crear código, migraciones ni tablas definitivas hasta que el usuario apruebe el plan y autorice la implementación.

@@ -1,6 +1,6 @@
 # CotixGo — Matriz de decisiones: estados y cálculos
 
-**Versión:** 1.0  
+**Versión:** 1.2  
 **Estado:** Respuestas del titular registradas. Las reglas confirmadas ya se trasladan al anexo de decisiones aprobadas; las aclaraciones abiertas se enumeran en la sección 8.
 
 Este documento conserva las respuestas del titular y las decisiones pendientes para cerrar los ciclos de vida y cálculos. El estado vigente está resumido en la sección 8 y formalizado en el anexo de reglas aprobadas.
@@ -58,9 +58,9 @@ Estados aprobados: `PENDIENTE`, `PARCIAL`, `PAGADA`, `CANCELADA`. Falta confirma
 
 - si `PENDIENTE` pasa automáticamente a `PARCIAL` o `PAGADA` al asignar pagos; - Sí, pasa automáticamente.
 - si se permite cancelar cuando hay pagos aplicados y cómo se conserva la trazabilidad; - No se permite cancelar cuando hay pagos aplicados.
-- si se pueden corregir/anular pagos y qué evento revierte sus asignaciones; - Está aprobado que se puedan corregir/anular. El mecanismo o evento técnico para aplicarlo queda pendiente.
-- si se acepta que un pago exceda el saldo o quede sin asignar; - No se acepta que un pago exceda el saldo o quede sin asignar.
-- cómo tratar reembolsos, anticipos y pagos asignados a varias Cuentas. - Los anticipos se asignan a una Cuenta creada previamente. Para agrupar varias Cuentas se usa el Consolidado; no se aprueba el Pago directo sobre varias Cuentas. El Reembolso es un nuevo movimiento y no modifica el Pago original.
+- si se pueden corregir/anular pagos y qué evento revierte sus asignaciones; - Están aprobados para V1. Mecanismo documentado `payment_adjustments` (eventos de corrección/anulación con trazabilidad completa); su diseño detallado queda pendiente de confirmación final.
+- si se acepta que un pago exceda el saldo o quede sin asignar; - Un pago registrado contra un documento no puede exceder su saldo ni quedar parcialmente sin aplicar a ese documento. Sí puede existir un Pago sin documento asociado (dinero recibido antes de crear la Cuenta de Cobro) que se asocia posteriormente; al asignarlo, si su importe supera el saldo del destino se aplica solo lo necesario y el excedente permanece sin asignar dentro del mismo pago (ejemplo: pago $500.000 sobre Cuenta de $300.000 → se aplican $300.000, Cuenta `PAGADA`, $200.000 sin asignar).
+- cómo tratar reembolsos, anticipos y pagos asignados a varias Cuentas. - Un anticipo es un pago recibido (adelanto o pago parcial); puede existir sin Cuenta de Cobro previa y asociarse posteriormente al documento correspondiente. Para agrupar varias Cuentas se usa el Consolidado; no se aprueba el Pago directo sobre varias Cuentas. El Reembolso es un nuevo movimiento y no modifica el Pago original.
 
 ## 5. Motor de cálculo — componentes por confirmar
 
@@ -77,7 +77,7 @@ Estados aprobados: `PENDIENTE`, `PARCIAL`, `PAGADA`, `CANCELADA`. Falta confirma
 1. **Impuestos:** no se aprobó un sistema de impuestos para V1. Tipos, porcentajes, administrador y configuración quedan pendientes; no son requisitos funcionales actuales.
 2. **Descuentos:** ¿se permiten por línea, por documento o ambos? ¿Porcentaje, valor fijo o ambos? ¿Qué base reducen? - No se manjan descuentos en esta versión. El precio final se calcula solo con las retenciones y manualmente por el usuario.
 3. **Orden:** el tratamiento de impuestos queda pendiente. Las retenciones siguen las reglas aprobadas y no deben combinarse con impuestos no aprobados.
-4. **Retenciones múltiples:** ¿se calculan sobre el bruto original o en secuencia sobre saldo después de cada retención? -Las retenciones se calculan sobre el bruto original.
+4. **Retenciones múltiples:** ¿se calculan sobre el bruto original o en secuencia sobre saldo después de cada retención? -Las retenciones se calculan cada una sobre el total de conceptos `SERVICIO` del documento (los `MATERIAL` quedan fuera de la base), no en secuencia sobre el saldo retenido.
 5. **Cálculo inverso:** al pedir un neto objetivo, ¿el sistema devuelve un bruto único considerando configuración vigente, y qué hace si distintas reglas producen varias soluciones? - El sistema devuelve un bruto único considerando configuración vigente.
 6. **Redondeo:** precisión de cantidades/precios, número de decimales, etapa de redondeo y regla para diferencias entre suma de líneas y total. - El redondeo se realiza en la etapa final del cálculo.
 7. **Totales:** las reglas que involucren impuestos no están aprobadas para V1; no se infiere una base ni un orden fiscal.
@@ -114,11 +114,14 @@ Las reglas confirmadas en el consolidado se trasladan a `03-anexo-decisiones-apr
 - El profesional puede ajustar el inventario para cargar existencias previas. Confirmar una Compra incrementa el inventario por sus líneas. Solo el consumo propio registrado en un Trabajo descuenta existencias; no se valida contra el saldo y este puede quedar negativo. Cotizar o informar no modifica inventario. Una Compra confirmada puede anularse mediante movimiento inverso, editarse o archivarse. Editarla ajusta el inventario por la diferencia entre cantidades anteriores y nuevas, con movimientos trazables. Archivar cualquier documento o registro solo lo oculta y desarchivarlo vuelve a mostrarlo; nunca se eliminan datos ni se revierten movimientos, pagos, transacciones o relaciones. La anulación es distinta del archivo.
 - El comprobante de compra pertenece al registro de Compra; el Informe de Trabajo se genera desde el Trabajo. Son documentos distintos.
 - Informe de Trabajo: `BORRADOR`/`EMITIDO`; sin edición después de emisión; corrección mediante versión nueva referenciada, conservando la anterior.
-- Cuenta de Cobro: actualización automática a parcial/pagada; no cancelable con pagos aplicados; no admite aplicación excedente ni saldo de pago sin asignar.
-- Pagos: normalmente se registra un Pago contra una Cuenta. Para agrupar varias del mismo Cliente se utiliza el Consolidado, que preserva las Cuentas originales y sus valores históricos y gestiona el saldo conjunto. Los Pagos contra el Consolidado pueden ser parciales y no se registran directamente sobre varias Cuentas. Los anticipos se asignan a una Cuenta creada previamente.
+- Cuenta de Cobro: actualización automática a parcial/pagada; no cancelable con pagos aplicados; no admite pagos registrados por encima del saldo; al asignar un pago sin asignación, el excedente sobre el saldo permanece sin asignar dentro del mismo pago.
+- Pagos: normalmente se registra un Pago contra una Cuenta. Un Pago también puede existir sin documento asociado (dinero recibido antes de la Cuenta), vinculado al Cliente, y se asocia posteriormente mediante operaciones auditadas (`assign`/`unassign`/`reassign`); si el pago supera el saldo del destino se aplica solo lo necesario y el excedente permanece sin asignar. Para agrupar varias del mismo Cliente se utiliza el Consolidado, que preserva las Cuentas originales y sus valores históricos y gestiona el saldo conjunto. Los Pagos contra el Consolidado pueden ser parciales y no se registran directamente sobre varias Cuentas.
 - Un Reembolso es un nuevo movimiento de dinero y no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro y observación. V1 no añade un estado `REEMBOLSADA`.
-- V1 no ofrece descuentos. El profesional ingresa el precio como bruto y se aplican las reglas aprobadas de retenciones. Impuestos, administrador, porcentajes predeterminados y configuración fiscal no están aprobados para V1 y no son requisitos.
-- El sistema controla transiciones según estado actual. Las reglas funcionales aprobadas permiten corregir/anular Pagos con trazabilidad; el mecanismo técnico detallado queda pendiente.
+- V1 no ofrece descuentos. El profesional ingresa el precio como bruto. Las retenciones de V1 se calculan sobre los conceptos `SERVICIO`; los `MATERIAL` quedan fuera de la base. La base de cada retención se determina por su configuración `applies_to`; `OTRO` se comporta según esa configuración, sin estar incluido ni excluido universalmente. Ejemplo aprobado: materiales $800.000 + servicios $600.000 con retención del 6% → retención $36.000, bruto $1.400.000, neto $1.364.000. Impuestos, administrador, porcentajes predeterminados y configuración fiscal no están aprobados para V1 y no son requisitos.
+- El sistema controla transiciones según estado actual. La corrección y anulación de Pagos están aprobadas para V1 mediante `payment_adjustments` (diseño detallado pendiente de confirmación): cada ajuste conserva valor anterior, valor nuevo, motivo, usuario, dispositivo, operación y fecha.
+- Numeración documental: todo documento numerable recibe de inmediato un identificador provisional `TIPO-PEND-XXXX` (ej. `COT-PEND-8F3A`), visible en interfaz y utilizable en PDF provisional, sin competir con la secuencia oficial ni generar un segundo documento. El backend asigna el número oficial sobre el mismo documento/`entity_id` al sincronizarse (`COT-PEND-8F3A` → `COT-202610-023`). La secuencia oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional.
+- El catálogo de servicios se administra por Perfil Profesional.
+- Corrección/anulación de Pagos: el ajuste conserva el registro original intacto en el historial. Un Reembolso es distinto: es un nuevo movimiento de dinero sobre un Pago correcto y no utiliza el mecanismo de ajuste.
 - Moneda: código ISO 4217, dos decimales, símbolo visible; Pagos en moneda principal del usuario; documentos mantienen moneda original tras cambio de preferencia.
 
 ### Registro de aclaraciones y respuestas
@@ -128,6 +131,14 @@ Las respuestas del titular se conservan junto a las preguntas originales. Los pe
 1. La matriz indica que un Informe se emite automáticamente al aprobar una Compra. Esto contradice el flujo de Informes basados en Trabajos y no hay relación Compra–Informe documentada; confirmar si es un Informe de Compra distinto, relación nueva o error de respuesta. - Una compra solo incide en el inventario, Un informe se genera a partir de un trabajo. Hay que distinguir los dos tipos de informes.
 2. Presentación de posibles diferencias por redondeo entre líneas y total. - Se debe redondear por línea, luego el total es la suma de las líneas redondeadas.
 3. Condiciones de anulación de Compra en presencia de Informes y estados/visibilidad del Informe asociado. - Aquí, una compra incide en el inventario, el informe viene siendo como un comporbante de compra, no informe de trabajo. Se puede anular, editar y archivar. El estado aprobado incrementa al inventario
-4. Mecanismo técnico detallado para corregir/anular Pagos y relacionar Reembolsos con trazabilidad. Las reglas funcionales expresamente aprobadas se mantienen; detalles técnicos adicionales no constituyen alcance V1 hasta definirse.
+4. Diseño final del mecanismo `payment_adjustments` y trazabilidad de Reembolsos. La capacidad de corregir/anular Pagos está aprobada para V1; el diseño detallado queda pendiente de confirmación.
 5. Validaciones residuales en transiciones según estado actual. - Se deben validar las transiciones según el estado actual del documento
 7. Impuestos, administrador y configuración predeterminada: permanecen pendientes; no fueron aprobados como funcionalidad de V1.
+
+## 9. Historial de cambios
+
+| Versión | Fecha | Cambio | Motivo | Estado |
+|---|---|---|---|---|
+| 1.0 | 30/09/2026 | Matriz de decisiones sobre estados y cálculos. | Registrar respuestas del titular. | Aprobado. |
+| 1.1 | 08/10/2026 | Base de retención solo `SERVICIO` con ejemplo aprobado; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1 vía `payment_adjustments`; numeración provisional `TIPO-PEND-XXXX` y oficial global; catálogo por Perfil; aclaraciones 8 y 9. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
+| 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: base de retención por `applies_to` configurable (`OTRO` sin comportamiento fijo); aclaraciones 8 y 9 resueltas y retiradas de pendientes. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |

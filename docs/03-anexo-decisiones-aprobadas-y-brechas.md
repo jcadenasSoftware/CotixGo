@@ -1,6 +1,6 @@
 # CotixGo — Anexo de decisiones aprobadas y revisión de brechas
 
-**Versión:** 1.0  
+**Versión:** 1.2  
 **Estado:** Registro de decisiones aprobadas en el contexto del proyecto y revisión documental  
 **Alcance:** Complementa `01-reglas-de-negocio-v0.2.md` y señala ajustes necesarios en el borrador `02-modelo-de-datos.md`.
 
@@ -42,15 +42,18 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 - Estados aprobados: `PENDIENTE`, `PARCIAL`, `PAGADA` y `CANCELADA`.
 - Crear una Cuenta de Cobro no registra un pago. Los pagos son eventos independientes.
 - Normalmente se registra un Pago contra una Cuenta de Cobro. Para agrupar varias Cuentas del mismo Cliente se utiliza el **Consolidado de Cuentas de Cobro**, que conserva intactas las Cuentas originales, usa sus valores históricos, agrupa sus saldos y permite registrar pagos contra el saldo consolidado. No existe un mecanismo paralelo para registrar un Pago directamente sobre varias Cuentas.
-- Todo Pago se registra contra una Cuenta individual o un Consolidado; no existen pagos sueltos ni pagos asignados directamente a varias Cuentas originales.
+- Todo Pago aplicado a un documento se registra contra una Cuenta individual o un Consolidado; no existen pagos asignados directamente a varias Cuentas originales.
+- Un Pago también puede registrarse **sin documento asociado**: cuando el dinero se recibe antes de que exista la Cuenta de Cobro (anticipo), queda vinculado al Cliente y no afecta saldos hasta asociarse posteriormente al documento correspondiente. La asignación, desasignación y reasignación son operaciones propias y auditadas.
+- Al asignar un Pago sin asignación a una Cuenta individual o a un Consolidado, si el importe del pago supera el saldo pendiente del destino se aplica únicamente lo necesario para cubrirlo y el excedente permanece sin asignar, disponible para una futura asignación; el excedente sigue perteneciendo al mismo Pago y no constituye un pago nuevo. Nunca puede existir dinero aplicado simultáneamente a dos documentos. Ejemplo aprobado: pago recibido $500.000 sobre una Cuenta de $300.000 → se aplican $300.000, la Cuenta queda `PAGADA` y $200.000 permanecen sin asignar.
 - Al cancelar/anular un Pago, el sistema revierte su efecto en el documento asociado y lo excluye de su cálculo. Si era el primer Pago de una Cuenta individual, esta vuelve a `PENDIENTE` con el saldo total pendiente. El Pago cancelado se conserva en el historial; cancelar no elimina el registro.
 - Corregir el importe de un Pago aplica la diferencia al mismo Pago y a la misma Cuenta individual o Consolidado al que se registró. Si aumenta, se suma la diferencia; si disminuye, se resta. El Pago y su historial se conservan; no se crea un Pago independiente ni se elimina el registro original.
 - Un Reembolso es un nuevo movimiento de dinero; no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro utilizado y observación. V1 no añade un estado `REEMBOLSADA`.
+- La corrección y anulación de Pagos son funcionalidad aprobada de V1. Mecanismo propuesto documentado: `payment_adjustments`, eventos de ajuste que conservan valor anterior, valor nuevo, motivo, usuario, dispositivo, operación y fecha; el registro original no se modifica silenciosamente ni se elimina.
 
 ### 2.5 Retenciones y cálculo
 
 - Las retenciones son configurables. No se asume una tasa fija por país.
-- En V1, las retenciones configuradas se aplican a conceptos clasificados como `SERVICIO`.
+- Los conceptos de las líneas se clasifican como `SERVICIO`, `MATERIAL` u `OTRO`. La base de cada retención se determina mediante su configuración `applies_to`, no por una regla rígida del modelo. Con las reglas actuales: `SERVICIO` entra en la base, `MATERIAL` queda excluido y `OTRO` se comporta según el `applies_to` configurado (no está incluido ni excluido universalmente). Ejemplo aprobado: materiales $800.000 + servicios $600.000 con retención del 6% → retención $36.000, bruto $1.400.000, neto $1.364.000.
 - El cálculo debe permitir hallar el valor bruto necesario para obtener un valor neto objetivo.
 - Cotizaciones y Cuentas de Cobro deben compartir un motor de cálculo.
 - Cuando corresponda, los documentos deben poder desglosar bruto, cada retención, total de retenciones y neto.
@@ -126,13 +129,11 @@ Estos asuntos no quedan resueltos por las reglas aprobadas disponibles. Las resp
 
 1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema.
 2. Especificación visual/técnica del Consolidado de Cuentas de Cobro y detalles de su relación con operaciones históricas, sin crear un mecanismo de pago directo sobre varias Cuentas.
-3. Regla de emisión/numeración definitiva de documentos cuando la creación ocurre offline; reserva de rangos y colisiones.
-4. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos.
-5. Si una Cuenta de Cobro puede combinar Cotizaciones y Trabajos en el mismo documento y cómo evitar doble cobro de un concepto.
-6. Mecanismo técnico detallado para corregir o anular Pagos, respetando los efectos funcionales ya aprobados.
-7. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida.
-8. Alcance por Perfil Profesional del catálogo de servicios y la numeración documental cuando un usuario tiene varios perfiles. Clientes, Inventario y Métodos de Cobro son globales al Usuario/Titular.
-9. Campos definitivos y valores obligatorios de Cliente, Trabajo, Cotización y Cuenta de Cobro, aparte de los enumerados en reglas.
+3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos.
+4. Si una Cuenta de Cobro puede combinar Cotizaciones y Trabajos en el mismo documento y cómo evitar doble cobro de un concepto.
+5. Confirmación final del diseño del mecanismo `payment_adjustments` para corregir o anular Pagos (la capacidad de corrección/anulación ya está aprobada para V1).
+6. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida.
+7. Campos definitivos y valores obligatorios de Cliente, Trabajo, Cotización y Cuenta de Cobro, aparte de los enumerados en reglas.
 
 ## 5. Próxima revisión documental
 
@@ -169,19 +170,37 @@ Esta sección recoge respuestas confirmadas en `08-matriz-decision-estados-y-cal
 - El estado de Cuenta de Cobro se actualiza automáticamente a `PARCIAL` o `PAGADA` según pagos aplicados y saldo.
 - Una Cuenta de Cobro con pagos aplicados no se puede cancelar.
 - Para agrupar varias Cuentas del mismo Cliente se utiliza un **Consolidado de Cuentas de Cobro**. Este conserva intactas las Cuentas originales, usa sus valores históricos, agrupa los saldos y admite pagos contra el saldo consolidado. No hay un mecanismo de Pago directo sobre varias Cuentas.
-- Para registrar un anticipo, primero se crea la Cuenta de Cobro y el anticipo se asigna a esa Cuenta; no se permiten anticipos sin Cuenta o sin asignación.
-- No se permite registrar un Pago por encima del saldo pendiente de la Cuenta o del Consolidado al que se aplica.
-- Las reglas funcionales aprobadas permiten corregir o anular un Pago con los efectos descritos arriba. El mecanismo técnico detallado para hacerlo queda pendiente y no debe ampliarse por inferencia como funcionalidad V1.
-- Todo Pago se registra contra una Cuenta individual o un Consolidado. Al anular un Pago, se conserva en el historial y deja de contar en el cálculo del documento asociado.
+- Un anticipo es un pago recibido como adelanto o pago parcial. Puede registrarse **sin que exista la Cuenta de Cobro** (pago no asignado, vinculado al Cliente) y asociarse posteriormente al documento correspondiente mediante operaciones auditadas (`assign`/`unassign`/`reassign`). No existe un módulo separado de anticipos.
+- No se permite registrar un Pago por encima del saldo pendiente de la Cuenta o del Consolidado al que se aplica. Al asignar un Pago sin asignación, si su importe supera el saldo del destino se aplica solo lo necesario y el excedente permanece sin asignar (pertenece al mismo Pago; no es un pago nuevo). Ejemplo: pago $500.000 sobre Cuenta de $300.000 → se aplican $300.000, la Cuenta queda `PAGADA` y $200.000 quedan sin asignar.
+- La corrección y anulación de Pagos están aprobadas para V1 con el mecanismo documentado `payment_adjustments` (su diseño detallado queda pendiente de confirmación final).
+- Todo Pago aplicado a un documento se registra contra una Cuenta individual o un Consolidado; un Pago también puede existir sin documento asociado (recibido antes de la Cuenta) hasta su asociación posterior. Al anular un Pago, se conserva en el historial y deja de contar en el cálculo del documento asociado.
 - Los pagos pueden ser parciales y no pueden superar el saldo del documento asociado. Los pagos al Consolidado reducen su saldo conjunto sin modificar ni distribuirse entre las Cuentas originales.
 - Un Reembolso es un nuevo movimiento de dinero; no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro utilizado y observación. V1 no añade un estado `REEMBOLSADA`.
 
 ### Cálculos y moneda
 
 - En V1 no se ofrecen descuentos.
-- El precio se ingresa manualmente como bruto. Las retenciones aprobadas se aplican conforme a sus reglas documentadas.
+- El precio se ingresa manualmente como bruto. Las retenciones aprobadas se calculan sobre el total de conceptos `SERVICIO`; los `MATERIAL` quedan fuera de la base. La base de cada retención se define por su configuración `applies_to`; `OTRO` no está incluido ni excluido universalmente, se comporta según esa configuración.
 - El tratamiento de impuestos, tipos, porcentajes, administrador, valores predeterminados y configuración por documento **no está aprobado para V1** y permanece pendiente. No es requisito funcional ni se deben inventar reglas fiscales.
 - Las cantidades se redondean a dos decimales. Los importes se redondean por línea; el total es la suma de las líneas ya redondeadas.
 - Los documentos históricos conservan los valores y resultados aprobados que correspondan al momento de emisión.
 - Moneda V1: código ISO 4217, dos decimales, símbolo visible y pagos en la moneda principal del usuario. Si cambia la moneda principal, los documentos existentes conservan su moneda.
-- El cálculo inverso permite determinar el bruto requerido para un neto objetivo usando las reglas de retenciones aprobadas; no incorpora impuestos no aprobados.
+- El cálculo inverso permite determinar el bruto requerido para un neto objetivo usando las retenciones aplicables a `SERVICIO`; no incorpora impuestos no aprobados.
+
+### Numeración documental
+
+- Todo documento numerable recibe de inmediato un identificador provisional `TIPO-PEND-XXXX` (por ejemplo `COT-PEND-8F3A`), visible en la interfaz y utilizable en un PDF provisional, sin competir con la numeración oficial ni generar un segundo documento.
+- El backend asigna el número oficial sobre el mismo documento/`entity_id` cuando existe conectividad (por ejemplo `COT-PEND-8F3A` → `COT-202610-023`).
+- La numeración oficial es global por Usuario/Titular + tipo de documento + período, independiente del Perfil Profesional.
+
+### Catálogo de servicios
+
+- El catálogo de servicios se administra por Perfil Profesional.
+
+## 7. Historial de cambios
+
+| Versión | Fecha | Cambio | Motivo | Estado |
+|---|---|---|---|---|
+| 1.0 | 30/09/2026 | Anexo inicial de decisiones aprobadas y brechas. | Complementar v0.2 y revisión documental. | Aprobado. |
+| 1.1 | 08/10/2026 | Base de retención solo `SERVICIO` con ejemplo aprobado; numeración provisional `TIPO-PEND-XXXX` y oficial global usuario+tipo+período; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1 vía `payment_adjustments`; catálogo por Perfil; pendientes actualizados (numeración y alcance de catálogo resueltos; nuevos pendientes de asignación de pagos y concepto `OTRO`). | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
+| 1.2 | 08/10/2026 | D13-B aprobada: asignación de pagos sin asignar con aplicación parcial — el excedente sobre el saldo del destino permanece `UNASSIGNED`; D14-C aprobada: base de retención determinada por `applies_to` configurable por regla (`OTRO` sin comportamiento hardcodeado); decisiones técnicas aprobadas: package Android `com.cotixgo.app` y JDK 21 LTS (registradas en `05`). Pendientes resueltos: mecánica de asignación de pagos y tratamiento de `OTRO`. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |

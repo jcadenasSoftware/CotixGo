@@ -1,6 +1,6 @@
 # CotixGo — Alcance y módulos de V1
 
-**Versión:** 1.0  
+**Versión:** 1.2  
 **Estado:** Especificación de alcance basada en reglas aprobadas  
 **Producto:** Herramienta profesional de campo para trabajadores independientes y pequeños proveedores de servicios.
 
@@ -35,6 +35,11 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 - Archivar o desarchivar no elimina datos, no anula operaciones ni revierte o modifica movimientos de inventario, pagos, transacciones, asignaciones, relaciones o historial.
 - Ningún tipo de dato generado por el usuario se elimina físicamente. La anulación, cuando aplique, es una operación distinta y trazable.
 
+### Regla transversal de numeración documental
+
+- Todo documento numerable recibe de inmediato un identificador provisional `TIPO-PEND-XXXX` (por ejemplo `COT-PEND-8F3A`), visible en la interfaz y utilizable en un PDF provisional. No compite con la numeración oficial ni genera un segundo documento.
+- El backend asigna el número oficial sobre el mismo documento cuando existe conectividad. La secuencia oficial es global por Usuario/Titular + tipo de documento + período, independiente del Perfil Profesional.
+
 ### 2.1 Dashboard
 
 - Vista operacional orientada a acciones pendientes, no a analítica financiera.
@@ -53,7 +58,7 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 
 - Crear cotizaciones para un Cliente y un Perfil Profesional.
 - Incluir servicios, mano de obra y materiales, o únicamente servicio/mano de obra cuando el Cliente suministra materiales.
-- Usar opcionalmente el Catálogo de Servicios o escribir conceptos manualmente.
+- Usar opcionalmente el Catálogo de Servicios del Perfil Profesional o escribir conceptos manualmente.
 - Tratar precios de catálogo como sugerencias; guardar en cada documento la descripción, cantidades y valores utilizados.
 - El profesional define la vigencia al crear cada Cotización; el sistema calcula su fecha de vencimiento.
 - Modificar cotizaciones abiertas manteniendo versiones internas.
@@ -106,7 +111,7 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 - Permitir asociar varias Cotizaciones y/o Trabajos a una misma Cuenta de Cobro, sujeto a la pendiente sobre combinación y prevención de doble cobro.
 - Estados aprobados: `PENDIENTE`, `PARCIAL`, `PAGADA`, `CANCELADA`.
 - Separar la creación de la Cuenta del evento de pago, incluso cuando el Cliente paga inmediatamente.
-- Aplicar las reglas compartidas de retenciones, conceptos de servicio, bruto/neto y moneda.
+- Aplicar las reglas compartidas de retenciones, bruto/neto y moneda. Las retenciones de V1 se calculan sobre los conceptos clasificados como `SERVICIO`; los `MATERIAL` quedan fuera de la base. La base de cada retención se determina por su configuración `applies_to`; `OTRO` no está incluido ni excluido universalmente.
 - En V1 no hay descuentos. El profesional ingresa el precio como bruto y se aplican las reglas aprobadas de retenciones. El tratamiento de impuestos y cualquier configuración fiscal permanecen pendientes; no son requisitos aprobados de V1.
 - Los importes se redondean por línea y el total es la suma de las líneas redondeadas. Las cantidades se redondean a dos decimales.
 - Conservar la información histórica de emisión. No asumir que cada cambio de estado congela automáticamente documentos relacionados.
@@ -118,6 +123,7 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 - Cada perfil aporta identidad comercial, descripción/actividad, logo, información comercial, servicios, documentos y configuración comercial. No es propietario de Clientes, Inventario ni Métodos de Cobro.
 - No asumir que un perfil equivale a una persona jurídica independiente.
 - Conservar en cada documento histórico los datos del perfil usados al emitir, incluido logo.
+- El catálogo de Servicios se administra por Perfil Profesional.
 
 ### 2.9 Informes
 
@@ -136,13 +142,14 @@ El registro de pagos es una capacidad del flujo de Cuenta de Cobro aunque no fig
 - Registrar el evento real de recepción de dinero por separado de la Cuenta de Cobro.
 - Normalmente se registra un Pago contra una Cuenta de Cobro. Para agrupar Cuentas del mismo Cliente se utiliza el Consolidado de Cuentas de Cobro, que conserva intactas las Cuentas originales, usa sus valores históricos y permite gestionar el saldo consolidado y registrar pagos contra este. No existe un pago directo paralelo sobre varias Cuentas.
 - Actualizar automáticamente el estado a `PARCIAL` o `PAGADA` según pagos asignados. No cancelar una Cuenta con pagos aplicados.
-- No permitir pagos mayores al saldo ni dejar una parte del Pago sin asignar.
+- No permitir registrar un pago contra un documento por encima de su saldo ni dejar una parte de ese pago sin aplicar a ese documento (la asignación de pagos previamente sin asignar admite aplicación parcial con excedente sin asignar).
 - Al cancelar/anular un Pago, conservarlo en el historial y excluirlo del cálculo del documento asociado.
 - Al corregir el importe de un Pago, aplicar la diferencia al mismo Pago y al documento asociado (una Cuenta o un Consolidado). Un pago contra Consolidado puede ser parcial; afecta su saldo conjunto y no altera las Cuentas originales.
-- El mecanismo técnico detallado para correcciones y anulaciones de Pagos queda pendiente; no se deben agregar comportamientos no aprobados como funcionalidad V1.
+- La corrección y anulación de Pagos son funcionalidad de V1 con trazabilidad: cada ajuste conserva valor anterior, valor nuevo, motivo, usuario, dispositivo, operación y fecha; el registro original no se modifica silenciosamente ni se elimina (mecanismo documentado `payment_adjustments`, diseño detallado pendiente de confirmación).
 - Un Reembolso es un nuevo movimiento de dinero y no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro utilizado y observación. V1 no tiene estado `REEMBOLSADA`.
-- Los pagos adelantados se tratan como anticipos y deben asignarse a una Cuenta de Cobro creada previamente.
-- Para registrar un anticipo, se crea primero la Cuenta de Cobro y luego se asigna el Pago a esa Cuenta; no se admiten pagos sin Cuenta o asignación.
+- Un pago puede recibirse antes de que exista la Cuenta de Cobro correspondiente (anticipo): queda registrado sin asignación, vinculado al Cliente, y se asocia posteriormente a una Cuenta individual o a un Consolidado mediante operaciones auditadas (`assign`/`unassign`/`reassign`). No existe un módulo separado de anticipos.
+- Al asignar un pago sin asignación a un documento, si su importe supera el saldo pendiente del destino se aplica únicamente lo necesario para cubrirlo y el excedente permanece sin asignar dentro del mismo pago, disponible para futuras asignaciones. Nunca existe dinero aplicado simultáneamente a dos documentos. Ejemplo: pago $500.000 sobre Cuenta de $300.000 → se aplican $300.000, la Cuenta queda `PAGADA` y $200.000 quedan sin asignar.
+- Un pago registrado directamente contra un documento no puede superar su saldo ni quedar parcialmente sin asignar a ese documento.
 
 ### 2.11 Herramientas
 
@@ -168,3 +175,11 @@ La operación se considera cerrada e histórica cuando el Trabajo fue entregado 
 - Si una pantalla o comportamiento del diseño visual existente parece contradecir una regla de negocio, prevalece la regla aprobada y se registra la diferencia para revisión.
 - Las reglas de estados, cálculo, permisos, sincronización y documentos históricos no pueden inferirse solamente del diseño visual.
 - La imagen de referencia existente [`CotixGo_ Gestión Inteligente de Servicios.png`](CotixGo_%20Gesti%C3%B3n%20Inteligente%20de%20Servicios.png) sirve como referencia visual; no sustituye este contrato funcional.
+
+## 5. Historial de cambios
+
+| Versión | Fecha | Cambio | Motivo | Estado |
+|---|---|---|---|---|
+| 1.0 | 30/09/2026 | Alcance y módulos de V1. | Especificación de alcance. | Aprobado. |
+| 1.1 | 08/10/2026 | Regla transversal de numeración documental (provisional `TIPO-PEND-XXXX` + oficial global); retenciones solo sobre `SERVICIO`; catálogo por Perfil; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
+| 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: base de retención por `applies_to` configurable. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
