@@ -1,0 +1,42 @@
+# IDE
+.idea/
+*.iml
+.vs/
+.vscode/
+*.code-workspace.local
+
+# Android / Gradle
+.gradle/
+build/
+*/build/
+local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+.cxx/
+.cxx
+
+# Captures / logs
+captures/
+*.log
+*.hprof
+
+# PHP / Composer
+vendor/
+composer.lock.local
+
+# Web
+node_modules/
+.next/
+out/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
