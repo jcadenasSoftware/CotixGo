@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cotixgo.dev/contracts/enums.json",
+  "title": "CotixGo — Enums aprobados (V1.1)",
+  "description": "Conjuntos cerrados de estados y clasificaciones aprobados en la documentación vigente (docs/03, docs/06, docs/08). Los valores wire usan SCREAMING_SNAKE_CASE ASCII; las etiquetas visibles al usuario se mantienen en español en la capa de presentación.",
+  "version": "0.1.0",
+  "enums": {
+    "job_status": {
+      "description": "Estados de Trabajo (Job).",
+      "values": ["BORRADOR", "PROGRAMADO", "EN_PROCESO", "ENTREGADO", "CANCELADO"]
+    },
+    "collection_account_status": {
+      "description": "Estados de Cuenta de Cobro (CollectionAccount).",
+      "values": ["PENDIENTE", "PARCIAL", "PAGADA", "CANCELADA"]
+    },
+    "quote_status": {
+      "description": "Estados de Cotización (Quote).",
+      "values": ["BORRADOR", "EMITIDA", "APROBADA", "RECHAZADA", "VENCIDA", "CANCELADA"]
+    },
+    "report_status": {
+      "description": "Estados de Informe de Trabajo (Report).",
+      "values": ["BORRADOR", "EMITIDO"]
+    },
+    "photo_category": {
+      "description": "Clasificación de evidencia fotográfica de un Trabajo.",
+      "values": ["ANTES", "DURANTE", "DESPUES", "OTRA"]
+    },
+    "material_condition": {
+      "description": "Condición de un material en inventario.",
+      "values": ["NUEVO", "USADO"]
+    },
+    "tool_status": {
+      "description": "Estados de Herramienta.",
+      "values": ["DISPONIBLE", "EN_USO", "MANTENIMIENTO", "DANADA", "FUERA_DE_SERVICIO"]
+    },
+    "payment_assignment_state": {
+      "description": "Estado de asignación de un Pago: sin documento asociado (UNASSIGNED) o aplicado a una Cuenta de Cobro / Consolidado (ASSIGNED).",
+      "values": ["UNASSIGNED", "ASSIGNED"]
+    },
+    "document_number_state": {
+      "description": "Estado del número documental: provisional local (TIPO-PEND-XXXX) u oficial asignado por el backend (TIPO-AAAAMM-NNN).",
+      "values": ["PROVISIONAL", "OFFICIAL"]
+    },
+    "concept_type": {
+      "description": "Clasificación de una línea de Cotización/Cuenta de Cobro. La base de cada retención se determina por su configuración applies_to (D14-C).",
+      "values": ["SERVICIO", "MATERIAL", "OTRO"]
+    },
+    "payment_adjustment_type": {
+      "description": "Tipo de ajuste de un Pago (PaymentAdjustment): corrección de monto o anulación.",
+      "values": ["CORRECTION", "ANNULMENT"]
+    }
+  }
+}
