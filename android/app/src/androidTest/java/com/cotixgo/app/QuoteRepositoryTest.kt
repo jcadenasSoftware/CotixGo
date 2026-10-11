@@ -150,6 +150,72 @@ class QuoteRepositoryTest {
     }
 
     @Test
+    fun expiredStoredAsEmitida_cannotBeEditedByChangingDates() = runTest {
+        val (_, profileId, clientId) = seed()
+        // Cotización almacenada EMITIDA cuyo vencimiento ya pasó
+        // (vigencia corre desde la creación: emitida hace 10 días, 5 de vigencia).
+        val id = repo.saveQuote(input(profileId, clientId).copy(
+            issueDateEpochDay = LocalDate.now().toEpochDay() - 10,
+            validityDays = 5,
+        ))!!
+        val q = db.quoteDao().get(id)!!
+        db.quoteDao().upsert(q.copy(status = QuoteStatus.EMITIDA.name, emittedVersion = 1))
+        // Cambiar fecha/vigencia NO reactiva la edición: se rechaza y materializa VENCIDA.
+        val result = repo.saveQuote(
+            input(profileId, clientId).copy(
+                issueDateEpochDay = LocalDate.now().toEpochDay(),
+                validityDays = 60,
+            ),
+            existingId = id,
+        )
+        assertNull(result)
+        assertEquals(QuoteStatus.VENCIDA.name, repo.observeQuote(id).first()!!.status)
+        // Tampoco puede aprobarse ni emitirse de nuevo.
+        assertFalse(repo.setQuoteStatus(id, QuoteStatus.APROBADA))
+        assertFalse(repo.emitQuote(id))
+    }
+
+    @Test
+    fun revalidate_onlyAllowedFromVencida() = runTest {
+        val (_, profileId, clientId) = seed()
+        // EMITIDA vigente: no revalidable aunque se invoque fuera del flujo visual.
+        val live = repo.saveQuote(input(profileId, clientId))!!
+        assertTrue(repo.emitQuote(live))
+        assertNull(repo.revalidateQuote(live, 15))
+        // BORRADOR vigente: tampoco.
+        val draft = repo.saveQuote(input(profileId, clientId))!!
+        assertNull(repo.revalidateQuote(draft, 15))
+        // APROBADA: terminal, no revalidable.
+        val approved = repo.saveQuote(input(profileId, clientId))!!
+        repo.emitQuote(approved)
+        repo.setQuoteStatus(approved, QuoteStatus.APROBADA)
+        assertNull(repo.revalidateQuote(approved, 15))
+        // CANCELADA: terminal, no revalidable.
+        val cancelled = repo.saveQuote(input(profileId, clientId))!!
+        repo.setQuoteStatus(cancelled, QuoteStatus.CANCELADA)
+        assertNull(repo.revalidateQuote(cancelled, 15))
+        // En todos los casos no se creó ninguna cotización nueva.
+        assertEquals(4, db.quoteDao().observeForUser(
+            db.userDao().observe().first()!!.id).first().size)
+    }
+
+    @Test
+    fun expiredStoredAsEmitida_canBeRevalidated() = runTest {
+        val (_, profileId, clientId) = seed()
+        val id = repo.saveQuote(input(profileId, clientId).copy(
+            issueDateEpochDay = LocalDate.now().toEpochDay() - 10,
+            validityDays = 5,
+        ))!!
+        val q = db.quoteDao().get(id)!!
+        db.quoteDao().upsert(q.copy(status = QuoteStatus.EMITIDA.name, emittedVersion = 1))
+        // Revalidar materializa VENCIDA en la original y crea la nueva.
+        val newId = repo.revalidateQuote(id, 20)!!
+        assertNotEquals(id, newId)
+        assertEquals(QuoteStatus.VENCIDA.name, repo.observeQuote(id).first()!!.status)
+        assertEquals(QuoteStatus.BORRADOR.name, repo.observeQuote(newId).first()!!.status)
+    }
+
+    @Test
     fun revalidate_createsNewQuote_previousIntact() = runTest {
         val (_, profileId, clientId) = seed()
         val past = input(profileId, clientId).copy(

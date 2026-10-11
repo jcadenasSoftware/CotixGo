@@ -243,11 +243,26 @@ class AppRepository(private val db: AppDatabase) {
             savedAtEpochMs = now,
         )
 
+        // La editabilidad se evalúa con la fecha de vencimiento GUARDADA,
+        // antes de aplicar cualquier dato nuevo del formulario: cambiar la
+        // vigencia o la fecha no puede reactivar una Cotización vencida.
+        val effective = existing?.let {
+            effectiveQuoteStatus(QuoteStatus.valueOf(it.status), it.expiryDateEpochDay, today)
+        } ?: QuoteStatus.BORRADOR
+        if (existing != null && !QuoteTransitions.isEditable(effective)) {
+            if (effective.name != existing.status) {
+                // Materializa el vencimiento derivado de forma segura.
+                db.quoteDao().upsert(
+                    existing.copy(status = effective.name, updatedAt = now),
+                )
+            }
+            return null
+        }
+        // Con la edición permitida, el estado persistido se re-deriva con el
+        // vencimiento resultante (una vigencia más corta puede vencerla).
         val status = existing?.let {
             effectiveQuoteStatus(QuoteStatus.valueOf(it.status), expiry, today)
         } ?: QuoteStatus.BORRADOR
-        // Solo BORRADOR y EMITIDA se pueden editar antes del vencimiento.
-        if (existing != null && !QuoteTransitions.isEditable(status)) return null
 
         val quoteId = existing?.id ?: Ids.new()
         db.withTransaction {
@@ -335,6 +350,19 @@ class AppRepository(private val db: AppDatabase) {
      * vencida. La cotización anterior permanece intacta.
      */
     suspend fun revalidateQuote(id: String, validityDays: Int): String? {
+        // Solo una Cotización efectivamente VENCIDA puede revalidarse
+        // (estado efectivo con el vencimiento persistido y la fecha local).
+        val source = db.quoteDao().get(id) ?: return null
+        val today = LocalDate.now().toEpochDay()
+        val effective = effectiveQuoteStatus(
+            QuoteStatus.valueOf(source.status), source.expiryDateEpochDay, today,
+        )
+        if (effective != QuoteStatus.VENCIDA) return null
+        if (effective.name != source.status) {
+            db.quoteDao().upsert(
+                source.copy(status = effective.name, updatedAt = nowEpochMillis()),
+            )
+        }
         val latest = db.quoteVersionDao().getLatest(id) ?: return null
         val old = SnapshotJson.decodeQuote(latest.snapshotJson)
         val input = QuoteInput(
