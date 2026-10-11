@@ -14,7 +14,9 @@ import androidx.room.RoomDatabase
 import kotlinx.coroutines.flow.Flow
 
 // Campos de sincronización futura: id global UUIDv4 + marcas UTC + pendingSync.
-// La cola de operaciones se implementa en la fase de sincronización (F3).
+// createdAt/updatedAt son epoch millis de un Instant UTC (ver Domain.nowEpochMillis);
+// en el límite de sync (F3) se serializarán a ISO-8601 UTC. La cola de
+// operaciones se implementa en esa fase.
 
 @Entity(tableName = "users")
 data class UserEntity(

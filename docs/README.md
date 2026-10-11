@@ -1,6 +1,6 @@
 # Documentación de CotixGo
 
-Esta carpeta contiene la fuente de verdad funcional y técnica de CotixGo. El paquete está listo para que Devin prepare la planificación inicial; la implementación de código comienza después de que el usuario revise y apruebe ese plan.
+Esta carpeta contiene la fuente de verdad funcional y técnica de CotixGo. La planificación Android-first (hoja de ruta por fases F1–F8) fue preparada por Devin y aprobada por el titular. La implementación avanza fase por fase: cada una requiere aprobación explícita del titular antes de implementarse y revisión antes de mergearse.
 
 ## Orden de lectura y autoridad
 
@@ -19,4 +19,4 @@ Esta carpeta contiene la fuente de verdad funcional y técnica de CotixGo. El pa
 
 La especificación funcional tiene una base aprobada y un anexo de decisiones posteriores. El 08/10/2026 todos los documentos fueron alineados con las decisiones V1.1 aprobadas por el titular: retenciones solo sobre conceptos `SERVICIO`, identificador provisional `TIPO-PEND-XXXX` y numeración oficial global por titular+tipo+período, pagos recibidos antes de la Cuenta de Cobro (anticipo), corrección/anulación de Pagos en V1 y catálogo de servicios por Perfil Profesional. El 11/10/2026 se aprobaron para la fase F1: algoritmo de ID global UUIDv4, fecha comercial = fecha local del dispositivo y marcas de tiempo `Instant` UTC, y los campos mínimos de Cliente y Perfil Profesional. Android se planifica como primera plataforma, con backend PHP/MySQL en Hostinger desde el inicio y web en una fase posterior. El modelo y los tipos de datos siguen en nivel conceptual. Las decisiones que todavía no están tomadas se marcan explícitamente como **PENDIENTE DE DECISIÓN**; no deben resolverse por inferencia.
 
-La tarea inicial de Devin es presentar un plan revisable; no crear código, migraciones ni tablas definitivas hasta que el usuario apruebe el plan y autorice la implementación.
+La planificación inicial ya fue presentada y aprobada. Ninguna fase de implementación comienza sin autorización explícita del titular; el protocolo permanente es: definición → aprobación → documentación → planificación → aprobación de etapa → implementación → pruebas → evidencia → revisión → merge (ver `07` §8).

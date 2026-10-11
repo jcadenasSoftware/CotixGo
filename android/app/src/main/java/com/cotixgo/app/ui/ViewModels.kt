@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -30,11 +31,13 @@ class AppViewModel(private val repo: AppRepository) : ViewModel() {
         if (u == null) flowOf(emptyList()) else repo.observeClients(u.id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun completeOnboarding(userName: String, profileName: String, onDone: () -> Unit) {
-        viewModelScope.launch {
-            repo.completeOnboarding(userName, profileName)
-            onDone()
-        }
+    // true cuando Room ya emitió el primer valor de `user` (incluso null):
+    // distingue "sin usuario" de "todavía cargando" en el arranque.
+    val bootstrapped: StateFlow<Boolean> = user.map { true }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    fun completeOnboarding(userName: String, profileName: String) {
+        viewModelScope.launch { repo.completeOnboarding(userName, profileName) }
     }
 
     fun saveClient(input: ClientInput, existingId: String?, onDone: () -> Unit) {

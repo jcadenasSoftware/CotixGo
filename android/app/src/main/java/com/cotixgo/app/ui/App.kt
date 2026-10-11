@@ -1,12 +1,16 @@
 package com.cotixgo.app.ui
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -36,20 +40,18 @@ fun CotixGoApp(repo: AppRepository) {
         val vm: AppViewModel = viewModel(factory = AppViewModel.factory(repo))
         val nav = rememberNavController()
         val user by vm.user.collectAsStateWithLifecycle()
-
-        when {
-            user == null -> OnboardingScreen { name, profile ->
-                vm.completeOnboarding(name, profile) {
-                    nav.navigate(Routes.DASHBOARD) { popUpTo(0) }
-                }
-            }
-            else -> CotixGoNavHost(nav, vm, user!!.name)
-        }
+        val bootstrapped by vm.bootstrapped.collectAsStateWithLifecycle()
+        CotixGoNavHost(nav, vm, user?.name, bootstrapped)
     }
 }
 
 @Composable
-private fun CotixGoNavHost(nav: NavHostController, vm: AppViewModel, userName: String) {
+private fun CotixGoNavHost(
+    nav: NavHostController,
+    vm: AppViewModel,
+    userName: String?,
+    bootstrapped: Boolean,
+) {
     val backStack by nav.currentBackStackEntryAsState()
     val clients by vm.clients.collectAsStateWithLifecycle()
     val currentRoute = backStack?.destination?.route
@@ -85,14 +87,30 @@ private fun CotixGoNavHost(nav: NavHostController, vm: AppViewModel, userName: S
             }
         },
     ) { padding ->
+        // El NavHost (y su grafo) siempre está compuesto: la transición
+        // onboarding→dashboard la dispara el cambio del Usuario persistido,
+        // que recrea el grafo con startDestination=DASHBOARD. Sin esa
+        // dependencia temporal entre navigate() y la composición del grafo.
+        if (!bootstrapped) {
+            Box(
+                Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center,
+            ) { CircularProgressIndicator() }
+            return@Scaffold
+        }
         NavHost(
             navController = nav,
-            startDestination = Routes.DASHBOARD,
+            startDestination = if (userName == null) Routes.ONBOARDING else Routes.DASHBOARD,
             modifier = Modifier.padding(padding),
         ) {
+            composable(Routes.ONBOARDING) {
+                OnboardingScreen { name, profile ->
+                    vm.completeOnboarding(name, profile)
+                }
+            }
             composable(Routes.DASHBOARD) {
                 DashboardScreen(
-                    userName = userName,
+                    userName = userName.orEmpty(),
                     onNewClient = { nav.navigate(Routes.CLIENT_NEW) },
                 )
             }

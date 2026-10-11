@@ -8,7 +8,14 @@ object Ids {
     fun new(): String = UUID.randomUUID().toString()
 }
 
-/** Marcas de tiempo: Instant UTC para creación, actualización y sincronización. */
+/**
+ * Marcas de tiempo: `Instant` UTC para creación, actualización y sincronización.
+ *
+ * Se almacenan en Room como `Long` epoch milliseconds (mismo instante, forma
+ * compacta). En el límite de sincronización/API (F3) se serializarán como
+ * ISO-8601 UTC mediante `Instant.ofEpochMilli(ms).toString()` — sin cambiar
+ * el valor almacenado ni depender de la zona horaria del dispositivo.
+ */
 fun nowEpochMillis(): Long = Instant.now().toEpochMilli()
 
 enum class ClientType { PERSONA, EMPRESA }

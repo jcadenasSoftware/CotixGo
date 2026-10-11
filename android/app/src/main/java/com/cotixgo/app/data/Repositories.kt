@@ -1,5 +1,6 @@
 package com.cotixgo.app.data
 
+import androidx.room.withTransaction
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.nowEpochMillis
@@ -33,8 +34,12 @@ class AppRepository(private val db: AppDatabase) {
             createdAt = now,
             updatedAt = now,
         )
-        db.userDao().insert(user)
-        db.profileDao().insert(profile)
+        // Transacción: si alguna inserción falla no queda un Usuario
+        // sin su primer Perfil ni se omite el onboarding al reiniciar.
+        db.withTransaction {
+            db.userDao().insert(user)
+            db.profileDao().insert(profile)
+        }
     }
 
     suspend fun saveClient(input: ClientInput, existingId: String? = null) {
