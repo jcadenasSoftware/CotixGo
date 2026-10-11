@@ -1,6 +1,6 @@
 # CotixGo — Tipos y contratos de datos
 
-**Versión:** 1.2  
+**Versión:** 1.3  
 **Estado:** Convenciones conceptuales para alinear el modelo; no constituye DDL ni esquema de API final.
 
 ## 1. Propósito
@@ -11,13 +11,13 @@ Dar a Devin un vocabulario común para campos, tipos y relaciones sin fingir que
 
 | Tipo lógico | Uso | Regla de representación |
 |---|---|---|
-| ID global | Identidad técnica de entidad u operación | Único globalmente y generable offline. No usar número consecutivo de pantalla como PK. Algoritmo exacto pendiente. |
+| ID global | Identidad técnica de entidad u operación | Único globalmente y generable offline. No usar número consecutivo de pantalla como PK. Algoritmo aprobado: UUIDv4 aleatorio generado en el dispositivo (aprobado para F1). |
 | Texto | Nombres, descripciones, notas, direcciones, referencias | No asumir límites de longitud sin definirlos en el contrato de campo. Preservar contenido histórico de documentos. |
 | Código/enum | Estados, tipo de concepto, origen, método o clasificación | Valores controlados y documentados; no depender de etiquetas traducidas de UI como valor persistido. Conjuntos aún no aprobados se marcan pendientes. |
 | Decimal monetario | Precio, subtotal, retención, total, pago, reembolso y saldo | No usar punto flotante binario. En V1, dos decimales; importes redondeados por línea y total igual a la suma de líneas redondeadas. Moneda debe acompañar cada importe documental. Los impuestos no son requisito aprobado de V1. |
 | Decimal de cantidad | Cantidad de material, mano de obra o unidad fraccionaria | No usar entero por defecto. En V1 las cantidades se redondean a dos decimales. |
-| Fecha | Día comercial de emisión, vencimiento, compra o ejecución | Mantener separada de una marca de tiempo. Zona horaria/regla de fecha local pendiente. |
-| Fecha-hora | Instante de creación, modificación, captura, recepción o sincronización | Usar formato interoperable y preservar el instante; estándar técnico y política de zona horaria pendientes. |
+| Fecha | Día comercial de emisión, vencimiento, compra o ejecución | Mantener separada de una marca de tiempo. Regla aprobada: fecha local del dispositivo (`LocalDate`) para el día comercial (aprobado para F1). |
+| Fecha-hora | Instante de creación, modificación, captura, recepción o sincronización | Preservar el instante. Estándar aprobado: `Instant` UTC con formato ISO-8601 (aprobado para F1). |
 | Booleano | Indicadores binarios explícitos | No usar para reemplazar estados con más de dos condiciones. |
 | Referencia/ID foráneo | Relación entre entidades | Validar pertenencia al usuario/perfil y preservar enlaces aunque un registro se archive; archivar no elimina datos ni relaciones. |
 | Snapshot | Valores de Cliente, Perfil, líneas y cálculos de un documento emitido | Estructura y serialización pendientes; contenido debe bastar para reproducir el documento histórico. |
@@ -119,3 +119,4 @@ No fijar todavía tablas, nombres físicos, índices ni claves compuestas a part
 | 1.0 | 30/09/2026 | Convenciones de tipos y contratos de datos. | Alinear el modelo conceptual. | Aprobado. |
 | 1.1 | 08/10/2026 | Base de retención solo `SERVICIO` (`OTRO` pendiente); estados `PROVISIONAL`/`OFFICIAL` y `UNASSIGNED`/`ASSIGNED`; numeración provisional y oficial global; `Payment` sin asignación (anticipo); nueva entidad `PaymentAdjustment`. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: enum de concepto `SERVICIO`/`MATERIAL`/`OTRO` y base de retención por `applies_to` configurable. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
+| 1.3 | 11/10/2026 | F1: algoritmo de ID global aprobado (UUIDv4); fecha comercial = fecha local del dispositivo y marcas de tiempo = `Instant` UTC ISO-8601. | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |

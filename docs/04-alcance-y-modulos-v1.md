@@ -1,6 +1,6 @@
 # CotixGo — Alcance y módulos de V1
 
-**Versión:** 1.2  
+**Versión:** 1.3  
 **Estado:** Especificación de alcance basada en reglas aprobadas  
 **Producto:** Herramienta profesional de campo para trabajadores independientes y pequeños proveedores de servicios.
 
@@ -51,6 +51,7 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 
 - Mantener una cartera única de Clientes global al Usuario/Titular. Un Cliente no pertenece a un Perfil Profesional y puede utilizarse desde varios Perfiles del mismo usuario; no duplicarlo por Perfil.
 - Datos contemplados: identificación, nombre, nombre comercial, teléfonos, correos, dirección principal/fiscal, ciudad, país, notas y estado activo/archivado.
+- Mínimos aprobados para F1: `nombre` obligatorio; `tipo` persona/empresa; `teléfono`, `correo`, `dirección` y `notas` opcionales; `archivado`.
 - Usar configuraciones comerciales del Cliente como valores predeterminados; cada documento conserva los valores efectivamente usados.
 - La dirección de ejecución se registra en el Trabajo y no se deduce necesariamente del domicilio del Cliente.
 
@@ -121,6 +122,7 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 
 - Permitir varios perfiles comerciales por usuario.
 - Cada perfil aporta identidad comercial, descripción/actividad, logo, información comercial, servicios, documentos y configuración comercial. No es propietario de Clientes, Inventario ni Métodos de Cobro.
+- Mínimos aprobados para F1: `nombre_comercial` obligatorio; `descripción` e `información_comercial` opcionales; `logo` como referencia local opcional en F1.
 - No asumir que un perfil equivale a una persona jurídica independiente.
 - Conservar en cada documento histórico los datos del perfil usados al emitir, incluido logo.
 - El catálogo de Servicios se administra por Perfil Profesional.
@@ -183,3 +185,4 @@ La operación se considera cerrada e histórica cuando el Trabajo fue entregado 
 | 1.0 | 30/09/2026 | Alcance y módulos de V1. | Especificación de alcance. | Aprobado. |
 | 1.1 | 08/10/2026 | Regla transversal de numeración documental (provisional `TIPO-PEND-XXXX` + oficial global); retenciones solo sobre `SERVICIO`; catálogo por Perfil; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: base de retención por `applies_to` configurable. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
+| 1.3 | 11/10/2026 | F1: campos mínimos aprobados de Cliente (§2.2) y Perfil Profesional (§2.8). | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |

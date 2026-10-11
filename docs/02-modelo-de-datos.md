@@ -227,6 +227,8 @@ Ejemplos:
 - estado activo/inactivo
 - fechas
 
+Mínimos aprobados para F1: `nombre_comercial` obligatorio; `descripción` e `información_comercial` opcionales; `logo` como referencia local opcional en F1.
+
 ### Regla histórica
 
 Cuando un documento se emite, los datos relevantes del perfil deben quedar capturados en el snapshot documental correspondiente.
@@ -250,6 +252,8 @@ Representa a la persona o empresa para quien se presta el servicio.
 - notas
 - estado
 - fechas
+
+Mínimos aprobados para F1: `nombre` obligatorio; `tipo` persona/empresa; `teléfono`, `correo`, `dirección` y `notas` opcionales; `archivado`.
 
 La cartera de Clientes pertenece globalmente al Usuario/Titular. El mismo Cliente puede utilizarse desde varios Perfiles Profesionales del usuario; cada operación/documento identifica el Perfil que corresponde. No se duplica el Cliente por Perfil.
 
@@ -1343,3 +1347,4 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.1 | 30/09/2026 | Modelo conceptual inicial. | Documento de diseño base. | Borrador para revisión. |
 | v0.2 | 08/10/2026 | Numeración provisional `TIPO-PEND-XXXX` y oficial global por usuario+tipo+período; `Payment` admite existir sin Cuenta de Cobro (anticipo) con asociación posterior; nueva entidad `PaymentAdjustment` para corrección/anulación de Pagos en V1; catálogo de servicios por Perfil Profesional; aclarada base de retención sobre conceptos `SERVICIO`; actualizados los pendientes. | Incorporación de decisiones aprobadas por el titular. | Cambio aprobado; el documento sigue en borrador. |
 | v0.3 | 08/10/2026 | D13-B: asignación de pagos sin asignar con aplicación parcial — el excedente sobre el saldo del destino permanece `UNASSIGNED` en el mismo Pago; D14-C: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento hardcodeado). | Aprobación de las decisiones pendientes de la etapa V1.1. | Cambio aprobado; el documento sigue en borrador. |
+| v0.4 | 11/10/2026 | F1: mínimos aprobados registrados en `ProfessionalProfile` (§5) y `Client` (§6). | Aprobación de las decisiones pendientes de la ficha F1. | Cambio aprobado; el documento sigue en borrador. |

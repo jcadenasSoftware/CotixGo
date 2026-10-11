@@ -1,6 +1,6 @@
 # CotixGo — Arquitectura y tecnologías
 
-**Versión:** 1.1  
+**Versión:** 1.2  
 **Estado:** Stack y principios aprobados; detalles técnicos pendientes donde se indica.
 
 ## 1. Plataformas y stack
@@ -66,7 +66,7 @@ Requisitos aprobados:
 - Recuperación de información sincronizada al iniciar sesión en otro dispositivo.
 - Gestión explícita de cambios simultáneos y conflictos; no resolverlos mediante sobrescritura silenciosa.
 
-**PENDIENTE DE DECISIÓN:** algoritmo de ID, protocolo/orden de sincronización, política por tipo de entidad ante conflicto, límites de reintento, manejo de operación parcial y mecanismo de recuperación. Regla aprobada: cualquier documento archivado se puede desarchivar; los datos generados no se eliminan y archivar/desarchivar solo afecta su visibilidad, no sus efectos.
+**PENDIENTE DE DECISIÓN:** protocolo/orden de sincronización, política por tipo de entidad ante conflicto, límites de reintento, manejo de operación parcial y mecanismo de recuperación. Algoritmo de ID aprobado: UUIDv4 aleatorio generado en el dispositivo (F1). Regla aprobada: cualquier documento archivado se puede desarchivar; los datos generados no se eliminan y archivar/desarchivar solo afecta su visibilidad, no sus efectos.
 
 ### 2.4 Documentos históricos
 
@@ -122,3 +122,4 @@ Cuando se autorice la implementación, registrar versiones soportadas, librería
 |---|---|---|---|---|
 | 1.0 | 30/09/2026 | Arquitectura y tecnologías aprobadas. | Definir stack y principios. | Aprobado. |
 | 1.1 | 08/10/2026 | Decisiones técnicas aprobadas: package Android `com.cotixgo.app` (D15) y JDK 21 LTS para builds Android/Gradle (D16). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
+| 1.2 | 11/10/2026 | F1: algoritmo de ID global aprobado (UUIDv4). | Aprobación de la decisión pendiente de la ficha F1. | Aprobado. |
