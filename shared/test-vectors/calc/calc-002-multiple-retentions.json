@@ -1,0 +1,25 @@
+{
+  "id": "calc-002-multiple-retentions",
+  "name": "Retenciones múltiples sobre su base completa (no secuenciales)",
+  "rule_ref": "docs/08 §5 — cada retención se calcula sobre el total de conceptos incluidos por su applies_to, nunca sobre el saldo de otra retención.",
+  "category": "calc",
+  "input": {
+    "lines": [
+      { "concept_type": "SERVICIO", "quantity": "1", "unit_price": "100000" },
+      { "concept_type": "MATERIAL", "quantity": "1", "unit_price": "50000" }
+    ],
+    "retentions": [
+      { "name": "A", "rate_percent": "10", "applies_to": ["SERVICIO"] },
+      { "name": "B", "rate_percent": "5", "applies_to": ["SERVICIO", "MATERIAL"] }
+    ]
+  },
+  "expected": {
+    "gross": "150000.00",
+    "retentions": [
+      { "name": "A", "base": "100000.00", "amount": "10000.00" },
+      { "name": "B", "base": "150000.00", "amount": "7500.00" }
+    ],
+    "total_retained": "17500.00",
+    "net": "132500.00"
+  }
+}

@@ -89,9 +89,21 @@ fun OnboardingScreen(onComplete: (String, String) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DashboardScreen(userName: String, onNewClient: () -> Unit) {
+fun DashboardScreen(
+    userName: String,
+    expiringQuotes: List<com.cotixgo.app.data.QuoteEntity>,
+    onNewClient: () -> Unit,
+    onNewQuote: () -> Unit,
+    onOpenQuote: (String) -> Unit,
+    onSettings: () -> Unit,
+) {
     Scaffold(
-        topBar = { TopAppBar(title = { Text("CotixGo") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("CotixGo") },
+                actions = { TextButton(onClick = onSettings) { Text("Ajustes") } },
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -102,18 +114,31 @@ fun DashboardScreen(userName: String, onNewClient: () -> Unit) {
         ) {
             Text("Hola, $userName", style = MaterialTheme.typography.headlineSmall)
             Text("Sin sincronizar", color = MaterialTheme.colorScheme.secondary)
-            Button(onClick = onNewClient, modifier = Modifier.fillMaxWidth()) {
-                Text("+ Cliente")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onNewClient, modifier = Modifier.weight(1f)) {
+                    Text("+ Cliente")
+                }
+                Button(onClick = onNewQuote, modifier = Modifier.weight(1f)) {
+                    Text("+ Cotización")
+                }
             }
             // Las demás acciones del dashboard llegan con sus fases.
-            OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
-                Text("+ Cotización")
-            }
             OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
                 Text("+ Trabajo")
             }
             OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
                 Text("+ Cuenta de Cobro")
+            }
+            if (expiringQuotes.isNotEmpty()) {
+                Text("Próximas a vencer", style = MaterialTheme.typography.titleSmall)
+                expiringQuotes.forEach { q ->
+                    Card(onClick = { onOpenQuote(q.id) }, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("${q.provisionalNumber} — ${q.clientNameSnapshot}")
+                            Text("Vence: ${java.time.LocalDate.ofEpochDay(q.expiryDateEpochDay)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
         }
     }

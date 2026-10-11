@@ -1,0 +1,35 @@
+{
+  "id": "transitions-quote-status",
+  "name": "Transiciones de estado de Cotización (F2)",
+  "rule_ref": "docs/03 §6, docs/08 §2 — aprobación manual; rechazo reversible solo antes de APROBADA; cancelación solo BORRADOR/EMITIDA; APROBADA, VENCIDA y CANCELADA terminales en F2. VENCIDA no es destino de acción del usuario: la produce el paso del tiempo.",
+  "category": "transitions",
+  "entity": "quote",
+  "valid": [
+    ["BORRADOR", "EMITIDA"],
+    ["BORRADOR", "CANCELADA"],
+    ["EMITIDA", "APROBADA"],
+    ["EMITIDA", "RECHAZADA"],
+    ["EMITIDA", "CANCELADA"],
+    ["RECHAZADA", "EMITIDA"]
+  ],
+  "invalid": [
+    ["BORRADOR", "APROBADA"],
+    ["BORRADOR", "RECHAZADA"],
+    ["BORRADOR", "VENCIDA"],
+    ["EMITIDA", "BORRADOR"],
+    ["EMITIDA", "VENCIDA"],
+    ["RECHAZADA", "APROBADA"],
+    ["RECHAZADA", "BORRADOR"],
+    ["RECHAZADA", "CANCELADA"],
+    ["APROBADA", "EMITIDA"],
+    ["APROBADA", "RECHAZADA"],
+    ["APROBADA", "CANCELADA"],
+    ["APROBADA", "BORRADOR"],
+    ["VENCIDA", "EMITIDA"],
+    ["VENCIDA", "APROBADA"],
+    ["VENCIDA", "BORRADOR"],
+    ["CANCELADA", "EMITIDA"],
+    ["CANCELADA", "BORRADOR"],
+    ["CANCELADA", "APROBADA"]
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "calc-003-otro-included",
+  "name": "OTRO dentro de applies_to",
+  "rule_ref": "docs/08 §5 — OTRO se incluye en la base cuando la configuración de la retención lo indica.",
+  "category": "calc",
+  "input": {
+    "lines": [
+      { "concept_type": "SERVICIO", "quantity": "1", "unit_price": "60000" },
+      { "concept_type": "OTRO", "quantity": "1", "unit_price": "20000" }
+    ],
+    "retentions": [
+      { "name": "R", "rate_percent": "8", "applies_to": ["SERVICIO", "OTRO"] }
+    ]
+  },
+  "expected": {
+    "gross": "80000.00",
+    "retentions": [
+      { "name": "R", "base": "80000.00", "amount": "6400.00" }
+    ],
+    "total_retained": "6400.00",
+    "net": "73600.00"
+  }
+}

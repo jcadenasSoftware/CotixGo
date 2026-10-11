@@ -26,5 +26,6 @@ Cada vector es un archivo JSON:
 ## Reglas
 
 - Los vectores se agregan/actualizan en la etapa que implemente el comportamiento (E2+); en E0 solo existe esta convención.
+- Poblado en F2: `calc/calc-001…006` (motor de cálculo: caso canónico aprobado, retenciones múltiples, `OTRO` incluido/excluido, redondeo por línea, inverso) y `transitions/quote-status` (transiciones válidas/inválidas de Cotización).
 - Todo vector cita la regla aprobada que valida (`description` o campo `rule_ref`).
 - Un cambio de regla de negocio aprobado debe actualizar los vectores afectados en el mismo commit documental o de implementación.
