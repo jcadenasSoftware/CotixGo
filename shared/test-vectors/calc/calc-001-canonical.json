@@ -1,0 +1,23 @@
+{
+  "id": "calc-001-canonical",
+  "name": "Ejemplo aprobado: retención 6% solo sobre SERVICIO",
+  "rule_ref": "docs/08 §5-6 — materiales $800.000 + servicios $600.000, retención 6% sobre servicios → $36.000; bruto $1.400.000, neto $1.364.000.",
+  "category": "calc",
+  "input": {
+    "lines": [
+      { "concept_type": "MATERIAL", "quantity": "1", "unit_price": "800000" },
+      { "concept_type": "SERVICIO", "quantity": "1", "unit_price": "600000" }
+    ],
+    "retentions": [
+      { "name": "Retención servicios", "rate_percent": "6", "applies_to": ["SERVICIO"] }
+    ]
+  },
+  "expected": {
+    "gross": "1400000.00",
+    "retentions": [
+      { "name": "Retención servicios", "base": "600000.00", "amount": "36000.00" }
+    ],
+    "total_retained": "36000.00",
+    "net": "1364000.00"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "calc-006-inverse",
+  "name": "Inverso: bruto único para neto objetivo con retención 6% sobre servicios",
+  "rule_ref": "docs/08 §5 — el cálculo inverso neto→bruto devuelve un único bruto. 1.451.063,83 × 0,94 redondeado = 1.364.000,00.",
+  "category": "calc-inverse",
+  "input": {
+    "target_net": "1364000.00",
+    "service_rates": ["6"]
+  },
+  "expected": {
+    "required_gross": "1451063.83"
+  }
+}

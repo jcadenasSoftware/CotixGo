@@ -1,0 +1,24 @@
+{
+  "id": "calc-005-line-rounding",
+  "name": "Redondeo por línea: el total es la suma de líneas ya redondeadas",
+  "rule_ref": "docs/08 §6 — redondeo a 2 decimales por línea (HALF_UP); el bruto suma líneas redondeadas, no el bruto sin redondear.",
+  "category": "calc",
+  "input": {
+    "lines": [
+      { "concept_type": "SERVICIO", "quantity": "3", "unit_price": "33.335" },
+      { "concept_type": "SERVICIO", "quantity": "1", "unit_price": "10.005" }
+    ],
+    "retentions": [
+      { "name": "R", "rate_percent": "10", "applies_to": ["SERVICIO"] }
+    ]
+  },
+  "expected": {
+    "line_totals": ["100.01", "10.01"],
+    "gross": "110.02",
+    "retentions": [
+      { "name": "R", "base": "110.02", "amount": "11.00" }
+    ],
+    "total_retained": "11.00",
+    "net": "99.02"
+  }
+}

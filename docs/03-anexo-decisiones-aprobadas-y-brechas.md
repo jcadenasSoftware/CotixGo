@@ -129,13 +129,13 @@ La tabla describe cambios de documentación requeridos, no decisiones de impleme
 
 Estos asuntos no quedan resueltos por las reglas aprobadas disponibles. Las respuestas posteriores de la sección 6 cierran varias decisiones que antes aparecían como pendientes.
 
-1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema.
+1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema. (Cotización: resueltas para F2 en §6.)
 2. Especificación visual/técnica del Consolidado de Cuentas de Cobro y detalles de su relación con operaciones históricas, sin crear un mecanismo de pago directo sobre varias Cuentas.
 3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos.
 4. Si una Cuenta de Cobro puede combinar Cotizaciones y Trabajos en el mismo documento y cómo evitar doble cobro de un concepto.
 5. Confirmación final del diseño del mecanismo `payment_adjustments` para corregir o anular Pagos (la capacidad de corrección/anulación ya está aprobada para V1).
 6. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida.
-7. Campos definitivos y valores obligatorios de Trabajo, Cotización y Cuenta de Cobro, aparte de los enumerados en reglas. (Cliente y Perfil Profesional: mínimos aprobados para F1 en §2.6.)
+7. Campos definitivos y valores obligatorios de Trabajo y Cuenta de Cobro, aparte de los enumerados en reglas. (Cliente y Perfil Profesional: mínimos aprobados para F1 en §2.6. Cotización: campos de F2 aprobados en §6.)
 
 ## 5. Próxima revisión documental
 
@@ -156,6 +156,16 @@ Esta sección recoge respuestas confirmadas en `08-matriz-decision-estados-y-cal
 - El profesional define la vigencia al crear la Cotización; el sistema calcula automáticamente la fecha de vencimiento.
 - El sistema controla las transiciones de estado; aprobar una Cotización solo habilita crear un Trabajo manualmente, no lo crea automáticamente.
 - Un rechazo es reversible hasta que la Cotización sea aprobada; el sistema valida la transición según el estado actual.
+
+### Cotizaciones — fase F2 (local Android)
+
+Decisiones aprobadas por el titular el 11/10/2026 para la ficha F2:
+
+- Campos: `origen_material` opcional por línea `MATERIAL` con valores `CLIENTE`/`PROFESIONAL`; no se añade campo específico de motivo de rechazo (se reutilizan las observaciones); emitir exige al menos una línea, mientras que `BORRADOR` puede guardarse sin líneas.
+- Vigencia: corre desde la creación, incluida la permanencia en `BORRADOR`; `fecha_vencimiento` es el último día válido y la Cotización pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior a ese día.
+- Retenciones: se configuran globalmente por Usuario/Titular (no por Perfil); cada Cotización conserva el snapshot de las retenciones aplicadas.
+- PDF: la exportación de PDF queda diferida a una fase posterior; no forma parte de F2.
+- Transiciones de F2: `APROBADA`, `VENCIDA` y `CANCELADA` son terminales; `RECHAZADA` puede volver a `EMITIDA` antes de `APROBADA`; la edición no cambia el estado.
 
 ### Compras e Informes
 
