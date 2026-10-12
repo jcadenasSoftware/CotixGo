@@ -250,6 +250,7 @@ TRABAJO
    
 El usuario puede revisar y completar el contenido antes de generar el documento final.  
 El usuario decide si lo genera y si lo entrega al Cliente.  
+Un Informe solo puede agrupar Trabajos del mismo Cliente y del mismo Perfil Profesional, y solo las actividades en estado `COMPLETADA` se presentan como ejecución realizada en él (reglas aprobadas en la planificación de F5, `03` §6).  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OQQmAABRAsSeYxKS/kJkED6bwYAVvImwJtszMVu0BAPAXx1rd1fn1BACA164HHDwF+DpPyKwAAAAASUVORK5CYII=)  
 **14. Inventario**  
 El inventario es de uso interno y pertenece globalmente al Usuario/Titular, no a sus Perfiles Profesionales. Se divide estructuralmente en Materiales y Herramientas.  
@@ -682,7 +683,7 @@ Un Trabajo puede relacionarse con más de una Cotización cuando el negocio lo r
 Un Informe puede documentar:
 
 - un solo Trabajo; o
-- varios Trabajos relacionados con el mismo cliente cuando resulte conveniente generar un informe global.
+- varios Trabajos relacionados con el mismo Cliente y el mismo Perfil Profesional cuando resulte conveniente generar un informe global.
 
 El Informe no sustituye a los Trabajos individuales.
 
@@ -992,3 +993,4 @@ Este documento no constituye todavía el modelo físico de base de datos, el con
 | v0.2 (enmienda) | 08/10/2026 | Nuevas subsecciones: 17.2 retenciones solo sobre `SERVICIO` con ejemplo aprobado; 28 secuencia oficial global por titular+tipo+período; 28.3 identificador provisional offline; 31.3 anticipo/pago sin Cuenta previa; 31.4 corrección/anulación de Pagos en V1. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | v0.2 (enmienda 2) | 08/10/2026 | 17.2: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento fijo) (D14-C); 31.3: mecánica de asignación aprobada con aplicación parcial — el excedente sobre el saldo permanece sin asignar dentro del mismo pago (D13-B). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | v0.2 (enmienda 3) | 12/10/2026 | 29.2: estados de Trabajo formalizados como `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO`, `CANCELADO` con la matriz de transiciones aprobada en la ficha F4 (`ENTREGADO`/`CANCELADO` terminales sin edición, sin "Pausar"); 28: tipo documental de Trabajo alineado a `TR` (ejemplo y lista de tipos). | Formalización de los estados y transiciones de Trabajo y del tipo documental `TR` aprobados por el titular en F4. | Aprobado. |
+| v0.2 (enmienda 4) | 12/10/2026 | 13 y 30: reglas de Informes de la ficha F5 — un Informe solo agrupa Trabajos del mismo Cliente y del mismo Perfil Profesional, y solo las actividades `COMPLETADA` se presentan como ejecución realizada. | Formalización de las reglas de Informes aprobadas por el titular en la planificación de F5 (`03` §6). | Aprobado. |

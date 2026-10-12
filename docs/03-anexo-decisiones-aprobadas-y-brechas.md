@@ -1,6 +1,6 @@
 # CotixGo — Anexo de decisiones aprobadas y revisión de brechas
 
-**Versión:** 1.7  
+**Versión:** 1.10  
 **Estado:** Registro de decisiones aprobadas en el contexto del proyecto y revisión documental  
 **Alcance:** Complementa `01-reglas-de-negocio-v0.2.md` y señala ajustes necesarios en el borrador `02-modelo-de-datos.md`.
 
@@ -32,7 +32,8 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 ### 2.3 Informes
 
 - El Informe describe lo realmente ejecutado; la Cotización describe lo previsto. El Informe es opcional y puede ser interno o entregarse al Cliente.
-- Un Informe puede agrupar varios Trabajos del mismo Cliente. Cada Trabajo conserva su propio registro y trazabilidad.
+- Un Informe puede agrupar varios Trabajos del mismo Cliente y del mismo Perfil Profesional (F5, §6). Cada Trabajo conserva su propio registro y trazabilidad.
+- Solo las actividades en estado `COMPLETADA` de los Trabajos asociados se presentan como ejecución realizada en el Informe; las `PENDIENTE` o `EN PROCESO` no se presentan como ejecutadas (F5, §6).
 
 ### 2.4 Cuenta de Cobro y pagos
 
@@ -131,11 +132,11 @@ Estos asuntos no quedan resueltos por las reglas aprobadas disponibles. Las resp
 
 1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema. (Cotización: resueltas para F2 en §6. Trabajo: resueltas para F4 en §6.)
 2. Especificación visual/técnica del Consolidado de Cuentas de Cobro y detalles de su relación con operaciones históricas, sin crear un mecanismo de pago directo sobre varias Cuentas.
-3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos. **Parcialmente resuelto:** la política de producto para las entidades de F3 está aprobada en §6 (detección explícita, preservación de ambas copias y resolución del usuario; versiones de Cotización con versión de resolución nueva) e implementada en local para esas entidades — cola `sync_operations`/`sync_conflicts`/`sync_meta`, `audit_events`, versionado del servidor y contrato (`05` §5.1). La misma política quedó extendida por decisión a las entidades de F4 en la ficha F4 (§6) y se implementó en local para ellas (`05` §5.2). Permanece pendiente la extensión a entidades de fases posteriores.
+3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos. **Parcialmente resuelto:** la política de producto para las entidades de F3 está aprobada en §6 (detección explícita, preservación de ambas copias y resolución del usuario; versiones de Cotización con versión de resolución nueva) e implementada en local para esas entidades — cola `sync_operations`/`sync_conflicts`/`sync_meta`, `audit_events`, versionado del servidor y contrato (`05` §5.1). La misma política quedó extendida por decisión a las entidades de F4 en la ficha F4 (§6) y se implementó en local para ellas (`05` §5.2), y extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (§6) — resolución del usuario como versión nueva del Informe — con implementación pendiente de aprobación de etapa. Permanece pendiente la extensión a entidades de fases posteriores.
 4. Si una Cuenta de Cobro puede combinar Cotizaciones y Trabajos en el mismo documento y cómo evitar doble cobro de un concepto.
 5. Confirmación final del diseño del mecanismo `payment_adjustments` para corregir o anular Pagos (la capacidad de corrección/anulación ya está aprobada para V1).
-6. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida.
-7. Campos definitivos y valores obligatorios de Trabajo y Cuenta de Cobro, aparte de los enumerados en reglas. (Cliente y Perfil Profesional: mínimos aprobados para F1 en §2.6. Cotización: campos de F2 aprobados en §6. Trabajo: avance en F4 — dirección de ejecución propia aprobada, obligatoria al pasar a `PROGRAMADO`, y numeración documental `TR` aprobada; ver §6. La lista definitiva de campos de Trabajo y de Cuenta de Cobro sigue pendiente.)
+6. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida. (Sigue pendiente: F5 — Informes — excluye explícitamente fotografías y archivos adjuntos.)
+7. Campos definitivos y valores obligatorios de Trabajo y Cuenta de Cobro, aparte de los enumerados en reglas. (Cliente y Perfil Profesional: mínimos aprobados para F1 en §2.6. Cotización: campos de F2 aprobados en §6. Trabajo: avance en F4 — dirección de ejecución propia aprobada, obligatoria al pasar a `PROGRAMADO`, y numeración documental `TR` aprobada; ver §6. La lista definitiva de campos de Trabajo y de Cuenta de Cobro sigue pendiente. Informe: campos mínimos propuestos y aprobados para F5 en §6.)
 8. Tecnología concreta de protección de datos locales en reposo (cifrado u otra solución). Requerida antes de usar datos personales o cuentas reales en el dispositivo; mientras tanto solo se permiten datos sintéticos (decisión de la ficha F3 en §6). Su definición no se completa por inferencia y no forma parte del alcance de F3 automáticamente.
 
 ## 5. Próxima revisión documental
@@ -264,7 +265,7 @@ Decisiones de producto aprobadas por el titular el 11/10/2026 durante la planifi
 
 ### Trabajos — fase F4 (local Android con sincronización)
 
-Decisiones aprobadas por el titular el 12/10/2026 para planificar F4 (Trabajos locales en Android con sincronización). Esta ficha no autoriza la implementación: F4 requiere aprobación de etapa explícita según el protocolo. La implementación fue autorizada posteriormente por el titular el mismo 12/10/2026 y quedó verificada en local con datos sintéticos (elecciones técnicas en `05` §5.2; evidencia en `evidence/f4/`); pendiente la revisión del titular vía PR.
+Decisiones aprobadas por el titular el 12/10/2026 para planificar F4 (Trabajos locales en Android con sincronización). Esta ficha no autoriza la implementación: F4 requiere aprobación de etapa explícita según el protocolo. La implementación fue autorizada posteriormente por el titular el mismo 12/10/2026, verificada en local con datos sintéticos (elecciones técnicas en `05` §5.2; evidencia en `evidence/f4/`) e integrada en `main` por el merge `137de38` (PR #7) tras la revisión del titular. La verificación de Gradle Sync dentro de Android Studio con JDK 21 quedó pendiente para el titular — las verificaciones de F4 se ejecutaron por CLI.
 
 **Estados y transiciones**
 
@@ -304,6 +305,53 @@ Decisiones aprobadas por el titular el 12/10/2026 para planificar F4 (Trabajos l
 - La consistencia de propiedad y referencias entre Trabajo, Cliente, Perfil, Cotizaciones y elementos hijos se conserva con los mecanismos ya aprobados, sin una política de producto distinta: cada entidad (padre o hija) registra su propio conflicto y preserva ambas copias hasta que el usuario resuelve; las referencias exigen propiedad de la misma cuenta y se rechazan en caso contrario; la resolución elegida se sincroniza como una operación nueva encadenada a la pausada, conservando la trazabilidad.
 - Se reutilizan la idempotencia, la cola durable, los reintentos y los cursores de F3 donde corresponda.
 
+### Informes — fase F5 (local Android con sincronización)
+
+Decisiones aprobadas por el titular el 12/10/2026 para planificar F5 (Informes de Trabajo en Android con sincronización). Esta ficha registra únicamente decisiones de producto para planificación: **la implementación de F5 no está autorizada** y requiere aprobación de etapa explícita según el protocolo.
+
+**Alcance y relación con el Trabajo**
+
+- F5 cubre Informes de Trabajo en Android, como paso opcional de "Documentar" del flujo `Cotizar → Ejecutar → Documentar → Cobrar`.
+- El Informe puede ser interno o para el Cliente; no es requisito para entregar un Trabajo ni para crear una Cuenta de Cobro (regla previa confirmada).
+- Un Informe puede incluir uno o varios Trabajos del mismo Cliente **y del mismo Perfil Profesional**. La API debe validar las relaciones con los datos persistidos en el servidor, no con las relaciones declaradas por el cliente.
+
+**Contenido ejecutado**
+
+- El contenido inicial puede construirse desde los Trabajos asociados, pero solo las actividades en estado `COMPLETADA` se presentan como ejecución realizada. Las actividades `PENDIENTE` o `EN PROCESO` no deben presentarse como ejecutadas.
+- El usuario puede revisar y editar el contenido mientras el Informe está en `BORRADOR`.
+
+**Estados y correcciones**
+
+- Estados: `BORRADOR` y `EMITIDO` (aprobados previamente en `04` §2.9 y `08` §3).
+- Un Informe emitido no se edita. Corregirlo crea una versión nueva enlazada a la anterior mediante un campo de referencia; la versión emitida anterior y su snapshot se conservan.
+- Las ediciones concurrentes requieren resolución explícita de conflictos (ver "Sincronización y conflictos").
+
+**Numeración**
+
+- Identificador provisional `INF-PEND-XXXX` desde la creación.
+- El backend asigna `INF-AAAAMM-NNN` sobre el mismo `entity_id` cuando acepta por primera vez el Informe como `EMITIDO`. La secuencia oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional.
+
+**Campos mínimos (F5)**
+
+- `clientId` y `profileId` requeridos: el Informe identifica su Perfil Profesional, y todos los Trabajos asociados deben coincidir con el Informe tanto en Cliente como en Perfil.
+- `título` requerido; contenido/observaciones editables en `BORRADOR`; `estado`; número provisional y oficial; destino `INTERNO` o `CLIENTE`; `archivado`; marcas de tiempo.
+
+**Versionado y asociación**
+
+- Cada versión emitida conserva un snapshot inmutable suficiente para reproducir el documento histórico (regla transversal de documentos históricos).
+- Relación `Report`–`ReportVersion`: cada corrección crea una versión nueva enlazada por referencia a la anterior, conservando la versión emitida previa y su snapshot (mecanismo análogo al de versiones de Cotización, sin reescribir snapshots existentes).
+- Relación `Report`–Trabajo mediante asociación (`ReportJob` conceptual): permite informes de un solo Trabajo o combinados y conserva la identidad y trazabilidad de cada Trabajo incluido.
+
+**Sincronización y conflictos**
+
+- Se extiende explícitamente a las entidades de F5 la política aprobada para las entidades de F3 y aplicada a F4: detección de concurrencia por versión base, preservación de ambas copias y resolución explícita del usuario; no se elige ganador por reloj del dispositivo ni se sobrescribe silenciosamente. La resolución elegida por el usuario crea una versión nueva del Informe.
+- Se reutilizan la idempotencia, la cola durable, los reintentos, los cursores y la validación de propiedad de referencias donde corresponda.
+
+**Exclusiones de F5**
+
+- Fuera del alcance de F5: PDF y cualquier exportación, fotografías y archivos adjuntos, envío por correo o enlace al Cliente, Inventario, Compras, Cuenta de Cobro y Pagos.
+- Las fotografías y archivos siguen pendientes conforme a §4.6; F5 no los requiere.
+
 ## 7. Historial de cambios
 
 | Versión | Fecha | Cambio | Motivo | Estado |
@@ -318,3 +366,4 @@ Decisiones aprobadas por el titular el 12/10/2026 para planificar F4 (Trabajos l
 | 1.7 | 12/10/2026 | F3 integrada en `main` (merge `9e1a29c`). Planificación de F4 aprobada (§6): matriz de transiciones de Trabajo (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", edición solo fuera de terminales); dirección de ejecución propia obligatoria al `PROGRAMADO`; Trabajo numerable `TR-PEND-XXXX` → `TR-AAAAMM-NNN` en primera aceptación `PROGRAMADO`/`EN PROCESO`; materiales F4 descriptivos sin efecto en inventario ni reinterpretación retroactiva; actividades `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; política de conflictos de F3 extendida a las entidades de F4. Brechas §3.2 y pendientes §4.1, §4.3 y §4.7 actualizados (estructura técnica de sincronización implementada en local para entidades F3; extensión de implementación a F4 y fases posteriores pendiente). | Registro de las decisiones de alcance de F4 aprobadas por el titular y corrección del estado posterior al merge de F3. | Aprobado. |
 | 1.8 | 12/10/2026 | F4 implementada en local con datos sintéticos tras la aprobación de etapa del titular: Trabajos en Android (Room v5), sincronización de `Job`/`JobQuote`/`JobActivity`/`JobMaterial`, numeración `TR` del lado del servidor, matriz de transiciones, actividades y materiales descriptivos, archivado sin borrado y política de conflictos de F3 aplicada a las entidades nuevas (detalle técnico en `05` §5.2). Pendiente §4.3 actualizado: la política de conflictos quedó implementada para las entidades de F4; sigue pendiente solo la extensión a fases posteriores. La lista definitiva de campos obligatorios de Trabajo y Cuenta de Cobro (§4.7) permanece abierta. | Cierre de la implementación local de F4 autorizada por el titular; pendiente revisión vía PR. | Aprobado. |
 | 1.9 | 12/10/2026 | Correcciones de la revisión independiente del PR de F4: validación en servidor del vínculo `job_quote` (cotización `APROBADA` y mismo Cliente, leído de las entidades persistidas), dependencias requeridas no vacías, "conservar remoto" que reaplica `official_number`/`has_version_conflict` (compartido con Cotización), orden de cola de `job_quote` tras las operaciones de la Cotización, invariante de Cliente en repositorio y prueba de migración real v4→v5 (detalle en `05` §5.2 y historial 1.10). | Corrección de los hallazgos de la revisión del PR de F4; pendiente revisión vía PR. | Aprobado. |
+| 1.10 | 12/10/2026 | F4 integrada en `main` por el merge `137de38` (PR #7) tras la revisión del titular; Gradle Sync dentro de Android Studio con JDK 21 quedó pendiente de verificación manual. Nueva sección §6 para la planificación de F5 (Informes de Trabajo en Android): alcance opcional interno/Cliente, agrupación de Trabajos del mismo Cliente y Perfil Profesional validada con datos persistidos en la API, solo actividades `COMPLETADA` como ejecución presentada, estados `BORRADOR`/`EMITIDO` con corrección por versión nueva enlazada y snapshot conservado, numeración `INF-PEND-XXXX` → `INF-AAAAMM-NNN` en la primera aceptación `EMITIDO`, campos mínimos aprobados, política de conflictos de F3/F4 extendida a entidades de F5 y exclusiones (PDF, fotos/archivos, envío, Inventario/Compras/Cuenta de Cobro/Pagos). §2.3, §4.3, §4.6 y §4.7 actualizados en consecuencia. La implementación de F5 no está autorizada. | Aprobación de las decisiones de planificación de F5 por el titular y corrección del estado posterior al merge de F4. | Aprobado. |

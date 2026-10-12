@@ -1,6 +1,6 @@
 # CotixGo — Matriz de decisiones: estados y cálculos
 
-**Versión:** 1.3  
+**Versión:** 1.4  
 **Estado:** Respuestas del titular registradas. Las reglas confirmadas ya se trasladan al anexo de decisiones aprobadas; las aclaraciones abiertas se enumeran en la sección 8.
 
 Este documento conserva las respuestas del titular y las decisiones pendientes para cerrar los ciclos de vida y cálculos. El estado vigente está resumido en la sección 8 y formalizado en el anexo de reglas aprobadas.
@@ -11,6 +11,7 @@ Estos valores sí están aprobados y no requieren una nueva decisión:
 
 ```text
 Trabajo: BORRADOR | PROGRAMADO | EN PROCESO | ENTREGADO | CANCELADO
+Informe: BORRADOR | EMITIDO
 Cuenta de Cobro: PENDIENTE | PARCIAL | PAGADA | CANCELADA
 Herramienta: DISPONIBLE | EN USO | MANTENIMIENTO | DAÑADA | FUERA DE SERVICIO
 Foto del Trabajo: ANTES | DURANTE | DESPUÉS | OTRA
@@ -125,7 +126,7 @@ Las reglas confirmadas en el consolidado se trasladan a `03-anexo-decisiones-apr
 - Trabajo (aprobado en F4): `BORRADOR→PROGRAMADO|EN PROCESO|CANCELADO`; `PROGRAMADO→BORRADOR|EN PROCESO|CANCELADO`; `EN PROCESO→ENTREGADO|CANCELADO`; `ENTREGADO`/`CANCELADO` terminales sin edición y sin "Pausar"; dirección de ejecución propia obligatoria al `PROGRAMADO`; numerable `TR-PEND-XXXX`/`TR-AAAAMM-NNN` en primera aceptación `PROGRAMADO`/`EN PROCESO`; actividades `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; materiales F4 descriptivos sin efecto en inventario ni reinterpretación retroactiva.
 - El profesional puede ajustar el inventario para cargar existencias previas. Confirmar una Compra incrementa el inventario por sus líneas. Solo el consumo propio registrado en un Trabajo descuenta existencias; no se valida contra el saldo y este puede quedar negativo. Cotizar o informar no modifica inventario. Una Compra confirmada puede anularse mediante movimiento inverso, editarse o archivarse. Editarla ajusta el inventario por la diferencia entre cantidades anteriores y nuevas, con movimientos trazables. Archivar cualquier documento o registro solo lo oculta y desarchivarlo vuelve a mostrarlo; nunca se eliminan datos ni se revierten movimientos, pagos, transacciones o relaciones. La anulación es distinta del archivo.
 - El comprobante de compra pertenece al registro de Compra; el Informe de Trabajo se genera desde el Trabajo. Son documentos distintos.
-- Informe de Trabajo: `BORRADOR`/`EMITIDO`; sin edición después de emisión; corrección mediante versión nueva referenciada, conservando la anterior.
+- Informe de Trabajo: `BORRADOR`/`EMITIDO`; sin edición después de emisión; corrección mediante versión nueva enlazada por referencia, conservando la versión emitida anterior y su snapshot inmutable. Opcional e interno o para el Cliente (destino `INTERNO`/`CLIENTE`); agrupa Trabajos del mismo Cliente y del mismo Perfil Profesional con validación de la API sobre datos persistidos; solo las actividades `COMPLETADA` se presentan como ejecución realizada; contenido editable en `BORRADOR`; numeración `INF-PEND-XXXX` → `INF-AAAAMM-NNN` en la primera aceptación del backend como `EMITIDO`; política de conflictos de F3/F4 extendida a sus entidades con resolución del usuario como versión nueva (todo aprobado en la planificación de F5, `03` §6).
 - Cuenta de Cobro: actualización automática a parcial/pagada; no cancelable con pagos aplicados; no admite pagos registrados por encima del saldo; al asignar un pago sin asignación, el excedente sobre el saldo permanece sin asignar dentro del mismo pago.
 - Pagos: normalmente se registra un Pago contra una Cuenta. Un Pago también puede existir sin documento asociado (dinero recibido antes de la Cuenta), vinculado al Cliente, y se asocia posteriormente mediante operaciones auditadas (`assign`/`unassign`/`reassign`); si el pago supera el saldo del destino se aplica solo lo necesario y el excedente permanece sin asignar. Para agrupar varias del mismo Cliente se utiliza el Consolidado, que preserva las Cuentas originales y sus valores históricos y gestiona el saldo conjunto. Los Pagos contra el Consolidado pueden ser parciales y no se registran directamente sobre varias Cuentas.
 - Un Reembolso es un nuevo movimiento de dinero y no modifica ni elimina el Pago original. Puede ser parcial o total y conserva fecha, valor, Método de Cobro y observación. V1 no añade un estado `REEMBOLSADA`.
@@ -155,3 +156,4 @@ Las respuestas del titular se conservan junto a las preguntas originales. Los pe
 | 1.1 | 08/10/2026 | Base de retención solo `SERVICIO` con ejemplo aprobado; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1 vía `payment_adjustments`; numeración provisional `TIPO-PEND-XXXX` y oficial global; catálogo por Perfil; aclaraciones 8 y 9. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: base de retención por `applies_to` configurable (`OTRO` sin comportamiento fijo); aclaraciones 8 y 9 resueltas y retiradas de pendientes. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | 1.3 | 12/10/2026 | Planificación de F4: §1 registra la matriz de transiciones de Trabajo aprobada (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", sin edición en terminal); §8 consolida las reglas de F4 (dirección de ejecución, numeración `TR`, actividades, materiales descriptivos). | Registro de las decisiones de la ficha F4 aprobadas por el titular. | Aprobado. |
+| 1.4 | 12/10/2026 | Planificación de F5: §1 incluye los estados de Informe (`BORRADOR`/`EMITIDO`) en el bloque de aprobados; §8 consolida las reglas de F5 (agrupación mismo Cliente y Perfil validada con datos persistidos, solo `COMPLETADA` como ejecución, corrección por versión enlazada con snapshot conservado, numeración `INF`, política de conflictos extendida). | Registro de las decisiones de la ficha F5 aprobadas por el titular. | Aprobado. |

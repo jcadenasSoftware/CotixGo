@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v0.7
+## Documento de diseño v0.8
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -737,9 +737,11 @@ Representa un informe que puede entregarse al Cliente o utilizarse solo para org
 - título
 - fecha
 - estado
+- destino del informe (`INTERNO`/`CLIENTE`)
 - contenido complementario
 - snapshot documental
 - fecha de confirmación/finalización
+- estado archivado
 - fechas
 
 ### Regla
@@ -747,6 +749,12 @@ Representa un informe que puede entregarse al Cliente o utilizarse solo para org
 El informe puede construirse a partir de información ya registrada en los trabajos. No es requisito para entregar el Trabajo ni para generar una Cuenta de Cobro.
 
 Puede incluir información de uno o varios trabajos.
+
+Campos mínimos aprobados para F5 en `03` §6: `clientId`, `profileId`, título requerido, contenido/observaciones editables en `BORRADOR`, estado `BORRADOR`/`EMITIDO`, número provisional `INF-PEND-XXXX` y oficial `INF-AAAAMM-NNN` (asignado por el backend en la primera aceptación como `EMITIDO` sobre el mismo `entity_id`), destino `INTERNO`/`CLIENTE`, archivado y marcas de tiempo.
+
+Todos los Trabajos asociados deben pertenecer al mismo Cliente y al mismo Perfil Profesional del Informe; la API valida las relaciones con datos persistidos, no con las declaradas por el cliente. Solo las actividades en estado `COMPLETADA` se presentan como ejecución realizada; el contenido es editable mientras el Informe está en `BORRADOR` (`03` §6).
+
+Un Informe emitido no se edita: una corrección crea una versión nueva enlazada por referencia y la versión emitida anterior se conserva con su snapshot inmutable (`ReportVersion`, ver §36.3 resuelto para F5). En F5 no se incluyen PDF/exportación, fotografías ni archivos adjuntos ni envío al Cliente.
 
 ---
 
@@ -768,7 +776,7 @@ Permite:
 - selección/contenido incluido
 - fechas
 
-Cada trabajo conserva su identidad y trazabilidad aunque aparezca dentro de un informe combinado.
+Cada trabajo conserva su identidad y trazabilidad aunque aparezca dentro de un informe combinado. Los trabajos asociados comparten el Cliente y el Perfil Profesional del Informe (regla aprobada en F5, `03` §6).
 
 ---
 
@@ -1224,7 +1232,7 @@ Su objetivo inicial es permitir diagnosticar cambios y problemas de sincronizaci
 ## Informes
 
 - Se construyen a partir de trabajos.
-- Un informe puede incluir varios trabajos.
+- Un informe puede incluir varios trabajos del mismo Cliente y del mismo Perfil Profesional (regla aprobada en F5, `03` §6).
 - Cada trabajo mantiene su propia trazabilidad.
 
 ## Cuentas de Cobro
@@ -1269,14 +1277,14 @@ Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
 1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6);
 2. transiciones/estados restantes de Compras, archivos y sincronización;
-3. relación de versiones de Informe; la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
+3. relación de versiones de Informe — resuelta para F5: relación `Report`–`ReportVersion` con snapshot inmutable por versión emitida; una corrección crea una versión nueva enlazada por campo de referencia y la versión anterior se conserva (`03` §6); la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
 5. instante exacto de vencimiento de Cotización — resuelto para F2 y aclarado en F3: `fecha_vencimiento` es el último día válido y pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior, solo desde los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA` (`03` §6);
-6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); otros tipos de documento siguen pendientes;
+6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); resuelto para Informe en la planificación de F5: al aceptar el backend por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (`03` §6); otros tipos de documento siguen pendientes;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
 9. timestamps y control de versiones;
-10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); pendiente solo para entidades de fases posteriores;
+10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (`03` §6) — la resolución del usuario crea una versión nueva del Informe — con implementación pendiente de aprobación de etapa; pendiente solo para entidades de fases posteriores;
 11. estructura exacta de `SyncOperation`;
 12. estructura exacta de `AuditEvent`;
 13. campos finales de cada entidad;
@@ -1327,7 +1335,7 @@ Este anexo complementa el borrador v0.1 y prevalece cuando corrige una propuesta
 
 - `Quote` usa estados `BORRADOR`, `EMITIDA`, `APROBADA`, `RECHAZADA`, `VENCIDA`, `CANCELADA`. El profesional registra manualmente la aprobación; se puede editar `BORRADOR` y `EMITIDA` antes del vencimiento, cada modificación conserva una versión; el profesional puede cancelar esos dos estados. El profesional define la vigencia al crearla y el sistema calcula el vencimiento. El rechazo es reversible hasta aprobar.
 - Aprobar una Cotización solo habilita crear un Trabajo manualmente. El sistema valida transiciones según el estado actual.
-- `Report` representa el Informe de Trabajo, con estados `BORRADOR` y `EMITIDO`. Después de emitirse no se edita; una corrección crea una nueva versión enlazada por referencia y la anterior se conserva.
+- `Report` representa el Informe de Trabajo, con estados `BORRADOR` y `EMITIDO`. Después de emitirse no se edita; una corrección crea una nueva versión enlazada por referencia y la anterior se conserva con su snapshot inmutable (`03` §6, F5).
 - Al aprobar una Compra, el sistema incrementa inventario. Una Compra aprobada puede anularse mediante movimiento inverso, editarse o archivarse. La Compra y su comprobante pertenecen a Compras/Inventario; aprobarla no emite un Informe de Trabajo.
 - El estado de `CollectionAccount` cambia automáticamente a `PARCIAL` o `PAGADA` según pagos aplicados. No se cancela si tiene pagos aplicados. No se permiten pagos mayores al saldo ni pagos parcialmente sin asignar.
 - Un Pago puede existir sin Cuenta de Cobro asociada: un pago recibido antes de la Cuenta (anticipo) queda registrado sin asignación, vinculado al Cliente, y se asocia posteriormente mediante operaciones auditadas (`assign`/`unassign`/`reassign`). Si el pago supera el saldo del destino se aplica solo lo necesario y el excedente permanece sin asignar dentro del mismo Pago.
@@ -1356,3 +1364,4 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.5 | 11/10/2026 | Pendientes §36 actualizados: vencimiento de Cotización resuelto en F2; momento del número oficial resuelto para Cotización en F3; política de conflicto aprobada para entidades de F3 (referencia a `03` §6). | Registro de decisiones de F2/F3 que cierran pendientes del modelo. | Cambio aprobado; el documento sigue en borrador. |
 | v0.6 | 12/10/2026 | F4: `Job` §12 registra los cinco estados aprobados y la matriz de transiciones (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", sin edición en terminal), dirección de ejecución propia obligatoria al `PROGRAMADO` y numeración `TR-PEND-XXXX` → `TR-AAAAMM-NNN`; `JobActivity` §14 con estados `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; `JobMaterial` §15 con alcance F4 descriptivo sin efecto en inventario ni reinterpretación retroactiva. Ejemplos y tipos iniciales de numeración alineados al tipo `TR` (§2.2 y §28). Pendientes §36 actualizados (transiciones de Trabajo, momento de numeración, política de conflictos extendida a F4). | Aprobación de las decisiones de la ficha F4 por el titular. | Cambio aprobado; el documento sigue en borrador. |
 | v0.7 | 12/10/2026 | F4 implementada en local: pendiente §36.10 actualizado — la política de conflictos quedó implementada en local para `Job`, `JobQuote`, `JobActivity` y `JobMaterial` (`05` §5.2); sigue pendiente solo para fases posteriores. Sin cambios en el modelo conceptual. | Registro del estado de implementación local de F4; pendiente revisión vía PR. | Cambio aprobado; el documento sigue en borrador. |
+| v0.8 | 12/10/2026 | F5 (planificación aprobada): §20 `Report` registra los campos mínimos aprobados (`clientId`, `profileId`, título, contenido/observaciones, estado `BORRADOR`/`EMITIDO`, `INF-PEND-XXXX`/`INF-AAAAMM-NNN`, destino `INTERNO`/`CLIENTE`, archivado), la regla de mismo Cliente y Perfil Profesional para los Trabajos asociados con validación API sobre datos persistidos, la presentación de solo actividades `COMPLETADA` como ejecutadas y las exclusiones de F5; §21 `ReportJob` y sección "Informes" alineados; pendientes §36.3 (versiones de Informe), §36.6 (número oficial INF) y §36.10 (conflictos extendidos a F5) resueltos para F5. | Aprobación de las decisiones de la ficha F5 por el titular. | Cambio aprobado; el documento sigue en borrador. |
