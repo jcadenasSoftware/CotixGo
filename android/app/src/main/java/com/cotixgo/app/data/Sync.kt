@@ -33,6 +33,10 @@ object EntityTypes {
     const val RETENTION = "retention_config"
     const val QUOTE = "quote"
     const val QUOTE_VERSION = "quote_version"
+    const val JOB = "job"
+    const val JOB_QUOTE = "job_quote"
+    const val JOB_ACTIVITY = "job_activity"
+    const val JOB_MATERIAL = "job_material"
 }
 
 /**
@@ -135,6 +139,31 @@ object SyncPayloads {
     fun quoteVersion(e: QuoteVersionEntity) = buildJsonObject {
         put("id", e.id); put("quoteId", e.quoteId); put("version", e.version)
         put("snapshotJson", e.snapshotJson); put("createdAt", e.createdAt)
+    }
+    fun job(e: JobEntity) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("clientId", e.clientId)
+        put("profileId", e.profileId); put("provisionalNumber", e.provisionalNumber)
+        put("status", e.status); put("startDateEpochDay", e.startDateEpochDay)
+        put("estimatedDateEpochDay", e.estimatedDateEpochDay)
+        put("deliveryDateEpochDay", e.deliveryDateEpochDay)
+        put("executionAddress", e.executionAddress); put("notes", e.notes)
+        put("clientNameSnapshot", e.clientNameSnapshot); put("archived", e.archived)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun jobQuote(e: JobQuoteEntity) = buildJsonObject {
+        put("id", e.id); put("jobId", e.jobId); put("quoteId", e.quoteId)
+        put("relationType", e.relationType); put("createdAt", e.createdAt)
+    }
+    fun jobActivity(e: JobActivityEntity) = buildJsonObject {
+        put("id", e.id); put("jobId", e.jobId); put("description", e.description)
+        put("status", e.status); put("position", e.position)
+        put("startedAt", e.startedAt); put("finishedAt", e.finishedAt)
+        put("notes", e.notes); put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun jobMaterial(e: JobMaterialEntity) = buildJsonObject {
+        put("id", e.id); put("jobId", e.jobId); put("description", e.description)
+        put("origin", e.origin); put("quantity", e.quantity); put("unit", e.unit)
+        put("notes", e.notes); put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
     }
 }
 
@@ -277,6 +306,13 @@ class SyncRepository(
                         }
                     }
                 }
+                EntityTypes.JOB -> {
+                    db.jobDao().markSynced(op.entityId, sv, now)
+                    if (official != null) db.jobDao().updateOfficial(op.entityId, official, now)
+                }
+                EntityTypes.JOB_QUOTE -> db.jobQuoteDao().markSynced(op.entityId, sv)
+                EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().markSynced(op.entityId, sv, now)
+                EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().markSynced(op.entityId, sv, now)
             }
         }
     }
@@ -381,6 +417,10 @@ class SyncRepository(
                 c.boolOr("has_version_conflict"), nowEpochMillis(),
             )
         }
+        if (type == EntityTypes.JOB) {
+            // official_number viaja como columna meta (no dentro del payload).
+            db.jobDao().updateOfficial(id, c.str("official_number"), nowEpochMillis())
+        }
     }
 
     /** Devuelve (tiene pendingSync local, serverVersion local) o null si no existe. */
@@ -391,6 +431,10 @@ class SyncRepository(
         EntityTypes.SERVICE -> db.serviceDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.RETENTION -> db.retentionDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.QUOTE -> db.quoteDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.JOB -> db.jobDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.JOB_QUOTE -> db.jobQuoteDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().get(id)?.let { it.pendingSync to it.serverVersion }
         else -> null
     }
 
@@ -507,6 +551,63 @@ class SyncRepository(
                     serverVersion = sv,
                 ),
             )
+            EntityTypes.JOB -> db.jobDao().upsert(
+                JobEntity(
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
+                    provisionalNumber = p.str("provisionalNumber") ?: "",
+                    status = p.str("status") ?: "BORRADOR",
+                    startDateEpochDay = p.longOr("startDateEpochDay"),
+                    estimatedDateEpochDay = p.longOr("estimatedDateEpochDay"),
+                    deliveryDateEpochDay = p.longOr("deliveryDateEpochDay"),
+                    executionAddress = p.str("executionAddress") ?: "",
+                    notes = p.str("notes") ?: "",
+                    clientNameSnapshot = p.str("clientNameSnapshot") ?: "",
+                    archived = p.boolOr("archived"),
+                    officialNumber = p.str("officialNumber"),
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.JOB_QUOTE -> db.jobQuoteDao().upsert(
+                JobQuoteEntity(
+                    id = p.str("id") ?: id,
+                    jobId = p.str("jobId") ?: "", quoteId = p.str("quoteId") ?: "",
+                    relationType = p.str("relationType") ?: "ADICIONAL",
+                    createdAt = p.longOr("createdAt") ?: now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().upsert(
+                JobActivityEntity(
+                    id = p.str("id") ?: id, jobId = p.str("jobId") ?: "",
+                    description = p.str("description") ?: "",
+                    status = p.str("status") ?: "PENDIENTE",
+                    position = p.longOr("position")?.toInt() ?: 0,
+                    startedAt = p.longOr("startedAt"), finishedAt = p.longOr("finishedAt"),
+                    notes = p.str("notes") ?: "",
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().upsert(
+                JobMaterialEntity(
+                    id = p.str("id") ?: id, jobId = p.str("jobId") ?: "",
+                    description = p.str("description") ?: "",
+                    origin = p.str("origin") ?: "PROFESIONAL",
+                    quantity = p.str("quantity") ?: "", unit = p.str("unit") ?: "",
+                    notes = p.str("notes") ?: "",
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
         }
     }
 
@@ -530,6 +631,7 @@ class SyncRepository(
                 db.openHelper.writableDatabase.execSQL("UPDATE services SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE retention_configs SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE quotes SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE jobs SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 // Regenerar operaciones pendientes con identidad canónica:
                 // reescribe userId en el payload y, para la entidad user,
                 // también entityId y payload.id hacia el id canónico.
@@ -585,7 +687,10 @@ class SyncRepository(
 
     suspend fun pendingEntityCount(): Int {
         var n = 0
-        for (t in listOf("clients", "services", "retention_configs", "quotes", "professional_profiles", "users")) {
+        for (t in listOf(
+            "clients", "services", "retention_configs", "quotes", "professional_profiles",
+            "users", "jobs", "job_quotes", "job_activities", "job_materials",
+        )) {
             db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $t WHERE pendingSync = 1").use { c ->
                 if (c.moveToFirst()) n += c.getInt(0)
             }
@@ -607,6 +712,7 @@ class SyncRepository(
     suspend fun wipeLocalData() {
         db.withTransaction {
             for (t in listOf(
+                "job_quotes", "job_activities", "job_materials", "jobs",
                 "quote_versions", "quotes", "services", "retention_configs",
                 "clients", "professional_profiles", "users",
                 "sync_operations", "sync_conflicts", "sync_meta",

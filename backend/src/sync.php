@@ -18,7 +18,11 @@ declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/domain.php';
 
-const ENTITY_TYPES = ['user', 'profile', 'client', 'service', 'retention_config', 'quote', 'quote_version'];
+const ENTITY_TYPES = [
+    'user', 'profile', 'client', 'service', 'retention_config',
+    'quote', 'quote_version',
+    'job', 'job_quote', 'job_activity', 'job_material',
+];
 
 /** Dependencias: la entidad padre debe existir en el servidor antes de aplicar. */
 const DEPENDENCIES = [
@@ -28,6 +32,10 @@ const DEPENDENCIES = [
     'retention_config' => [],
     'quote'            => [['client', 'clientId'], ['profile', 'profileId']],
     'quote_version'    => [['quote', 'quoteId']],
+    'job'              => [['client', 'clientId'], ['profile', 'profileId']],
+    'job_quote'        => [['job', 'jobId'], ['quote', 'quoteId']],
+    'job_activity'     => [['job', 'jobId']],
+    'job_material'     => [['job', 'jobId']],
 ];
 
 function entityRow(PDO $pdo, string $type, string $id): ?array
@@ -163,6 +171,20 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
         return applyQuote($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
     }
 
+    if ($type === 'job') {
+        return applyJob($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
+    }
+
+    // Hijos del Trabajo (F4): valores enum del contrato.
+    if ($type === 'job_activity'
+        && !in_array((string) ($payload['status'] ?? ''), JOB_ACTIVITY_STATUSES, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Estado de actividad desconocido.');
+    }
+    if ($type === 'job_material'
+        && !in_array((string) ($payload['origin'] ?? ''), JOB_MATERIAL_ORIGINS, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Origen de material desconocido.');
+    }
+
     // Entidades maestras: concurrencia optimista por base_server_version.
     if ($current === null) {
         if ($base !== 0) {
@@ -236,6 +258,71 @@ function applyQuote(PDO $pdo, string $userId, string $deviceId, string $opId,
     }
     updateEntity($pdo, 'quote', $entityId, $current, $payload, $newStatus, $official);
     audit($pdo, $userId, $deviceId, $opId, 'quote', $entityId,
+        $oldStatus === $newStatus ? 'UPDATE' : 'TRANSITION',
+        ['from' => $oldStatus, 'to' => $newStatus]);
+    return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1, null, $official);
+}
+
+/**
+ * F4 — Trabajo: matriz aprobada (docs/03 §6), número oficial TR- en la
+ * primera aceptación de PROGRAMADO/EN_PROCESO, dirección de ejecución
+ * obligatoria al pasar a PROGRAMADO y estados terminales sin edición.
+ */
+function applyJob(PDO $pdo, string $userId, string $deviceId, string $opId,
+                  string $entityId, array $payload, ?array $current, int $base): array
+{
+    $newStatus = (string) ($payload['status'] ?? '');
+    if (!in_array($newStatus, JOB_STATUSES, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Estado de trabajo desconocido.');
+    }
+
+    // La dirección de ejecución es obligatoria al pasar a PROGRAMADO
+    // (propia del Trabajo; puede quedar vacía en BORRADOR).
+    if ($newStatus === 'PROGRAMADO' && trim((string) ($payload['executionAddress'] ?? '')) === '') {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La dirección de ejecución es obligatoria al pasar a PROGRAMADO.');
+    }
+
+    if ($current === null) {
+        if ($base !== 0) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'La entidad no existe en el servidor pero la base no es cero.', 0, null);
+        }
+        $official = null;
+        if (in_array($newStatus, JOB_NUMBERED_STATUSES, true)) {
+            $official = ensureOfficialNumber($pdo, $userId, $entityId, 'TR');
+        }
+        insertEntity($pdo, 'job', $entityId, $userId, $payload, $newStatus, $official);
+        audit($pdo, $userId, $deviceId, $opId, 'job', $entityId, 'CREATE', ['status' => $newStatus]);
+        return result($opId, 'APPLIED', null, null, 1, null, $official);
+    }
+
+    if ($base !== (int) $current['server_version']) {
+        return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+            'El trabajo cambió desde la versión conocida por el dispositivo.',
+            (int) $current['server_version'], json_decode($current['payload'], true));
+    }
+
+    $oldStatus = (string) $current['status'];
+    // Terminal: ni edición ni transición — el documento queda cerrado.
+    if (in_array($oldStatus, JOB_TERMINAL_STATUSES, true)) {
+        return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+            "El trabajo está $oldStatus (terminal) y no admite cambios.",
+            (int) $current['server_version'], json_decode($current['payload'], true));
+    }
+    if (!validJobTransition($oldStatus, $newStatus)) {
+        return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+            "Transición no permitida $oldStatus → $newStatus; estado actual $oldStatus.",
+            (int) $current['server_version'], json_decode($current['payload'], true));
+    }
+
+    $official = $current['official_number'];
+    if ($official === null && !in_array($oldStatus, JOB_NUMBERED_STATUSES, true)
+        && in_array($newStatus, JOB_NUMBERED_STATUSES, true)) {
+        $official = ensureOfficialNumber($pdo, $userId, $entityId, 'TR');
+    }
+    updateEntity($pdo, 'job', $entityId, $current, $payload, $newStatus, $official);
+    audit($pdo, $userId, $deviceId, $opId, 'job', $entityId,
         $oldStatus === $newStatus ? 'UPDATE' : 'TRANSITION',
         ['from' => $oldStatus, 'to' => $newStatus]);
     return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1, null, $official);

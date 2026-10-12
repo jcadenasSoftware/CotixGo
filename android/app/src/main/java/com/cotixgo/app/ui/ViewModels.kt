@@ -5,10 +5,16 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cotixgo.app.BuildConfig
 import com.cotixgo.app.core.ClientInput
+import com.cotixgo.app.core.JobActivityStatus
+import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.data.AppRepository
 import com.cotixgo.app.data.AuthRepository
 import com.cotixgo.app.data.ClientEntity
+import com.cotixgo.app.data.JobActivityInput
+import com.cotixgo.app.data.JobEntity
+import com.cotixgo.app.data.JobInput
+import com.cotixgo.app.data.JobMaterialInput
 import com.cotixgo.app.data.ProfileEntity
 import com.cotixgo.app.data.QuoteEntity
 import com.cotixgo.app.data.QuoteInput
@@ -87,6 +93,45 @@ class AppViewModel(
     val versionConflictQuotes: StateFlow<List<QuoteEntity>> = user.flatMapLatest { u ->
         if (u == null) flowOf(emptyList()) else repo.observeVersionConflictQuotes(u.id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    // ---------- Trabajos (F4) ----------
+
+    val jobs: StateFlow<List<JobEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeJobs(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun observeJob(id: String) = repo.observeJob(id)
+    fun observeJobActivities(id: String) = repo.observeJobActivities(id)
+    fun observeJobMaterials(id: String) = repo.observeJobMaterials(id)
+    fun observeJobQuotes(id: String) = repo.observeJobQuotes(id)
+
+    fun saveJob(input: JobInput, existingId: String?, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.saveJob(input, existingId)) }
+    }
+
+    fun setJobStatus(id: String, to: JobStatus, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.setJobStatus(id, to)) }
+    }
+
+    fun setJobArchived(id: String, archived: Boolean) {
+        viewModelScope.launch { repo.setJobArchived(id, archived) }
+    }
+
+    fun saveJobActivity(input: JobActivityInput) {
+        viewModelScope.launch { repo.saveJobActivity(input) }
+    }
+
+    fun setJobActivityStatus(id: String, to: JobActivityStatus) {
+        viewModelScope.launch { repo.setJobActivityStatus(id, to) }
+    }
+
+    fun saveJobMaterial(input: JobMaterialInput) {
+        viewModelScope.launch { repo.saveJobMaterial(input) }
+    }
+
+    fun linkQuoteToJob(jobId: String, quoteId: String) {
+        viewModelScope.launch { repo.linkQuoteToJob(jobId, quoteId) }
+    }
 
     fun syncNow() {
         if (!sync.session.isBound) {

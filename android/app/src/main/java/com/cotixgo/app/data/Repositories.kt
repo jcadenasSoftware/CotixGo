@@ -5,6 +5,9 @@ import com.cotixgo.app.core.CalcLine
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.core.ConceptType
 import com.cotixgo.app.core.Ids
+import com.cotixgo.app.core.JobStatus
+import com.cotixgo.app.core.JobTransitions
+import com.cotixgo.app.core.JobActivityStatus
 import com.cotixgo.app.core.QuoteCalc
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.core.QuoteTransitions
@@ -460,6 +463,240 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
 
     private suspend fun requireUser(): UserEntity =
         db.userDao().observe().first() ?: error("No hay usuario local registrado.")
+
+    // ---------- Trabajos (F4) ----------
+
+    fun observeJobs(userId: String): Flow<List<JobEntity>> = db.jobDao().observeForUser(userId)
+
+    fun observeJobsForClient(clientId: String): Flow<List<JobEntity>> =
+        db.jobDao().observeForClient(clientId)
+
+    fun observeJob(id: String): Flow<JobEntity?> = db.jobDao().observeOne(id)
+
+    fun observeJobQuotes(jobId: String): Flow<List<JobQuoteEntity>> =
+        db.jobQuoteDao().observeForJob(jobId)
+
+    fun observeJobActivities(jobId: String): Flow<List<JobActivityEntity>> =
+        db.jobActivityDao().observeForJob(jobId)
+
+    fun observeJobMaterials(jobId: String): Flow<List<JobMaterialEntity>> =
+        db.jobMaterialDao().observeForJob(jobId)
+
+    suspend fun getJobQuotes(jobId: String): List<JobQuoteEntity> = db.jobQuoteDao().forJob(jobId)
+
+    /** Número provisional único entre los Trabajos del usuario. */
+    private suspend fun uniqueJobProvisionalNumber(): String {
+        var candidate = newProvisionalNumber("TR")
+        while (db.jobDao().provisionalNumberExists(candidate)) {
+            candidate = newProvisionalNumber("TR")
+        }
+        return candidate
+    }
+
+    /**
+     * Crea o edita un Trabajo. Requiere Cliente y Perfil; la edición no
+     * cambia el estado y queda bloqueada en ENTREGADO/CANCELADO (terminales).
+     * `quoteIds` solo se aplica al crear: cada vínculo queda como ORIGEN;
+     * las asociaciones posteriores usan [linkQuoteToJob] con ADICIONAL.
+     */
+    suspend fun saveJob(input: JobInput, existingId: String? = null): String? {
+        val user = requireUser()
+        val client = db.clientDao().get(input.clientId) ?: return null
+        val profile = db.profileDao().get(input.profileId) ?: return null
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.jobDao().get(it) }
+        if (existing != null && !JobTransitions.isEditable(JobStatus.valueOf(existing.status))) {
+            return null // terminal: sin edición
+        }
+        val jobId = existing?.id ?: Ids.new()
+        val job = JobEntity(
+            id = jobId,
+            userId = existing?.userId ?: user.id,
+            clientId = client.id,
+            profileId = profile.id,
+            provisionalNumber = existing?.provisionalNumber ?: uniqueJobProvisionalNumber(),
+            status = existing?.status ?: JobStatus.BORRADOR.name,
+            startDateEpochDay = input.startDateEpochDay,
+            estimatedDateEpochDay = input.estimatedDateEpochDay,
+            deliveryDateEpochDay = existing?.deliveryDateEpochDay,
+            executionAddress = input.executionAddress.trim(),
+            notes = input.notes.trim(),
+            clientNameSnapshot = client.name,
+            archived = existing?.archived ?: false,
+            officialNumber = existing?.officialNumber,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        db.withTransaction {
+            db.jobDao().upsert(job)
+            sync?.enqueue(EntityTypes.JOB, jobId, SyncPayloads.job(job), existing?.serverVersion ?: 0)
+            if (existing == null) {
+                for (quoteId in input.quoteIds) {
+                    val quote = db.quoteDao().get(quoteId) ?: continue
+                    if (quote.clientId != client.id || quote.status != QuoteStatus.APROBADA.name) continue
+                    val link = JobQuoteEntity(
+                        id = Ids.new(), jobId = jobId, quoteId = quoteId,
+                        relationType = "ORIGEN", createdAt = now,
+                    )
+                    db.jobQuoteDao().upsert(link)
+                    sync?.enqueue(EntityTypes.JOB_QUOTE, link.id, SyncPayloads.jobQuote(link), 0)
+                }
+            }
+        }
+        return jobId
+    }
+
+    /**
+     * Cambio de estado validado por la matriz aprobada: dirección obligatoria
+     * al PROGRAMADO; ENTREGADO registra `deliveryDateEpochDay` si falta.
+     * Devuelve null si aplicó, o el motivo del rechazo.
+     */
+    suspend fun setJobStatus(id: String, to: JobStatus): String? {
+        val job = db.jobDao().get(id) ?: return "Trabajo no encontrado."
+        val from = JobStatus.valueOf(job.status)
+        val error = JobTransitions.canTransitionWith(from, to, job.executionAddress)
+        if (error != null) return error
+        val now = nowEpochMillis()
+        val updated = job.copy(
+            status = to.name,
+            deliveryDateEpochDay = if (to == JobStatus.ENTREGADO) {
+                job.deliveryDateEpochDay ?: LocalDate.now().toEpochDay()
+            } else job.deliveryDateEpochDay,
+            updatedAt = now,
+        )
+        db.withTransaction {
+            db.jobDao().upsert(updated)
+            sync?.enqueue(EntityTypes.JOB, updated.id, SyncPayloads.job(updated), job.serverVersion)
+        }
+        return null
+    }
+
+    suspend fun setJobArchived(id: String, archived: Boolean) {
+        val job = db.jobDao().get(id) ?: return
+        val updated = job.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.jobDao().upsert(updated)
+            sync?.enqueue(EntityTypes.JOB, updated.id, SyncPayloads.job(updated), job.serverVersion)
+        }
+    }
+
+    /**
+     * Asocia una Cotización al Trabajo como ADICIONAL: solo APROBADA del
+     * mismo Cliente (regla aprobada; nunca automática).
+     */
+    suspend fun linkQuoteToJob(jobId: String, quoteId: String): Boolean {
+        val job = db.jobDao().get(jobId) ?: return false
+        if (!JobTransitions.isEditable(JobStatus.valueOf(job.status))) return false
+        val quote = db.quoteDao().get(quoteId) ?: return false
+        if (quote.clientId != job.clientId || quote.status != QuoteStatus.APROBADA.name) return false
+        if (db.jobQuoteDao().forJob(jobId).any { it.quoteId == quoteId }) return false
+        val link = JobQuoteEntity(
+            id = Ids.new(), jobId = jobId, quoteId = quoteId,
+            relationType = "ADICIONAL", createdAt = nowEpochMillis(),
+        )
+        db.withTransaction {
+            db.jobQuoteDao().upsert(link)
+            sync?.enqueue(EntityTypes.JOB_QUOTE, link.id, SyncPayloads.jobQuote(link), 0)
+        }
+        return true
+    }
+
+    /**
+     * Crea un Trabajo desde una Cotización APROBADA (acción manual):
+     * precarga Cliente y Perfil de la Cotización y vincula como ORIGEN.
+     */
+    suspend fun createJobFromQuote(quoteId: String, executionAddress: String = ""): String? {
+        val quote = db.quoteDao().get(quoteId) ?: return null
+        if (quote.status != QuoteStatus.APROBADA.name) return null
+        return saveJob(
+            JobInput(
+                clientId = quote.clientId, profileId = quote.profileId,
+                startDateEpochDay = LocalDate.now().toEpochDay(),
+                executionAddress = executionAddress,
+                quoteIds = listOf(quoteId),
+            ),
+        )
+    }
+
+    // --- Actividades (subordinadas; bloqueadas si el Trabajo es terminal) ---
+
+    private suspend fun jobEditable(jobId: String): Boolean =
+        db.jobDao().get(jobId)?.let { JobTransitions.isEditable(JobStatus.valueOf(it.status)) } ?: false
+
+    suspend fun saveJobActivity(input: JobActivityInput, existingId: String? = null): String? {
+        if (!jobEditable(input.jobId)) return null
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.jobActivityDao().get(it) }
+        val siblings = db.jobActivityDao().forJob(input.jobId)
+        val activity = JobActivityEntity(
+            id = existing?.id ?: Ids.new(),
+            jobId = input.jobId,
+            description = input.description.trim(),
+            status = input.status.name,
+            position = existing?.position ?: (siblings.maxOfOrNull { it.position } ?: 0) + 1,
+            startedAt = existing?.startedAt,
+            finishedAt = existing?.finishedAt,
+            notes = input.notes.trim(),
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        db.withTransaction {
+            db.jobActivityDao().upsert(activity)
+            sync?.enqueue(EntityTypes.JOB_ACTIVITY, activity.id,
+                SyncPayloads.jobActivity(activity), existing?.serverVersion ?: 0)
+        }
+        return activity.id
+    }
+
+    /** Marca la hora de inicio al entrar en EN_PROCESO y de fin al COMPLETADA. */
+    suspend fun setJobActivityStatus(id: String, to: JobActivityStatus): Boolean {
+        val activity = db.jobActivityDao().get(id) ?: return false
+        if (!jobEditable(activity.jobId)) return false
+        val now = nowEpochMillis()
+        val updated = activity.copy(
+            status = to.name,
+            startedAt = if (to == JobActivityStatus.EN_PROCESO) activity.startedAt ?: now else activity.startedAt,
+            finishedAt = if (to == JobActivityStatus.COMPLETADA) activity.finishedAt ?: now else activity.finishedAt,
+            updatedAt = now,
+        )
+        db.withTransaction {
+            db.jobActivityDao().upsert(updated)
+            sync?.enqueue(EntityTypes.JOB_ACTIVITY, updated.id,
+                SyncPayloads.jobActivity(updated), activity.serverVersion)
+        }
+        return true
+    }
+
+    // --- Materiales descriptivos (sin catálogo ni inventario) ---
+
+    suspend fun saveJobMaterial(input: JobMaterialInput, existingId: String? = null): String? {
+        if (!jobEditable(input.jobId)) return null
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.jobMaterialDao().get(it) }
+        val material = JobMaterialEntity(
+            id = existing?.id ?: Ids.new(),
+            jobId = input.jobId,
+            description = input.description.trim(),
+            origin = input.origin.name,
+            quantity = input.quantity.trim(),
+            unit = input.unit.trim(),
+            notes = input.notes.trim(),
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        db.withTransaction {
+            db.jobMaterialDao().upsert(material)
+            sync?.enqueue(EntityTypes.JOB_MATERIAL, material.id,
+                SyncPayloads.jobMaterial(material), existing?.serverVersion ?: 0)
+        }
+        return material.id
+    }
 }
 
 // ---------- Entradas de dominio para F2 ----------
@@ -496,4 +733,33 @@ data class QuoteInput(
     val notes: String = "",
     val lines: List<QuoteLineInput>,
     val retentions: List<RetentionInput>,
+)
+
+// ---------- Entradas de dominio para F4 ----------
+
+data class JobInput(
+    val clientId: String,
+    val profileId: String,
+    val startDateEpochDay: Long? = null,
+    val estimatedDateEpochDay: Long? = null,
+    val executionAddress: String = "",
+    val notes: String = "",
+    val quoteIds: List<String> = emptyList(),
+)
+
+data class JobActivityInput(
+    val jobId: String,
+    val description: String,
+    val status: com.cotixgo.app.core.JobActivityStatus =
+        com.cotixgo.app.core.JobActivityStatus.PENDIENTE,
+    val notes: String = "",
+)
+
+data class JobMaterialInput(
+    val jobId: String,
+    val description: String,
+    val origin: com.cotixgo.app.core.MaterialOrigin,
+    val quantity: String = "",
+    val unit: String = "",
+    val notes: String = "",
 )

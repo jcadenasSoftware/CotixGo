@@ -175,6 +175,179 @@ data class QuoteVersionEntity(
     val createdAt: Long,
 )
 
+// ---------- Trabajos (F4) ----------
+
+/**
+ * Trabajo local: documento operativo de la ejecución real. Numeración
+ * provisional `TR-PEND-XXXX` desde la creación; el oficial `TR-AAAAMM-NNN`
+ * lo asigna el backend en la primera aceptación de PROGRAMADO/EN_PROCESO.
+ * `executionAddress` es propio del Trabajo (no se deduce del Cliente) y es
+ * obligatorio al pasar a PROGRAMADO; `deliveryDateEpochDay` registra el fin
+ * de la ejecución al entregar.
+ */
+@Entity(
+    tableName = "jobs",
+    indices = [Index("userId"), Index("clientId"), Index("profileId"), Index(value = ["provisionalNumber"], unique = true)],
+)
+data class JobEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val clientId: String,
+    val profileId: String,
+    val provisionalNumber: String,
+    val status: String,
+    val startDateEpochDay: Long? = null,
+    val estimatedDateEpochDay: Long? = null,
+    val deliveryDateEpochDay: Long? = null,
+    val executionAddress: String = "",
+    val notes: String = "",
+    val clientNameSnapshot: String = "",
+    val archived: Boolean = false,
+    val officialNumber: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Vínculo Trabajo ↔ Cotización (N:N). `relationType`: ORIGEN cuando el
+ * Trabajo nace de la Cotización, ADICIONAL para asociaciones posteriores.
+ * Vínculos solo a cotizaciones APROBADA del mismo Cliente; la asociación
+ * es manual — la aprobación nunca crea el Trabajo automáticamente.
+ */
+@Entity(tableName = "job_quotes", indices = [Index("jobId"), Index("quoteId")])
+data class JobQuoteEntity(
+    @PrimaryKey val id: String,
+    val jobId: String,
+    val quoteId: String,
+    val relationType: String,
+    val createdAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Actividad subordinada al Trabajo con estado propio
+ * (PENDIENTE/EN_PROCESO/COMPLETADA) y orden de ejecución.
+ */
+@Entity(tableName = "job_activities", indices = [Index("jobId")])
+data class JobActivityEntity(
+    @PrimaryKey val id: String,
+    val jobId: String,
+    val description: String,
+    val status: String,
+    val position: Int,
+    val startedAt: Long? = null,
+    val finishedAt: Long? = null,
+    val notes: String = "",
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Material registrado en el Trabajo en modo descriptivo (F4): sin catálogo
+ * ni `material_id`, sin efecto en inventario ni movimientos. Los registros
+ * descriptivos no se reinterpretan retroactivamente en fases posteriores.
+ */
+@Entity(tableName = "job_materials", indices = [Index("jobId")])
+data class JobMaterialEntity(
+    @PrimaryKey val id: String,
+    val jobId: String,
+    val description: String,
+    val origin: String,
+    val quantity: String = "",
+    val unit: String = "",
+    val notes: String = "",
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+@Dao
+interface JobDao {
+    @Query("SELECT * FROM jobs WHERE userId = :userId ORDER BY createdAt DESC")
+    fun observeForUser(userId: String): Flow<List<JobEntity>>
+
+    @Query("SELECT * FROM jobs WHERE clientId = :clientId ORDER BY createdAt DESC")
+    fun observeForClient(clientId: String): Flow<List<JobEntity>>
+
+    @Query("SELECT * FROM jobs WHERE id = :id")
+    fun observeOne(id: String): Flow<JobEntity?>
+
+    @Query("SELECT * FROM jobs WHERE id = :id")
+    suspend fun get(id: String): JobEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM jobs WHERE provisionalNumber = :number)")
+    suspend fun provisionalNumberExists(number: String): Boolean
+
+    @Query("UPDATE jobs SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Query("UPDATE jobs SET officialNumber = :num, updatedAt = :now WHERE id = :id")
+    suspend fun updateOfficial(id: String, num: String?, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(job: JobEntity)
+}
+
+@Dao
+interface JobQuoteDao {
+    @Query("SELECT * FROM job_quotes WHERE jobId = :jobId ORDER BY createdAt")
+    fun observeForJob(jobId: String): Flow<List<JobQuoteEntity>>
+
+    @Query("SELECT * FROM job_quotes WHERE jobId = :jobId")
+    suspend fun forJob(jobId: String): List<JobQuoteEntity>
+
+    @Query("SELECT * FROM job_quotes WHERE quoteId = :quoteId")
+    suspend fun forQuote(quoteId: String): List<JobQuoteEntity>
+
+    @Query("SELECT * FROM job_quotes WHERE id = :id")
+    suspend fun get(id: String): JobQuoteEntity?
+
+    @Query("UPDATE job_quotes SET pendingSync = 0, serverVersion = :v WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(link: JobQuoteEntity)
+}
+
+@Dao
+interface JobActivityDao {
+    @Query("SELECT * FROM job_activities WHERE jobId = :jobId ORDER BY position, createdAt")
+    fun observeForJob(jobId: String): Flow<List<JobActivityEntity>>
+
+    @Query("SELECT * FROM job_activities WHERE jobId = :jobId ORDER BY position, createdAt")
+    suspend fun forJob(jobId: String): List<JobActivityEntity>
+
+    @Query("SELECT * FROM job_activities WHERE id = :id")
+    suspend fun get(id: String): JobActivityEntity?
+
+    @Query("UPDATE job_activities SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(activity: JobActivityEntity)
+}
+
+@Dao
+interface JobMaterialDao {
+    @Query("SELECT * FROM job_materials WHERE jobId = :jobId ORDER BY createdAt")
+    fun observeForJob(jobId: String): Flow<List<JobMaterialEntity>>
+
+    @Query("SELECT * FROM job_materials WHERE id = :id")
+    suspend fun get(id: String): JobMaterialEntity?
+
+    @Query("UPDATE job_materials SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(material: JobMaterialEntity)
+}
+
 // ---------- Cola durable de sincronización (F3) ----------
 
 /**
@@ -378,10 +551,12 @@ interface QuoteVersionDao {
         UserEntity::class, ProfileEntity::class, ClientEntity::class,
         ServiceEntity::class, RetentionConfigEntity::class,
         QuoteEntity::class, QuoteVersionEntity::class,
+        JobEntity::class, JobQuoteEntity::class,
+        JobActivityEntity::class, JobMaterialEntity::class,
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -392,6 +567,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun retentionDao(): RetentionDao
     abstract fun quoteDao(): QuoteDao
     abstract fun quoteVersionDao(): QuoteVersionDao
+    abstract fun jobDao(): JobDao
+    abstract fun jobQuoteDao(): JobQuoteDao
+    abstract fun jobActivityDao(): JobActivityDao
+    abstract fun jobMaterialDao(): JobMaterialDao
     abstract fun syncDao(): SyncDao
 
     companion object {
@@ -514,13 +693,69 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migración v4→v5 (F4): Trabajos locales — `jobs` con numeración
+         * provisional/oficial y dirección de ejecución propia, el vínculo
+         * N:N con Cotizaciones y los hijos subordinados (actividades y
+         * materiales descriptivos), todos sincronizables.
+         */
+        private val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `jobs` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `clientId` TEXT NOT NULL, `profileId` TEXT NOT NULL,
+                        `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL,
+                        `startDateEpochDay` INTEGER, `estimatedDateEpochDay` INTEGER,
+                        `deliveryDateEpochDay` INTEGER, `executionAddress` TEXT NOT NULL,
+                        `notes` TEXT NOT NULL, `clientNameSnapshot` TEXT NOT NULL,
+                        `archived` INTEGER NOT NULL, `officialNumber` TEXT,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_jobs_userId` ON `jobs` (`userId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_jobs_clientId` ON `jobs` (`clientId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_jobs_profileId` ON `jobs` (`profileId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_jobs_provisionalNumber` ON `jobs` (`provisionalNumber`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `job_quotes` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `jobId` TEXT NOT NULL,
+                        `quoteId` TEXT NOT NULL, `relationType` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_job_quotes_jobId` ON `job_quotes` (`jobId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_job_quotes_quoteId` ON `job_quotes` (`quoteId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `job_activities` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `jobId` TEXT NOT NULL,
+                        `description` TEXT NOT NULL, `status` TEXT NOT NULL,
+                        `position` INTEGER NOT NULL, `startedAt` INTEGER,
+                        `finishedAt` INTEGER, `notes` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_job_activities_jobId` ON `job_activities` (`jobId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `job_materials` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `jobId` TEXT NOT NULL,
+                        `description` TEXT NOT NULL, `origin` TEXT NOT NULL,
+                        `quantity` TEXT NOT NULL, `unit` TEXT NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_job_materials_jobId` ON `job_materials` (`jobId`)")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "cotixgo.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build().also { instance = it }
             }
     }

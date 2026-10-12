@@ -1,0 +1,25 @@
+== CotixGo F4 — verificación Android (datos sintéticos) ==
+Fecha: 2026-10-12 14:48 HPS
+JDK: 21 (JAVA_HOME explícito) · Dispositivo: Pixel_8 AVD (Android 16, emulator-5554)
+Backend: PHP 8.4 'php -S 0.0.0.0:8080' + MariaDB 13.0 local (cotixgo_dev)
+
+== testDebugUnitTest (JVM) ==
+testsuite name="com.cotixgo.app.ApiErrorParseTest" tests="4" skipped="0" failures="0" errors="0"
+testsuite name="com.cotixgo.app.CalcVectorTest" tests="4" skipped="0" failures="0" errors="0"
+testsuite name="com.cotixgo.app.DomainTest" tests="8" skipped="0" failures="0" errors="0"
+testsuite name="com.cotixgo.app.QuoteDomainTest" tests="5" skipped="0" failures="0" errors="0"
+
+== connectedDebugAndroidTest (instrumentadas, emulador) ==
+Suite total: 39 tests, 0 failures, 0 errors, 0 skipped
+  JobRepositoryTest: 8 · QuoteRepositoryTest: 12 · SyncE2eTest: 19
+
+Casos F4 ejecutados (instrumentadas):
+testcase name="createJob_borrador_conNumeroProvisionalTR"
+testcase name="job_scheduled_getsTRNumber_childrenSync"
+testcase name="jobConflict_bothCopies_keepLocalApplies"
+testcase name="job_programado_sinDireccion_servidorRechaza"
+testcase name="jobRestore_cleanInstall_bringsChildrenAndNumber"
+
+== Builds ==
+:app:assembleDebug ......... BUILD SUCCESSFUL
+:app:assembleRelease ....... BUILD SUCCESSFUL (lintVitalRelease sin errores)

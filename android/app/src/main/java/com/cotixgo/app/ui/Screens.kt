@@ -97,6 +97,7 @@ fun DashboardScreen(
     boundEmail: String?,
     onNewClient: () -> Unit,
     onNewQuote: () -> Unit,
+    onNewJob: () -> Unit,
     onOpenQuote: (String) -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -134,10 +135,10 @@ fun DashboardScreen(
                     Text("+ Cotización")
                 }
             }
-            // Las demás acciones del dashboard llegan con sus fases.
-            OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onNewJob, modifier = Modifier.fillMaxWidth()) {
                 Text("+ Trabajo")
             }
+            // Las demás acciones del dashboard llegan con sus fases.
             OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
                 Text("+ Cuenta de Cobro")
             }
@@ -225,6 +226,7 @@ fun ClientDetailScreen(
     client: ClientEntity?,
     onEdit: () -> Unit,
     onToggleArchive: (Boolean) -> Unit,
+    onNewJob: () -> Unit,
     onBack: () -> Unit,
 ) {
     if (client == null) {
@@ -252,6 +254,9 @@ fun ClientDetailScreen(
                 Text("Archivado", color = MaterialTheme.colorScheme.secondary)
             }
             Spacer(Modifier.height(8.dp))
+            if (!client.archived) {
+                Button(onClick = onNewJob) { Text("+ Trabajo") }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = onEdit) { Text("Editar") }
                 OutlinedButton(onClick = { onToggleArchive(!client.archived) }) {

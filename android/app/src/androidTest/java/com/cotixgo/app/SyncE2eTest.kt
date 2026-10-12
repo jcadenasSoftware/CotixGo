@@ -5,12 +5,16 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.cotixgo.app.core.ConceptType
 import com.cotixgo.app.core.Ids
+import com.cotixgo.app.core.MaterialOrigin
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.data.AppDatabase
 import com.cotixgo.app.data.AppRepository
 import com.cotixgo.app.data.AuthRepository
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.data.EntityTypes
+import com.cotixgo.app.data.JobActivityInput
+import com.cotixgo.app.data.JobInput
+import com.cotixgo.app.data.JobMaterialInput
 import com.cotixgo.app.data.QuoteInput
 import com.cotixgo.app.data.QuoteLineInput
 import com.cotixgo.app.data.RetentionInput
@@ -543,5 +547,171 @@ class SyncE2eTest {
         sync.pullAll()
         assertEquals("APROBADA", db.quoteDao().get(aprobada)!!.status)
         assertEquals("CANCELADA", db.quoteDao().get(cancelada)!!.status)
+    }
+
+    // ---------- F4 — Trabajos ----------
+
+    private suspend fun seedJobClient(): com.cotixgo.app.data.ClientEntity {
+        repo.saveClient(
+            ClientInput(type = com.cotixgo.app.core.ClientType.PERSONA, name = "Cliente Trabajo"),
+        )
+        return db.clientDao().observeForUser(session.accountUserId!!).first().first()
+    }
+
+    private suspend fun profileId(): String =
+        db.profileDao().observeForUser(session.accountUserId!!).first().first().id
+
+    /** Flujo completo: BORRADOR → PROGRAMADO con número oficial TR- y
+     *  sincronización de actividad + material + vínculo a APROBADA. */
+    @Test
+    fun job_scheduled_getsTRNumber_childrenSync() = runBlocking {
+        val client = seedJobClient()
+        val profileId = profileId()
+        val jobId = repo.saveJob(
+            JobInput(
+                clientId = client.id, profileId = profileId,
+                startDateEpochDay = LocalDate.now().toEpochDay(),
+                executionAddress = "Calle Sintética 1-2",
+            ),
+        )!!
+        val activityId = repo.saveJobActivity(JobActivityInput(jobId = jobId, description = "Instalación"))!!
+        repo.saveJobMaterial(
+            JobMaterialInput(jobId = jobId, description = "Cable", origin = MaterialOrigin.CLIENTE,
+                quantity = "5", unit = "m"),
+        )
+        // La cotización vinculable debe ser del mismo Cliente del Trabajo.
+        repo.saveService(ServiceInput(profileId = profileId, name = "Servicio E2E", suggestedPrice = "1000"))
+        val quoteId = repo.saveQuote(
+            QuoteInput(
+                clientId = client.id, profileId = profileId,
+                issueDateEpochDay = LocalDate.now().toEpochDay(), validityDays = 15,
+                currency = "COP",
+                lines = listOf(
+                    QuoteLineInput(
+                        conceptType = ConceptType.SERVICIO, description = "Servicio E2E",
+                        quantity = "1", unit = "und", unitPrice = "1000",
+                    ),
+                ),
+                retentions = emptyList(),
+            ),
+        )!!
+        repo.emitQuote(quoteId)
+        assertTrue(repo.setQuoteStatus(quoteId, QuoteStatus.APROBADA))
+        assertTrue(repo.linkQuoteToJob(jobId, quoteId))
+
+        // BORRADOR sincroniza sin número oficial.
+        sync.syncNow()
+        val borrador = db.jobDao().get(jobId)!!
+        assertTrue(!borrador.pendingSync)
+        assertNull(borrador.officialNumber)
+
+        // PROGRAMADO: el backend asigna TR-AAAAMM-NNN.
+        assertNull(repo.setJobStatus(jobId, com.cotixgo.app.core.JobStatus.PROGRAMADO))
+        sync.syncNow()
+        val job = db.jobDao().get(jobId)!!
+        assertNotNull(job.officialNumber)
+        assertTrue(job.officialNumber!!.startsWith("TR-"))
+        assertTrue(!job.pendingSync)
+        assertEquals(0, db.syncDao().pendingCount())
+        assertTrue(!db.jobActivityDao().get(activityId)!!.pendingSync)
+        assertTrue(db.jobQuoteDao().forJob(jobId).all { !it.pendingSync })
+    }
+
+    /** PROGRAMADO sin dirección: el servidor rechaza; la cola pausa la op. */
+    @Test
+    fun job_programado_sinDireccion_servidorRechaza() = runBlocking {
+        val client = seedJobClient()
+        val jobId = repo.saveJob(
+            JobInput(clientId = client.id, profileId = profileId()),
+        )!!
+        // La regla local ya la impide; forzamos el push directo para probar el servidor.
+        // Primero se sincronizan Cliente/Perfil/Trabajo (BORRADOR) para que la
+        // op llegue a la validación de transición y no a la de dependencias.
+        sync.syncNow()
+        val job = db.jobDao().get(jobId)!!
+        assertTrue(!job.pendingSync)
+        val res = api.push(
+            session.deviceId,
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.JOB)
+                    put("entity_id", jobId)
+                    put("type", "upsert")
+                    put("base_server_version", job.serverVersion)
+                    put("payload", SyncPayloads.job(job.copy(status = "PROGRAMADO")))
+                },
+            ),
+        )
+        val r = res["results"]!!.jsonArray[0].jsonObject
+        assertEquals("REJECTED", r.str("status"))
+        assertEquals("VALIDATION_ERROR", r.str("code"))
+    }
+
+    /** Conflicto en Trabajo: ambas copias preservadas, resolución del usuario. */
+    @Test
+    fun jobConflict_bothCopies_keepLocalApplies() = runBlocking {
+        val client = seedJobClient()
+        val jobId = repo.saveJob(
+            JobInput(clientId = client.id, profileId = profileId(), notes = "base"),
+        )!!
+        sync.syncNow()
+        val job = db.jobDao().get(jobId)!!
+
+        api.push(
+            "e2e-other-device",
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.JOB)
+                    put("entity_id", jobId)
+                    put("type", "upsert")
+                    put("base_server_version", job.serverVersion)
+                    put("payload", SyncPayloads.job(job.copy(notes = "Remoto gana")))
+                },
+            ),
+        )
+        repo.saveJob(
+            JobInput(clientId = client.id, profileId = profileId(), notes = "Local gana"),
+            existingId = jobId,
+        )
+        sync.syncNow()
+
+        val conflict = db.syncDao().observeConflicts().first().first { it.entityId == jobId }
+        assertEquals("Local gana", db.jobDao().get(jobId)!!.notes) // sin sobrescritura
+        sync.resolveKeepLocal(conflict.id)
+        sync.syncNow()
+        val final = db.jobDao().get(jobId)!!
+        assertEquals("Local gana", final.notes)
+        assertTrue(!final.pendingSync)
+    }
+
+    /** Restauración en instalación limpia: Trabajo + hijos + número oficial. */
+    @Test
+    fun jobRestore_cleanInstall_bringsChildrenAndNumber() = runBlocking {
+        val client = seedJobClient()
+        val jobId = repo.saveJob(
+            JobInput(clientId = client.id, profileId = profileId(),
+                executionAddress = "Obra 9"),
+        )!!
+        repo.saveJobActivity(JobActivityInput(jobId = jobId, description = "A1"))
+        repo.saveJobMaterial(
+            JobMaterialInput(jobId = jobId, description = "M1", origin = MaterialOrigin.PROFESIONAL),
+        )
+        repo.setJobStatus(jobId, com.cotixgo.app.core.JobStatus.PROGRAMADO)
+        sync.syncNow()
+        val official = db.jobDao().get(jobId)!!.officialNumber
+        assertNotNull(official)
+
+        sync.wipeLocalData()
+        session.setCursor(0)
+        sync.pullAll()
+        val restored = db.jobDao().get(jobId)
+        assertNotNull(restored)
+        assertEquals(official, restored!!.officialNumber)
+        assertEquals("PROGRAMADO", restored.status)
+        assertTrue(!restored.pendingSync)
+        assertEquals(1, db.jobActivityDao().forJob(jobId).size)
+        assertEquals(1, db.jobMaterialDao().observeForJob(jobId).first().size)
     }
 }
