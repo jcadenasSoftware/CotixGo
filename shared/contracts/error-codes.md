@@ -44,7 +44,7 @@ Dentro de `results[]`, cada operación devuelve `status` (`APPLIED` | `REJECTED`
 |---|---|
 | `INVALID_TRANSITION` | Transición de estado no permitida desde el estado persistido actual. |
 | `DEPENDENCY` | La entidad referenciada por la operación aún no existe en el servidor (falta una operación previa). |
-| `FORBIDDEN_ENTITY` | El `entity_id` pertenece a otra cuenta de usuario. |
+| `FORBIDDEN_ENTITY` | El `entity_id` —o una entidad referenciada en el payload— pertenece a otra cuenta de usuario. |
 | `STALE_BASE_VERSION` | `base_server_version` no coincide con la versión vigente del servidor. |
 | `VERSION_CONFLICT` | Versión de Cotización concurrente conservada; el documento queda marcado para resolución. |
 | `CONFLICT_BLOCKED` | Transición hacia `EMITIDA`/`APROBADA` bloqueada mientras el documento tiene un conflicto de versiones sin resolver. |
@@ -53,7 +53,7 @@ Dentro de `results[]`, cada operación devuelve `status` (`APPLIED` | `REJECTED`
 ## Reglas
 
 - Los clientes deben tratar `code` como contrato estable y `message` como texto variable.
-- Errores de sincronización deben incluir `details.entity_id` y `details.operation_id` cuando apliquen.
+- Los errores HTTP de sincronización usan `details.entity_id`/`details.operation_id` cuando apliquen; los resultados por operación de `/sync/push` llevan `operation_id` y `entity_id` como campos propios del resultado.
 - Un error nunca deja al cliente con estado ambiguo: la operación fue aceptada, rechazada o marcada como conflicto.
 
 ### Pagos y saldos (D13-B)

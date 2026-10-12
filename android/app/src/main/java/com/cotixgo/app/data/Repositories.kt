@@ -286,10 +286,18 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         } ?: QuoteStatus.BORRADOR
         if (existing != null && !QuoteTransitions.isEditable(effective)) {
             if (effective.name != existing.status) {
-                // Materializa el vencimiento derivado de forma segura.
-                db.quoteDao().upsert(
-                    existing.copy(status = effective.name, updatedAt = now),
-                )
+                // Materializa el vencimiento derivado de forma segura. La
+                // matriz del servidor solo admite EMITIDA→VENCIDA: desde
+                // otros estados el vencimiento queda como estado local.
+                val vencida = existing.copy(status = effective.name, updatedAt = now,
+                    pendingSync = existing.status == "EMITIDA")
+                db.withTransaction {
+                    db.quoteDao().upsert(vencida)
+                    if (existing.status == "EMITIDA") {
+                        sync?.enqueue(EntityTypes.QUOTE, vencida.id,
+                            SyncPayloads.quote(vencida), existing.serverVersion)
+                    }
+                }
             }
             return null
         }
@@ -356,8 +364,20 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         )
         if (effective.name != quote.status) {
             // Materializa el vencimiento derivado en la siguiente escritura.
-            quote = quote.copy(status = effective.name, updatedAt = nowEpochMillis())
-            db.quoteDao().upsert(quote)
+            // Solo EMITIDA→VENCIDA es transición válida en el servidor;
+            // desde otros estados el vencimiento queda como estado local.
+            val serverVisible = quote.status == "EMITIDA"
+            quote = quote.copy(status = effective.name, updatedAt = nowEpochMillis(),
+                pendingSync = quote.pendingSync || serverVisible)
+            if (serverVisible) {
+                db.withTransaction {
+                    db.quoteDao().upsert(quote)
+                    sync?.enqueue(EntityTypes.QUOTE, quote.id,
+                        SyncPayloads.quote(quote), quote.serverVersion)
+                }
+            } else {
+                db.quoteDao().upsert(quote)
+            }
         }
         if (!QuoteTransitions.canTransition(effective, to)) return false
         val updated = quote.copy(
@@ -404,9 +424,15 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         )
         if (effective != QuoteStatus.VENCIDA) return null
         if (effective.name != source.status) {
-            db.quoteDao().upsert(
-                source.copy(status = effective.name, updatedAt = nowEpochMillis()),
-            )
+            val vencida = source.copy(status = effective.name, updatedAt = nowEpochMillis(),
+                pendingSync = source.status == "EMITIDA")
+            db.withTransaction {
+                db.quoteDao().upsert(vencida)
+                if (source.status == "EMITIDA") {
+                    sync?.enqueue(EntityTypes.QUOTE, vencida.id,
+                        SyncPayloads.quote(vencida), source.serverVersion)
+                }
+            }
         }
         val latest = db.quoteVersionDao().getLatest(id) ?: return null
         val old = SnapshotJson.decodeQuote(latest.snapshotJson)

@@ -78,7 +78,7 @@ function processOperation(PDO $pdo, string $userId, string $deviceId, array $op)
     $supersedes = $op['supersedes'] ?? null;
 
     if ($opId === '' || !in_array($type, ENTITY_TYPES, true) || $entityId === '' || !is_array($payload)) {
-        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Operación incompleta o tipo de entidad desconocido.');
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Operación incompleta o tipo de entidad desconocido.') + ['entity_id' => $entityId];
     }
 
     $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE);
@@ -89,33 +89,39 @@ function processOperation(PDO $pdo, string $userId, string $deviceId, array $op)
     $stmt->execute([$opId, $userId]);
     if (($prev = $stmt->fetch()) !== false) {
         if ($prev['payload_hash'] === $payloadHash) {
-            return json_decode($prev['result_json'], true);
+            $stored = json_decode($prev['result_json'], true);
+            $stored['entity_id'] = $entityId;
+            return $stored;
         }
         return result($opId, 'REJECTED', 'IDEMPOTENCY_KEY_REUSED',
-            'El operation_id ya fue usado con un payload distinto.');
+            'El operation_id ya fue usado con un payload distinto.') + ['entity_id' => $entityId];
     }
 
-    $res = applyOperation($pdo, $userId, $deviceId, $opId, $type, $entityId, $opType, $payload, $base, $supersedes);
-
-    // Idempotencia para resultados definitivos (APPLIED/REJECTED): mismo
-    // operation_id + payload → resultado memorizado; payload distinto →
-    // IDEMPOTENCY_KEY_REUSED. Un CONFLICT no produjo cambio y la misma
-    // operación puede reintentarse (base corregida tras resolución del
-    // usuario): debe reevaluarse contra el estado vigente, no memorizarse.
-    if (in_array($res['status'] ?? '', ['APPLIED', 'REJECTED'], true)) {
-        $pdo->prepare('INSERT INTO processed_operations (operation_id, user_id, payload_hash, result_json, processed_at) VALUES (?, ?, ?, ?, ?)')
-            ->execute([$opId, $userId, $payloadHash, json_encode($res, JSON_UNESCAPED_UNICODE), nowUtc()]);
-    }
+    $res = applyOperation($pdo, $userId, $deviceId, $opId, $type, $entityId, $opType, $payload, $base, $supersedes, $payloadHash);
+    $res['entity_id'] = $entityId;
     return $res;
 }
 
 function applyOperation(PDO $pdo, string $userId, string $deviceId, string $opId,
                         string $type, string $entityId, string $opType,
-                        array $payload, int $base, $supersedes): array
+                        array $payload, int $base, $supersedes, string $payloadHash): array
 {
     $pdo->beginTransaction();
     try {
         $res = applyOperationTx($pdo, $userId, $deviceId, $opId, $type, $entityId, $opType, $payload, $base, $supersedes);
+
+        // Idempotencia para resultados definitivos (APPLIED/REJECTED): mismo
+        // operation_id + payload → resultado memorizado; payload distinto →
+        // IDEMPOTENCY_KEY_REUSED. Un CONFLICT no produjo cambio y la misma
+        // operación puede reintentarse (base corregida tras resolución del
+        // usuario): debe reevaluarse contra el estado vigente, no memorizarse.
+        // La memorización se confirma en la misma transacción que la
+        // mutación: un replay tras caída del proceso devuelve el resultado
+        // almacenado en lugar de reevaluar sobre el estado ya modificado.
+        if (in_array($res['status'] ?? '', ['APPLIED', 'REJECTED'], true)) {
+            $pdo->prepare('INSERT INTO processed_operations (operation_id, user_id, payload_hash, result_json, processed_at) VALUES (?, ?, ?, ?, ?)')
+                ->execute([$opId, $userId, $payloadHash, json_encode($res, JSON_UNESCAPED_UNICODE), nowUtc()]);
+        }
         $pdo->commit();
         return $res;
     } catch (Throwable $e) {
@@ -134,11 +140,18 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
         return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', 'La entidad pertenece a otra cuenta.');
     }
 
-    // Dependencias: las referencias del payload deben existir en el servidor.
+    // Dependencias: las referencias del payload deben existir en el servidor
+    // y pertenecer a la misma cuenta (una referencia a entidad ajena se
+    // rechaza igual que usar la entidad misma desde otra cuenta).
     foreach (DEPENDENCIES[$type] ?? [] as [$depType, $field]) {
         $depId = (string) ($payload[$field] ?? '');
-        if ($depId !== '' && entityRow($pdo, $depType, $depId) === null) {
+        if ($depId === '') continue;
+        $dep = entityRow($pdo, $depType, $depId);
+        if ($dep === null) {
             return result($opId, 'REJECTED', 'DEPENDENCY', "Falta la entidad $depType $depId referenciada.");
+        }
+        if ($dep['user_id'] !== $userId) {
+            return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', "La entidad $depType referenciada pertenece a otra cuenta.");
         }
     }
 
@@ -204,10 +217,13 @@ function applyQuote(PDO $pdo, string $userId, string $deviceId, string $opId,
             "Transición no permitida $oldStatus → $newStatus; estado actual $oldStatus.",
             (int) $current['server_version'], json_decode($current['payload'], true));
     }
-    // Documento en conflicto de versiones: bloquear emisión/aprobación.
+    // Documento en conflicto de versiones: bloquear cualquier transición
+    // hacia un estado numerado (emisiones y aprobaciones nuevas) mientras
+    // exista conflicto; el número oficial y los snapshots previos quedan
+    // intactos hasta la resolución del usuario.
     if ((int) $current['has_version_conflict'] === 1
         && in_array($newStatus, QUOTE_NUMBERED_STATUSES, true)
-        && !in_array($oldStatus, QUOTE_NUMBERED_STATUSES, true)) {
+        && $newStatus !== $oldStatus) {
         return result($opId, 'REJECTED', 'CONFLICT_BLOCKED',
             'La cotización tiene versiones en conflicto; resuélvelas antes de emitir o aprobar.',
             (int) $current['server_version']);

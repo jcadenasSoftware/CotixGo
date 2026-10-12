@@ -334,12 +334,14 @@ class SyncRepository(
 
         if (type == EntityTypes.QUOTE_VERSION) {
             val quoteId = payload.str("quoteId") ?: return
-            val version = payload.intOr("version")
-            if (db.quoteVersionDao().getByVersion(quoteId, version) == null) {
+            // Dedupe por entity_id: una versión remota concurrente con el
+            // mismo número cliente se conserva como copia separada (D3).
+            if (db.quoteVersionDao().get(id) == null) {
                 db.quoteVersionDao().insert(
                     QuoteVersionEntity(
-                        id = id, quoteId = quoteId, version = version,
+                        id = id, quoteId = quoteId, version = payload.intOr("version"),
                         snapshotJson = payload.str("snapshotJson") ?: "",
+                        serverOrder = c.intOr("server_order").takeIf { it > 0 },
                         createdAt = payload.longOr("createdAt") ?: now,
                     ),
                 )
@@ -395,18 +397,37 @@ class SyncRepository(
     private suspend fun upsertFromPayload(type: String, id: String, p: JsonObject, sv: Int) {
         val now = nowEpochMillis()
         when (type) {
-            EntityTypes.USER -> db.userDao().insert(
-                UserEntity(
-                    id = p.str("id") ?: id,
-                    name = p.str("name") ?: "",
-                    mainCurrency = p.str("mainCurrency"),
-                    email = p.str("email"),
-                    createdAt = p.longOr("createdAt") ?: now,
-                    updatedAt = now,
-                    pendingSync = false,
-                    serverVersion = sv,
-                ),
-            )
+            EntityTypes.USER -> {
+                // El usuario local siempre lleva el id canónico tras la
+                // vinculación; actualizar la fila existente en vez de
+                // insertar por PK remota (evita usuarios duplicados).
+                val cur = db.userDao().get()
+                if (cur != null) {
+                    db.userDao().insert(
+                        cur.copy(
+                            name = p.str("name") ?: cur.name,
+                            mainCurrency = p.str("mainCurrency") ?: cur.mainCurrency,
+                            email = p.str("email") ?: cur.email,
+                            updatedAt = now,
+                            pendingSync = false,
+                            serverVersion = sv,
+                        ),
+                    )
+                } else {
+                    db.userDao().insert(
+                        UserEntity(
+                            id = p.str("id") ?: id,
+                            name = p.str("name") ?: "",
+                            mainCurrency = p.str("mainCurrency"),
+                            email = p.str("email"),
+                            createdAt = p.longOr("createdAt") ?: now,
+                            updatedAt = now,
+                            pendingSync = false,
+                            serverVersion = sv,
+                        ),
+                    )
+                }
+            }
             EntityTypes.PROFILE -> db.profileDao().insert(
                 ProfileEntity(
                     id = p.str("id") ?: id, userId = p.str("userId") ?: "",
@@ -509,14 +530,28 @@ class SyncRepository(
                 db.openHelper.writableDatabase.execSQL("UPDATE services SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE retention_configs SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE quotes SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
-                // Regenerar operaciones pendientes con identidad canónica.
+                // Regenerar operaciones pendientes con identidad canónica:
+                // reescribe userId en el payload y, para la entidad user,
+                // también entityId y payload.id hacia el id canónico.
                 val pending = db.syncDao().pendingOps()
                 val now = nowEpochMillis()
                 for (op in pending) {
-                    val rewritten = op.payloadJson.replace("\"userId\":\"$oldId\"", "\"userId\":\"$userId\"")
+                    val obj = json.parseToJsonElement(op.payloadJson).jsonObject
+                    val isUserOp = op.entityType == EntityTypes.USER
+                    val rewritten = buildJsonObject {
+                        for ((k, v) in obj) put(
+                            k,
+                            when {
+                                k == "userId" && v.jsonPrimitive.content == oldId -> kotlinx.serialization.json.JsonPrimitive(userId)
+                                isUserOp && k == "id" -> kotlinx.serialization.json.JsonPrimitive(userId)
+                                else -> v
+                            },
+                        )
+                    }.toString()
                     db.syncDao().insertOp(
                         op.copy(
                             opId = Ids.new(),
+                            entityId = if (isUserOp) userId else op.entityId,
                             payloadJson = rewritten,
                             supersedesOpId = op.opId,
                             createdAt = now,
@@ -526,10 +561,14 @@ class SyncRepository(
                     db.syncDao().updateOpResult(op.opId, "DONE", null, "SUPERSEDED", now)
                 }
             } else if (localUser == null) {
+                // Fila local para la UI tras login en instalación limpia:
+                // pendingSync=false evita un conflicto fantasma cuando el
+                // pull entregue la entidad user remota (si existe).
                 db.userDao().insert(
                     UserEntity(
                         id = userId, name = email.substringBefore('@'), email = email,
                         createdAt = nowEpochMillis(), updatedAt = nowEpochMillis(),
+                        pendingSync = false,
                     ),
                 )
             } else {
@@ -580,14 +619,26 @@ class SyncRepository(
 
     // ---------- Resolución de conflictos (decisión del usuario) ----------
 
-    /** El usuario conserva su copia local: la operación reintenta con la base actual del servidor. */
+    /**
+     * El usuario conserva su copia local: la operación pausada queda
+     * sustituida por una NUEVA (operation_id propio, supersedes → op
+     * original, base corregida al servidor remoto). Así una operación
+     * corregida nunca reutiliza el mismo operation_id (regla aprobada).
+     */
     suspend fun resolveKeepLocal(conflictId: Long) {
         val conflict = db.syncDao().observeConflicts().first().firstOrNull { it.id == conflictId } ?: return
         val now = nowEpochMillis()
         db.withTransaction {
-            pendingOpIdFor(conflict)?.let { opId ->
-                db.syncDao().updateOpBase(opId, conflict.remoteServerVersion, now)
-                db.syncDao().updateOpState(opId, "PENDING", now)
+            val paused = db.syncDao().pendingOpsForEntity(conflict.entityType, conflict.entityId).firstOrNull()
+            if (paused != null) {
+                db.syncDao().updateOpResult(paused.opId, "DONE", null, "SUPERSEDED", now)
+                enqueue(
+                    paused.entityType, paused.entityId,
+                    json.parseToJsonElement(paused.payloadJson).jsonObject,
+                    baseServerVersion = conflict.remoteServerVersion,
+                    opType = paused.opType,
+                    supersedes = paused.opId,
+                )
             }
             db.syncDao().resolveConflict(conflictId)
         }
@@ -620,10 +671,12 @@ class SyncRepository(
     /**
      * Resolución de conflicto de versiones de Cotización (D3): crea una
      * versión NUEVA con el contenido elegido; snapshots previos intactos.
+     * `keepVersionRowId` es el id de la FILA elegida — versiones
+     * concurrentes pueden compartir número y distinguirse por id.
      */
-    suspend fun resolveQuoteVersions(quoteId: String, keepVersion: Int): Boolean {
+    suspend fun resolveQuoteVersions(quoteId: String, keepVersionRowId: String): Boolean {
         val quote = db.quoteDao().get(quoteId) ?: return false
-        val kept = db.quoteVersionDao().getByVersion(quoteId, keepVersion) ?: return false
+        val kept = db.quoteVersionDao().get(keepVersionRowId) ?: return false
         val latest = db.quoteVersionDao().getLatest(quoteId) ?: return false
         val newVersion = latest.version + 1
         val now = nowEpochMillis()

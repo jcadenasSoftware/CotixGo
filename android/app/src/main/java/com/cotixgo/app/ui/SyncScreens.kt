@@ -261,21 +261,32 @@ fun ConflictsScreen(
 fun ResolveVersionsScreen(
     quoteNumber: String,
     versions: List<QuoteVersionEntity>,
-    onPick: (Int) -> Unit,
+    onPick: (versionRowId: String) -> Unit,
     onBack: () -> Unit,
 ) {
+    val ordered = versions.sortedWith(
+        compareByDescending<QuoteVersionEntity> { it.version }
+            .thenByDescending { it.serverOrder ?: 0 }
+            .thenByDescending { it.createdAt },
+    )
+    val duplicatedNumbers = versions.groupingBy { it.version }.eachCount().filter { it.value > 1 }.keys
     Scaffold(topBar = { TopAppBar(title = { Text("Resolver versiones · $quoteNumber") }) }) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(versions.sortedByDescending { it.version }) { v ->
+            items(ordered) { v ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Versión ${v.version}", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Versión ${v.version}" +
+                                (if (v.version in duplicatedNumbers && v.serverOrder != null)
+                                    " · orden servidor ${v.serverOrder}" else ""),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                         Text(v.snapshotJson.take(200), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.secondary)
-                        Button(onClick = { onPick(v.version) }) { Text("Conservar esta versión") }
+                        Button(onClick = { onPick(v.id) }) { Text("Conservar esta versión") }
                     }
                 }
             }

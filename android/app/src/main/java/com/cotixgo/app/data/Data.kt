@@ -161,13 +161,17 @@ data class QuoteEntity(
  */
 @Entity(
     tableName = "quote_versions",
-    indices = [Index("quoteId"), Index(value = ["quoteId", "version"], unique = true)],
+    // (quoteId, version) no es único: versiones concurrentes de otros
+    // dispositivos con el mismo número se conservan como copias separadas
+    // (F3·D3); serverOrder expone la secuencia autoritativa del servidor.
+    indices = [Index("quoteId"), Index(value = ["quoteId", "version"])],
 )
 data class QuoteVersionEntity(
     @PrimaryKey val id: String,
     val quoteId: String,
     val version: Int,
     val snapshotJson: String,
+    val serverOrder: Int? = null,
     val createdAt: Long,
 )
 
@@ -263,17 +267,11 @@ interface SyncDao {
     @Query("UPDATE sync_operations SET state = :state, updatedAt = :now WHERE opId = :opId")
     suspend fun updateOpState(opId: String, state: String, now: Long)
 
-    @Query("UPDATE sync_operations SET baseServerVersion = :base, updatedAt = :now WHERE opId = :opId")
-    suspend fun updateOpBase(opId: String, base: Int, now: Long)
-
     @Query("UPDATE sync_operations SET baseServerVersion = :base, updatedAt = :now WHERE entityType = :type AND entityId = :id AND state IN ('PENDING','RETRY')")
     suspend fun rebasePendingOps(type: String, id: String, base: Int, now: Long)
 
     @Query("SELECT * FROM sync_conflicts WHERE resolved = 0 ORDER BY detectedAt ASC")
     fun observeConflicts(): Flow<List<SyncConflictEntity>>
-
-    @Query("SELECT * FROM sync_conflicts WHERE entityType = :type AND entityId = :id AND resolved = 0 ORDER BY detectedAt DESC LIMIT 1")
-    suspend fun conflictFor(type: String, id: String): SyncConflictEntity?
 
     @Query("UPDATE sync_conflicts SET resolved = 1 WHERE id = :id")
     suspend fun resolveConflict(id: Long)
@@ -283,9 +281,6 @@ interface SyncDao {
 
     @Query("INSERT OR REPLACE INTO sync_meta (`key`, value) VALUES (:key, :value)")
     suspend fun putMeta(key: String, value: String)
-
-    @Query("SELECT * FROM sync_operations WHERE state IN ('PENDING','RETRY') ORDER BY seq ASC")
-    suspend fun pendingOpsRaw(): List<SyncOperationEntity>
 }
 
 @Dao
@@ -371,8 +366,8 @@ interface QuoteVersionDao {
     @Query("SELECT * FROM quote_versions WHERE quoteId = :quoteId ORDER BY version DESC LIMIT 1")
     suspend fun getLatest(quoteId: String): QuoteVersionEntity?
 
-    @Query("SELECT * FROM quote_versions WHERE quoteId = :quoteId AND version = :version LIMIT 1")
-    suspend fun getByVersion(quoteId: String, version: Int): QuoteVersionEntity?
+    @Query("SELECT * FROM quote_versions WHERE id = :id")
+    suspend fun get(id: String): QuoteVersionEntity?
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(version: QuoteVersionEntity)
@@ -386,7 +381,7 @@ interface QuoteVersionDao {
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -506,13 +501,27 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migración v3→v4: quote_versions admite versiones concurrentes del
+         * mismo número (copia remota preservada, F3·D3) y registra el
+         * server_order autoritativo fuera del snapshot.
+         */
+        private val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("DROP INDEX IF EXISTS `index_quote_versions_quoteId_version`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_quote_versions_quoteId_version` ON `quote_versions` (`quoteId`, `version`)")
+                db.execSQL("ALTER TABLE quote_versions ADD COLUMN serverOrder INTEGER")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "cotixgo.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .build().also { instance = it }
             }
     }
 }

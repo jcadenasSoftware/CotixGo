@@ -25,7 +25,10 @@ class AuthRepository(
     suspend fun register(name: String, email: String, password: String): String? {
         if (session.isBound) return "Ya hay una cuenta vinculada. Usa Cambiar de cuenta."
         return try {
-            val res = api.register(name.trim(), email.trim(), password)
+            val res = api.register(
+                name.trim(), email.trim(), password,
+                localUserId = db.userDao().get()?.id,
+            )
             sync.bindAccount(
                 res.str("user_id") ?: return "Respuesta inválida del servidor.",
                 email.trim(),
@@ -102,9 +105,10 @@ class AuthRepository(
         val userId = res.str("user_id") ?: return "Respuesta inválida del servidor."
         val token = res.str("token") ?: return "Respuesta inválida del servidor."
         if (userId == session.accountUserId) return "La cuenta nueva es la misma que la actual."
-        // 4. Limpiar y vincular.
-        sync.wipeLocalData()
+        // 4. Cerrar sesión antes de limpiar (una sincronización concurrente
+        // no debe volver a persistir la sesión vieja sobre la copia limpia).
         session.clearSession()
+        sync.wipeLocalData()
         sync.bindAccount(userId, newEmail.trim(), token)
         return null
     }

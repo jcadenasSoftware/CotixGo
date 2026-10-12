@@ -3,6 +3,7 @@ package com.cotixgo.app.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.cotixgo.app.BuildConfig
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.data.AppRepository
@@ -139,7 +140,13 @@ class AppViewModel(
     }
 
     fun setBaseUrl(url: String) {
-        sync.session.apiBaseUrl = url.trim()
+        val u = url.trim()
+        if (!BuildConfig.DEBUG && u.startsWith("http://", ignoreCase = true)) {
+            // Release no admite cleartext: HTTPS obligatorio (decisión F3).
+            lastSyncMessage.value = "HTTPS obligatorio: HTTP en claro solo está permitido en desarrollo."
+            return
+        }
+        sync.session.apiBaseUrl = u
         apiBaseUrl.value = sync.session.apiBaseUrl
     }
 
@@ -155,9 +162,9 @@ class AppViewModel(
         viewModelScope.launch { sync.retryPaused(opId); syncNow() }
     }
 
-    fun resolveQuoteVersions(quoteId: String, keepVersion: Int, onDone: (Boolean) -> Unit) {
+    fun resolveQuoteVersions(quoteId: String, keepVersionRowId: String, onDone: (Boolean) -> Unit) {
         viewModelScope.launch {
-            onDone(sync.resolveQuoteVersions(quoteId, keepVersion))
+            onDone(sync.resolveQuoteVersions(quoteId, keepVersionRowId))
             syncNow()
         }
     }

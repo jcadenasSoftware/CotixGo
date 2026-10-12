@@ -88,8 +88,10 @@ paths:
       description: >-
         Mecanismo local de prueba en F3: registra el mensaje de recuperación
         en la tabla `mail_outbox` del servidor. **No envía correo real** — el
-        proveedor queda pendiente. Devuelve siempre 200 para no revelar si el
-        correo existe.
+        proveedor queda pendiente. **El flujo está incompleto por diseño en
+        F3**: el token generado no es consumido por ningún endpoint de
+        restablecimiento; definir esa ruta queda pendiente junto al proveedor
+        real. Devuelve siempre 200 para no revelar si el correo existe.
       requestBody:
         required: true
         content:
@@ -208,6 +210,7 @@ components:
       required: [operation_id, status]
       properties:
         operation_id: { type: string, format: uuid }
+        entity_id: { type: string, format: uuid }
         status:
           type: string
           enum: [APPLIED, REJECTED, CONFLICT]

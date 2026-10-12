@@ -177,5 +177,84 @@ $ops = [['operation_id' => $u('e0000000'), 'entity_type' => 'client', 'entity_id
 [$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
 check('forbidden_entity', ($r['results'][0]['status'] ?? '') === 'REJECTED' && $r['results'][0]['code'] === 'FORBIDDEN_ENTITY', json_encode($r));
 
+// --- correcciones de revisión F3 ---
+
+// F1: el servidor adoptó el local_user_id del registro como identidad canónica.
+check('register_adopts_local_user_id', $reg['user_id'] === $u('10000000'));
+
+// F5: una referencia a entidad de OTRA cuenta también es FORBIDDEN_ENTITY.
+$ops = [['operation_id' => $u('f0000000'), 'entity_type' => 'quote', 'entity_id' => $u('f0000001'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f0000001'), 'userId' => $reg2['user_id'], 'clientId' => $u('30000001'),
+             'profileId' => $u('f0000002'), 'provisionalNumber' => 'COT-PEND-XX', 'status' => 'BORRADOR',
+             'issueDateEpochDay' => 21000, 'validityDays' => 15, 'expiryDateEpochDay' => 21015,
+             'currency' => 'COP', 'currentVersion' => 1, 'emittedVersion' => 0,
+             'gross' => '1', 'totalRetained' => '0', 'net' => '1', 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
+check('dependency_ownership_FORBIDDEN', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY', json_encode($r));
+check('results_include_entity_id', ($r['results'][0]['entity_id'] ?? '') === $u('f0000001'), json_encode($r));
+
+// F6: EMITIDA→APROBADA bloqueada mientras exista conflicto de versiones;
+// tras resolver, la aprobación aplica y conserva el número oficial.
+$q2 = $u('f1000001');
+$ops = [
+    ['operation_id' => $u('f1000000'), 'entity_type' => 'quote', 'entity_id' => $q2, 'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => ['id' => $q2, 'userId' => $userId, 'clientId' => $u('30000001'), 'profileId' => $u('20000001'),
+        'provisionalNumber' => 'COT-PEND-Q2', 'status' => 'BORRADOR', 'issueDateEpochDay' => 21000, 'validityDays' => 15,
+        'expiryDateEpochDay' => 21015, 'currency' => 'COP', 'currentVersion' => 1, 'emittedVersion' => 0,
+        'gross' => '10', 'totalRetained' => '0', 'net' => '10', 'createdAt' => $now, 'updatedAt' => $now]],
+    ['operation_id' => $u('f2000000'), 'entity_type' => 'quote_version', 'entity_id' => $u('f2000001'), 'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => ['id' => $u('f2000001'), 'quoteId' => $q2, 'version' => 1, 'snapshotJson' => '{"q2":1}', 'createdAt' => $now]],
+];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('q2_created', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'], json_encode($r));
+
+// emitir (sv=1 → 2) y luego versión concurrente (conflicto marcado, sv → 3)
+$emitQ2 = $ops[0];
+$emitQ2['operation_id'] = $u('f3000000');
+$emitQ2['payload']['status'] = 'EMITIDA';
+$emitQ2['payload']['emittedVersion'] = 1;
+$emitQ2['base_server_version'] = 1;
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => [$emitQ2]], $token);
+$official2 = $r['results'][0]['official_number'] ?? null;
+check('q2_emitted', ($r['results'][0]['status'] ?? '') === 'APPLIED' && is_string($official2), json_encode($r));
+$concQ2 = ['operation_id' => $u('f4000000'), 'entity_type' => 'quote_version', 'entity_id' => $u('f4000001'),
+           'type' => 'upsert', 'base_server_version' => 0,
+           'payload' => ['id' => $u('f4000001'), 'quoteId' => $q2, 'version' => 1, 'snapshotJson' => '{"q2":2}', 'createdAt' => $now]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => [$concQ2]], $token);
+check('q2_version_conflict', ($r['results'][0]['code'] ?? '') === 'VERSION_CONFLICT', json_encode($r));
+
+$approveQ2 = $emitQ2;
+$approveQ2['operation_id'] = $u('f5000000');
+$approveQ2['payload']['status'] = 'APROBADA';
+$approveQ2['base_server_version'] = 3;
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => [$approveQ2]], $token);
+check('approve_blocked_CONFLICT_BLOCKED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'CONFLICT_BLOCKED', json_encode($r));
+
+// resolución como versión nueva → desbloquea y conserva snapshots anteriores
+$resolveQ2 = ['operation_id' => $u('f6000000'), 'entity_type' => 'quote_version', 'entity_id' => $u('f6000001'),
+              'type' => 'resolve', 'base_server_version' => 0,
+              'payload' => ['id' => $u('f6000001'), 'quoteId' => $q2, 'version' => 2, 'snapshotJson' => '{"q2":1,"resolved":true}', 'createdAt' => $now]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => [$resolveQ2]], $token);
+check('q2_resolve_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+// la resolución incrementa server_version del documento (3 → 4)
+$approveQ2['operation_id'] = $u('f7000000');
+$approveQ2['base_server_version'] = 4;
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => [$approveQ2]], $token);
+check('approve_after_resolve_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+check('official_number_preserved', ($r['results'][0]['official_number'] ?? null) === $official2, json_encode($r));
+
+// F8: la memorización idempotente se confirma con la mutación — la fila de
+// processed_operations existe para cada operación definitiva (replay seguro
+// tras caída del proceso: el servidor devuelve el resultado almacenado).
+require_once __DIR__ . '/../src/bootstrap.php';
+$pdo = db();
+$memo = (int) $pdo->query('SELECT COUNT(*) FROM processed_operations WHERE operation_id = ' . $pdo->quote($u('80000000')))->fetchColumn();
+check('idempotency_memo_committed', $memo === 1);
+$memo2 = (int) $pdo->query('SELECT COUNT(*) FROM processed_operations WHERE operation_id = ' . $pdo->quote($u('f7000000')))->fetchColumn();
+check('idempotency_memo_approve', $memo2 === 1);
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

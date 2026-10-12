@@ -22,7 +22,7 @@ php -c backend/dev.ini -S 0.0.0.0:8080 -t backend/public
 php -c backend/dev.ini backend/tests/e2e.php
 ```
 
-Respuesta de `GET /health`: `{"status":"ok","service":"cotixgo-api"}`. La recuperación de acceso usa `mail_outbox` local — no envía correo real (proveedor pendiente). Solo datos sintéticos.
+Respuesta de `GET /health`: `{"status":"ok","service":"cotixgo-api"}`. La recuperación de acceso usa `mail_outbox` local — **no envía correo real y el flujo está incompleto**: el token registrado en el outbox no es consumido por ningún endpoint de restablecimiento (proveedor y endpoint pendientes). Solo datos sintéticos.
 
 ## Despliegue (Hostinger)
 

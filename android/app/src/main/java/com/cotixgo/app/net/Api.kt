@@ -57,21 +57,16 @@ class ApiClient(
             val obj = text.takeIf { it.isNotBlank() }?.let {
                 runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull()
             } ?: JsonObject(emptyMap())
-            if (!res.isSuccessful) {
-                throw ApiException(
-                    res.code,
-                    obj["code"]?.jsonPrimitive?.content,
-                    obj["message"]?.jsonPrimitive?.content,
-                )
-            }
+            if (!res.isSuccessful) throw parseApiError(res.code, obj)
             return obj
         }
     }
 
-    suspend fun register(name: String, email: String, password: String): JsonObject =
+    suspend fun register(name: String, email: String, password: String, localUserId: String? = null): JsonObject =
         withContext(Dispatchers.IO) {
             request("POST", "/auth/register", buildJsonObject {
                 put("name", name); put("email", email); put("password", password)
+                if (localUserId != null) put("local_user_id", localUserId)
             }, auth = false)
         }
 
@@ -97,6 +92,16 @@ class ApiClient(
 
     suspend fun pull(cursor: Long): JsonObject =
         withContext(Dispatchers.IO) { request("GET", "/sync/pull?cursor=$cursor") }
+}
+
+/** Extrae el envelope de error del contrato: {"error":{"code","message"}}. */
+internal fun parseApiError(httpCode: Int, body: JsonObject): ApiException {
+    val err = body["error"] as? JsonObject
+    return ApiException(
+        httpCode,
+        err?.str("code"),
+        err?.str("message"),
+    )
 }
 
 fun JsonObject.str(key: String): String? =

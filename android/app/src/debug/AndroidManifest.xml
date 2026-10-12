@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Solo builds de depuración: HTTP en claro para el servidor PHP local
+         de desarrollo (emulador → 10.0.2.2 / IP del equipo). Las builds de
+         release no admiten cleartext: toda URL HTTP es rechazada por la
+         plataforma y por la validación en ViewModels.setBaseUrl. HTTPS es
+         obligatorio antes de usar credenciales o datos reales (decisión F3). -->
+    <application android:usesCleartextTraffic="true" />
+
+</manifest>
