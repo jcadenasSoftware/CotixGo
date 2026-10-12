@@ -23,6 +23,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.cotixgo.app.data.AppRepository
+import com.cotixgo.app.data.AuthRepository
+import com.cotixgo.app.data.SyncRepository
 
 object Routes {
     const val ONBOARDING = "onboarding"
@@ -40,6 +42,10 @@ object Routes {
     const val SERVICES = "services"
     const val RETENTIONS = "retentions"
     const val PROFILE = "profile"
+    const val ACCOUNT = "account"
+    const val CONFLICTS = "conflicts"
+    const val RESOLVE_VERSIONS = "conflicts/quote/{id}"
+    fun resolveVersions(id: String) = "conflicts/quote/$id"
     fun clientEdit(id: String) = "clients/$id/edit"
     fun clientDetail(id: String) = "clients/$id"
     fun quoteEdit(id: String) = "quotes/$id/edit"
@@ -48,9 +54,9 @@ object Routes {
 }
 
 @Composable
-fun CotixGoApp(repo: AppRepository) {
+fun CotixGoApp(repo: AppRepository, sync: SyncRepository, auth: AuthRepository) {
     CotixGoTheme {
-        val vm: AppViewModel = viewModel(factory = AppViewModel.factory(repo))
+        val vm: AppViewModel = viewModel(factory = AppViewModel.factory(repo, sync, auth))
         val nav = rememberNavController()
         val user by vm.user.collectAsStateWithLifecycle()
         val bootstrapped by vm.bootstrapped.collectAsStateWithLifecycle()
@@ -139,8 +145,14 @@ private fun CotixGoNavHost(
             }
             composable(Routes.DASHBOARD) {
                 val today = java.time.LocalDate.now().toEpochDay()
+                val pending by vm.pendingOps.collectAsStateWithLifecycle()
+                val pausedCount by vm.pausedOps.collectAsStateWithLifecycle()
+                val boundEmail by vm.accountEmail.collectAsStateWithLifecycle()
                 DashboardScreen(
                     userName = userName.orEmpty(),
+                    syncPending = pending,
+                    syncPaused = pausedCount,
+                    boundEmail = boundEmail,
                     expiringQuotes = quotes
                         .filter {
                             !it.archived && it.status == com.cotixgo.app.core.QuoteStatus.EMITIDA.name &&
@@ -301,6 +313,60 @@ private fun CotixGoNavHost(
                     onServices = { nav.navigate(Routes.SERVICES) },
                     onRetentions = { nav.navigate(Routes.RETENTIONS) },
                     onProfile = { nav.navigate(Routes.PROFILE) },
+                    onAccount = { nav.navigate(Routes.ACCOUNT) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.ACCOUNT) {
+                val boundEmail by vm.accountEmail.collectAsStateWithLifecycle()
+                val pending by vm.pendingOps.collectAsStateWithLifecycle()
+                val pausedCount by vm.pausedOps.collectAsStateWithLifecycle()
+                val baseUrl by vm.apiBaseUrl.collectAsStateWithLifecycle()
+                val syncing by vm.syncing.collectAsStateWithLifecycle()
+                val message by vm.lastSyncMessage.collectAsStateWithLifecycle()
+                AccountScreen(
+                    boundEmail = boundEmail,
+                    pendingOps = pending,
+                    pausedOps = pausedCount,
+                    apiBaseUrl = baseUrl,
+                    syncing = syncing,
+                    lastMessage = message,
+                    onRegister = { n, e, p -> vm.register(n, e, p) },
+                    onLogin = { e, p -> vm.login(e, p) },
+                    onRecover = { vm.recover(it) },
+                    onSyncNow = { vm.syncNow() },
+                    onSwitchAccount = { cp, ne, np, c -> vm.switchAccount(cp, ne, np, c) },
+                    onSetBaseUrl = { vm.setBaseUrl(it) },
+                    onConflicts = { nav.navigate(Routes.CONFLICTS) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.CONFLICTS) {
+                val conflicts by vm.conflicts.collectAsStateWithLifecycle()
+                val pausedList by vm.paused.collectAsStateWithLifecycle()
+                val vcQuotes by vm.versionConflictQuotes.collectAsStateWithLifecycle()
+                ConflictsScreen(
+                    conflicts = conflicts,
+                    paused = pausedList,
+                    versionConflictQuotes = vcQuotes.map { it.id to (it.officialNumber ?: it.provisionalNumber) },
+                    onKeepLocal = { vm.resolveKeepLocal(it) },
+                    onKeepRemote = { vm.resolveKeepRemote(it) },
+                    onRetry = { vm.retryPaused(it) },
+                    onResolveVersions = { nav.navigate(Routes.resolveVersions(it)) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.RESOLVE_VERSIONS,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val versions by vm.observeQuoteVersions(id).collectAsStateWithLifecycle(emptyList())
+                val quote by vm.observeQuote(id).collectAsStateWithLifecycle(null)
+                ResolveVersionsScreen(
+                    quoteNumber = quote?.officialNumber ?: quote?.provisionalNumber ?: "",
+                    versions = versions,
+                    onPick = { v -> vm.resolveQuoteVersions(id, v) { if (it) nav.popBackStack() } },
                     onBack = { nav.popBackStack() },
                 )
             }
