@@ -1,6 +1,6 @@
 # CotixGo — Tipos y contratos de datos
 
-**Versión:** 1.5  
+**Versión:** 1.6  
 **Estado:** Convenciones conceptuales para alinear el modelo; no constituye DDL ni esquema de API final.
 
 ## 1. Propósito
@@ -34,7 +34,7 @@ Dar a Devin un vocabulario común para campos, tipos y relaciones sin fingir que
 - Cada entidad sincronizable tiene ID técnico global, `user_id` o vínculo equivalente de propiedad y marcas de tiempo necesarias para sincronización.
 - Clientes, Inventario, categorías de inventario y Métodos de Cobro pertenecen globalmente al Usuario/Titular. Las operaciones/documentos identifican el Perfil Profesional que les corresponde; el Cliente puede compartirse entre perfiles del mismo titular.
 - `device_id` puede identificar el origen técnico de una operación, pero nunca reemplaza al propietario `user_id`.
-- El número visible `COT-...`, `TR-...`, `INF-...` o `CC-...` es distinto del ID técnico. Los documentos usan un número provisional `TIPO-PEND-XXXX` desde su creación hasta que el backend asigna el número oficial `TIPO-AAAAMM-NNN` sobre el mismo documento; la secuencia oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional. Para Cotización, el número oficial se asigna cuando el backend acepta por primera vez una versión `EMITIDA`/`APROBADA` (aprobado en la planificación de F3). Para Trabajo, el número oficial se asigna cuando el backend acepta por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO`, lo que ocurra primero (aprobado en la planificación de F4); el momento para otros tipos permanece pendiente.
+- El número visible `COT-...`, `TR-...`, `INF-...` o `CC-...` es distinto del ID técnico. Los documentos usan un número provisional `TIPO-PEND-XXXX` desde su creación hasta que el backend asigna el número oficial `TIPO-AAAAMM-NNN` sobre el mismo documento; la secuencia oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional. Para Cotización, el número oficial se asigna cuando el backend acepta por primera vez una versión `EMITIDA`/`APROBADA` (aprobado en la planificación de F3). Para Trabajo, el número oficial se asigna cuando el backend acepta por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO`, lo que ocurra primero (aprobado en la planificación de F4). Para Informe, el número oficial se asigna cuando el backend acepta por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (aprobado en la planificación de F5); el momento para los demás tipos permanece pendiente.
 
 ### 3.2 Importes y cálculo
 
@@ -82,7 +82,7 @@ Estados de Compra y sincronización requieren especificación antes de cerrar mo
 
 ## 4. Entidades conceptuales
 
-El modelo conceptual incluye `User`, `ProfessionalProfile`, `Client`, `Service`, `Material`, `Tool`, categorías de inventario separadas por tipo, Métodos de Cobro, `Quote`, `QuoteItem`, `Job`, `JobQuote`, `JobActivity`, `JobMaterial`, `Attachment`, `Purchase`, `PurchaseItem`, `InventoryMovement`, `Report`, `ReportJob`, `CollectionAccount`, `CollectionAccountJob`, `Payment`, `ConsolidatedCollection`, `PaymentAdjustment`, `SyncOperation` y `AuditEvent`. Esto no fija tablas físicas.
+El modelo conceptual incluye `User`, `ProfessionalProfile`, `Client`, `Service`, `Material`, `Tool`, categorías de inventario separadas por tipo, Métodos de Cobro, `Quote`, `QuoteItem`, `Job`, `JobQuote`, `JobActivity`, `JobMaterial`, `Attachment`, `Purchase`, `PurchaseItem`, `InventoryMovement`, `Report`, `ReportVersion`, `ReportJob`, `CollectionAccount`, `CollectionAccountJob`, `Payment`, `ConsolidatedCollection`, `PaymentAdjustment`, `SyncOperation` y `AuditEvent`. Esto no fija tablas físicas.
 
 Relaciones aprobadas o necesarias:
 
@@ -91,7 +91,8 @@ Relaciones aprobadas o necesarias:
 - Cotización 1:N líneas.
 - Cotización N:M Trabajo, mediante asociación; la Cotización es opcional para crear un Trabajo.
 - Trabajo 1:N actividades, materiales utilizados y evidencias.
-- Trabajo N:M Informe.
+- Trabajo N:M Informe, mediante asociación (`ReportJob`); los Trabajos asociados comparten el Cliente y el Perfil Profesional del Informe, validado por la API con datos persistidos (F5, `03` §6).
+- Informe 1:N `ReportVersion`; cada versión emitida conserva un snapshot inmutable y una corrección crea una versión nueva enlazada por referencia (F5, `03` §6).
 - Trabajo N:M Cuenta de Cobro.
 - Cuenta de Cobro puede relacionarse con cero o varias Cotizaciones y cero o varios Trabajos; si combinar ambos tipos en el mismo documento implica una regla adicional de prevención de doble cobro, permanece pendiente.
 - Cuenta de Cobro puede no tener asociaciones ni a Cotización ni a Trabajo; en ese caso conserva su relación directa con Cliente y Perfil Profesional.
@@ -123,3 +124,4 @@ No fijar todavía tablas, nombres físicos, índices ni claves compuestas a part
 | 1.3 | 11/10/2026 | F1: algoritmo de ID global aprobado (UUIDv4); fecha comercial = fecha local del dispositivo y marcas de tiempo = `Instant` UTC ISO-8601. | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |
 | 1.4 | 11/10/2026 | Planificación de F3: §3.1 registra el momento aprobado de asignación del número oficial para Cotización (primera `EMITIDA`/`APROBADA` aceptada por el backend); otros tipos pendientes. | Registro de la decisión de numeración de la ficha F3. | Aprobado. |
 | 1.5 | 12/10/2026 | Planificación de F4: §3.1 registra el momento aprobado de asignación del número oficial para Trabajo (primera aceptación del backend en `PROGRAMADO` o `EN PROCESO`) y el tipo visible `TR-` reemplaza al ejemplo `JOB-`; §3.4 añade los estados aprobados de actividad de Trabajo `PENDIENTE`/`EN PROCESO`/`COMPLETADA`. | Registro de las decisiones de la ficha F4. | Aprobado. |
+| 1.6 | 12/10/2026 | Planificación de F5: §3.1 registra el momento aprobado de asignación del número oficial para Informe (primera aceptación del backend como `EMITIDO` sobre el mismo `entity_id`); §4 añade la entidad conceptual `ReportVersion` y las reglas de asociación Informe–Trabajo (mismo Cliente y Perfil Profesional, validación con datos persistidos) e Informe–versiones (snapshot inmutable, corrección por versión enlazada). | Registro de las decisiones de la ficha F5. | Aprobado. |

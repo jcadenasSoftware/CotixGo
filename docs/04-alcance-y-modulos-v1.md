@@ -1,6 +1,6 @@
 # CotixGo — Alcance y módulos de V1
 
-**Versión:** 1.4  
+**Versión:** 1.5  
 **Estado:** Especificación de alcance basada en reglas aprobadas  
 **Producto:** Herramienta profesional de campo para trabajadores independientes y pequeños proveedores de servicios.
 
@@ -133,12 +133,14 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 
 ### 2.9 Informes
 
-- Informe opcional: crear a partir de datos registrados durante la ejecución, sin volver a introducir desde cero toda la información. Puede entregarse al Cliente o ser exclusivamente para organización/histórico interno del profesional.
-- Estados: `BORRADOR` y `EMITIDO`. Un Informe emitido no se edita; una corrección crea una versión nueva.
-- La nueva versión del Informe se enlaza a la anterior mediante un campo de referencia; la versión anterior se conserva como referencia.
-- Describir lo realmente ejecutado, no lo originalmente cotizado.
-- Revisar/completar el contenido y seleccionar evidencias antes de generar el documento.
-- Permitir agrupar varios Trabajos del mismo Cliente en un Informe, manteniendo identidad y trazabilidad individual por Trabajo.
+- Informe opcional: crear a partir de datos registrados durante la ejecución, sin volver a introducir desde cero toda la información. Puede entregarse al Cliente o ser exclusivamente para organización/histórico interno del profesional (destino `INTERNO` o `CLIENTE`, aprobado en F5).
+- Estados: `BORRADOR` y `EMITIDO`. Un Informe emitido no se edita; una corrección crea una versión nueva enlazada por referencia, conservando la versión emitida anterior y su snapshot inmutable (aprobado en F5, `03` §6).
+- Describir lo realmente ejecutado, no lo originalmente cotizado. Solo las actividades en estado `COMPLETADA` de los Trabajos asociados se presentan como ejecución realizada; las `PENDIENTE` o `EN PROCESO` no se presentan como ejecutadas (aprobado en F5, `03` §6).
+- El contenido es editable mientras el Informe está en `BORRADOR`; revisar/completar el contenido y seleccionar evidencias antes de generar el documento.
+- Permitir agrupar varios Trabajos del mismo Cliente **y del mismo Perfil Profesional** en un Informe, manteniendo identidad y trazabilidad individual por Trabajo; la API valida las relaciones con datos persistidos, no con las declaradas por el cliente (aprobado en F5, `03` §6).
+- El Informe es numerable: provisional `INF-PEND-XXXX`; oficial `INF-AAAAMM-NNN` asignado por el backend sobre el mismo `entity_id` en la primera aceptación como `EMITIDO` (aprobado en F5, `03` §6).
+- Campos mínimos aprobados para F5 (`03` §6): `clientId`, `profileId`, título requerido, contenido/observaciones editables en borrador, estado, número provisional/oficial, destino `INTERNO`/`CLIENTE`, archivado y marcas de tiempo.
+- En F5 no se incluyen PDF/exportación, fotografías ni archivos adjuntos, ni envío al Cliente (`03` §6; las fotos/archivos siguen pendientes según `03` §4.6).
 - No exigir un Informe para entregar un Trabajo o generar una Cuenta de Cobro.
 
 ### 2.10 Pagos
@@ -191,3 +193,4 @@ La operación se considera cerrada e histórica cuando el Trabajo fue entregado 
 | 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: base de retención por `applies_to` configurable. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | 1.3 | 11/10/2026 | F1: campos mínimos aprobados de Cliente (§2.2) y Perfil Profesional (§2.8). | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |
 | 1.4 | 12/10/2026 | F4 (planificación aprobada): §2.4 registra la matriz de transiciones de Trabajo con `ENTREGADO`/`CANCELADO` terminales y sin "Pausar", dirección de ejecución propia obligatoria al `PROGRAMADO`, numeración `TR-PEND-XXXX` → `TR-AAAAMM-NNN`, estados de actividad `PENDIENTE`/`EN PROCESO`/`COMPLETADA` y registro de materiales F4 descriptivo sin efecto en inventario. | Aprobación de las decisiones de la ficha F4 por el titular. | Aprobado. |
+| 1.5 | 12/10/2026 | F5 (planificación aprobada): §2.9 registra las decisiones de Informes — Trabajos asociados del mismo Cliente y Perfil Profesional validados con datos persistidos en la API, solo actividades `COMPLETADA` como ejecución presentada, edición en `BORRADOR`, corrección por versión nueva enlazada con snapshot conservado, numeración `INF-PEND-XXXX` → `INF-AAAAMM-NNN` en primera aceptación `EMITIDO`, destino `INTERNO`/`CLIENTE`, campos mínimos y exclusiones de F5 (sin PDF, fotos/archivos ni envío). | Aprobación de las decisiones de la ficha F5 por el titular. | Aprobado. |
