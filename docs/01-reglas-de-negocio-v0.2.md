@@ -576,14 +576,14 @@ Los documentos visibles para el usuario utilizarán el formato:
 Ejemplos:
 
 - `COT-202609-01`
-- `JOB-202609-44`
+- `TR-202609-44`
 - `INF-202609-87`
 - `CC-202609-33`
 
 Tipos definidos:
 
 - `COT` — Cotización
-- `JOB` — Trabajo
+- `TR` — Trabajo
 - `INF` — Informe
 - `CC` — Cuenta de Cobro
 
@@ -991,4 +991,4 @@ Este documento no constituye todavía el modelo físico de base de datos, el con
 | v0.2 | 30/09/2026 | Documento fundacional de reglas de negocio. | Base funcional aprobada. | Aprobado. |
 | v0.2 (enmienda) | 08/10/2026 | Nuevas subsecciones: 17.2 retenciones solo sobre `SERVICIO` con ejemplo aprobado; 28 secuencia oficial global por titular+tipo+período; 28.3 identificador provisional offline; 31.3 anticipo/pago sin Cuenta previa; 31.4 corrección/anulación de Pagos en V1. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | v0.2 (enmienda 2) | 08/10/2026 | 17.2: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento fijo) (D14-C); 31.3: mecánica de asignación aprobada con aplicación parcial — el excedente sobre el saldo permanece sin asignar dentro del mismo pago (D13-B). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
-| v0.2 (enmienda 3) | 12/10/2026 | 29.2: estados de Trabajo formalizados como `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO`, `CANCELADO` con la matriz de transiciones aprobada en la ficha F4 (`ENTREGADO`/`CANCELADO` terminales sin edición, sin "Pausar"). | Formalización de los estados y transiciones de Trabajo aprobados por el titular en F4. | Aprobado. |
+| v0.2 (enmienda 3) | 12/10/2026 | 29.2: estados de Trabajo formalizados como `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO`, `CANCELADO` con la matriz de transiciones aprobada en la ficha F4 (`ENTREGADO`/`CANCELADO` terminales sin edición, sin "Pausar"); 28: tipo documental de Trabajo alineado a `TR` (ejemplo y lista de tipos). | Formalización de los estados y transiciones de Trabajo y del tipo documental `TR` aprobados por el titular en F4. | Aprobado. |

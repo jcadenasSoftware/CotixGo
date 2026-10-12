@@ -62,7 +62,7 @@ Los documentos que tengan numeración visible tendrán además un **número docu
 Ejemplos:
 
 - `COT-202609-01`
-- `JOB-202609-44`
+- `TR-202609-44`
 - `INF-202609-87`
 - `CC-202609-33`
 
@@ -1086,7 +1086,7 @@ Tipos iniciales:
 
 ```text
 COT
-JOB
+TR
 INF
 CC
 ```
@@ -1354,4 +1354,4 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.3 | 08/10/2026 | D13-B: asignación de pagos sin asignar con aplicación parcial — el excedente sobre el saldo del destino permanece `UNASSIGNED` en el mismo Pago; D14-C: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento hardcodeado). | Aprobación de las decisiones pendientes de la etapa V1.1. | Cambio aprobado; el documento sigue en borrador. |
 | v0.4 | 11/10/2026 | F1: mínimos aprobados registrados en `ProfessionalProfile` (§5) y `Client` (§6). | Aprobación de las decisiones pendientes de la ficha F1. | Cambio aprobado; el documento sigue en borrador. |
 | v0.5 | 11/10/2026 | Pendientes §36 actualizados: vencimiento de Cotización resuelto en F2; momento del número oficial resuelto para Cotización en F3; política de conflicto aprobada para entidades de F3 (referencia a `03` §6). | Registro de decisiones de F2/F3 que cierran pendientes del modelo. | Cambio aprobado; el documento sigue en borrador. |
-| v0.6 | 12/10/2026 | F4: `Job` §12 registra los cinco estados aprobados y la matriz de transiciones (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", sin edición en terminal), dirección de ejecución propia obligatoria al `PROGRAMADO` y numeración `TR-PEND-XXXX` → `TR-AAAAMM-NNN`; `JobActivity` §14 con estados `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; `JobMaterial` §15 con alcance F4 descriptivo sin efecto en inventario ni reinterpretación retroactiva. Pendientes §36 actualizados (transiciones de Trabajo, momento de numeración, política de conflictos extendida a F4). | Aprobación de las decisiones de la ficha F4 por el titular. | Cambio aprobado; el documento sigue en borrador. |
+| v0.6 | 12/10/2026 | F4: `Job` §12 registra los cinco estados aprobados y la matriz de transiciones (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", sin edición en terminal), dirección de ejecución propia obligatoria al `PROGRAMADO` y numeración `TR-PEND-XXXX` → `TR-AAAAMM-NNN`; `JobActivity` §14 con estados `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; `JobMaterial` §15 con alcance F4 descriptivo sin efecto en inventario ni reinterpretación retroactiva. Ejemplos y tipos iniciales de numeración alineados al tipo `TR` (§2.2 y §28). Pendientes §36 actualizados (transiciones de Trabajo, momento de numeración, política de conflictos extendida a F4). | Aprobación de las decisiones de la ficha F4 por el titular. | Cambio aprobado; el documento sigue en borrador. |
