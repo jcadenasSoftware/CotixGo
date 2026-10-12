@@ -1,6 +1,6 @@
 # CotixGo — Arquitectura y tecnologías
 
-**Versión:** 1.2  
+**Versión:** 1.4  
 **Estado:** Stack y principios aprobados; detalles técnicos pendientes donde se indica.
 
 ## 1. Plataformas y stack
@@ -66,7 +66,7 @@ Requisitos aprobados:
 - Recuperación de información sincronizada al iniciar sesión en otro dispositivo.
 - Gestión explícita de cambios simultáneos y conflictos; no resolverlos mediante sobrescritura silenciosa.
 
-**PENDIENTE DE DECISIÓN:** protocolo/orden de sincronización, política por tipo de entidad ante conflicto, límites de reintento, manejo de operación parcial y mecanismo de recuperación. Algoritmo de ID aprobado: UUIDv4 aleatorio generado en el dispositivo (F1). Regla aprobada: cualquier documento archivado se puede desarchivar; los datos generados no se eliminan y archivar/desarchivar solo afecta su visibilidad, no sus efectos.
+**PENDIENTE DE DECISIÓN (técnica):** protocolo/orden de sincronización, cursores, estructuras físicas de `SyncOperation`/`AuditEvent`, límites concretos de reintento y contrato de endpoints. Aprobado para F3 en `03` §6: política de conflicto por entidad (detección explícita, preservación de ambas copias, resolución del usuario; versión de resolución nueva para Cotizaciones), operaciones nunca descartadas (reintentos persistentes; errores de atención pausados con reintento manual), resultados parciales por operación, recuperación por descarga completa en instalación limpia y reglas de cambio de cuenta. Algoritmo de ID aprobado: UUIDv4 aleatorio generado en el dispositivo (F1). Regla aprobada: cualquier documento archivado se puede desarchivar; los datos generados no se eliminan y archivar/desarchivar solo afecta su visibilidad, no sus efectos.
 
 ### 2.4 Documentos históricos
 
@@ -81,7 +81,7 @@ Está aprobado que el backend sea una API REST en PHP y use MySQL. Todavía no e
 
 El contrato de API deberá especificar, antes o durante implementación controlada:
 
-- autenticación y renovación de sesión;
+- autenticación y renovación de sesión (base de producto aprobada: registro e inicio de sesión con email y contraseña; recuperación por correo aprobada en principio — proveedor pendiente);
 - autorización por usuario y Perfil Profesional;
 - respetar el alcance de propiedad: Clientes, Inventario y Métodos de Cobro pertenecen al Usuario/Titular; cada operación/documento identifica el Perfil Profesional que le corresponde;
 - formato común de error y validación;
@@ -89,7 +89,7 @@ El contrato de API deberá especificar, antes o durante implementación controla
 - sincronización incremental, cursores y versiones;
 - cargas de archivos y sus estados;
 - paginación/filtrado de colecciones;
-- numeración de documentos;
+- numeración de documentos (regla y momento de asignación aprobados para Cotización: cuando el backend acepta la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id`; detalles de endpoint pendientes);
 - compatibilidad/versionado de API;
 - límites, seguridad y registro de auditoría.
 
@@ -101,9 +101,10 @@ El tratamiento de impuestos, incluidos tipos, porcentajes, valores predeterminad
 
 La documentación funcional confirma identidad asociada a cuenta y propiedad de datos del usuario, pero no define todavía:
 
-- proveedor y flujo de autenticación;
-- recuperación de cuenta y cierre de sesión en dispositivos perdidos;
-- cifrado local y de transporte;
+- detalles del flujo de autenticación (registro e inicio de sesión con email y contraseña están aprobados como base de producto para F3; el contrato concreto permanece pendiente);
+- recuperación de acceso: aprobada por correo antes de usar cuentas o datos reales; proveedor, envío y configuración pendientes — el correo disponible en Hostinger puede considerarse sin configurarlo aún. Cierre de sesión en dispositivos perdidos sigue pendiente;
+- cifrado de transporte: HTTPS es obligatorio para credenciales o datos reales (HTTP solo es aceptable en desarrollo local `php -S`);
+- cifrado/protección de datos locales en reposo: pendiente de definición tecnológica. Decisión aprobada en la ficha F3 (`03` §6): solo datos sintéticos en desarrollo y pruebas hasta definir, implementar y verificar la protección antes de usar datos reales; no se añade al alcance de F3 automáticamente;
 - política de retención y exportación; no se eliminan datos generados y archivar solo oculta;
 - permisos multiusuario;
 - copias de seguridad y recuperación del servidor;
@@ -123,3 +124,5 @@ Cuando se autorice la implementación, registrar versiones soportadas, librería
 | 1.0 | 30/09/2026 | Arquitectura y tecnologías aprobadas. | Definir stack y principios. | Aprobado. |
 | 1.1 | 08/10/2026 | Decisiones técnicas aprobadas: package Android `com.cotixgo.app` (D15) y JDK 21 LTS para builds Android/Gradle (D16). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | 1.2 | 11/10/2026 | F1: algoritmo de ID global aprobado (UUIDv4). | Aprobación de la decisión pendiente de la ficha F1. | Aprobado. |
+| 1.3 | 11/10/2026 | Planificación de F3: base de auth email/contraseña registrada en §4; recuperación de acceso por correo aprobada en principio (proveedor pendiente); HTTPS obligatorio para credenciales/datos reales; protección de datos locales en reposo pendiente con regla de solo datos sintéticos hasta su verificación (ver `03` §6). | Aprobación de las decisiones de protección de datos y entorno de la ficha F3. | Aprobado. |
+| 1.4 | 11/10/2026 | Planificación de F3 — pase documental completo: §2.3 actualizado separando pendientes técnicos (protocolo, cursores, estructuras físicas) de políticas de producto ya aprobadas (conflictos, reintentos, operaciones parciales, recuperación, cambio de cuenta — ver `03` §6); §3 anota base de auth aprobada y momento del número oficial para Cotización. | Registro de las decisiones de producto de F3 aprobadas por el titular. | Aprobado. |

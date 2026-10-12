@@ -1,7 +1,7 @@
 # CotixGo — Instrucción global y planificación inicial para Devin
 
-**Versión:** 2.3  
-**Estado:** Planificación Android-first (fases F1–F8) aprobada por el titular. La implementación avanza por fases; cada fase requiere aprobación explícita del titular antes de implementarse.  
+**Versión:** 2.4  
+**Estado:** Planificación Android-first (fases F1–F8) aprobada por el titular. La implementación avanza por fases; cada fase requiere aprobación explícita del titular antes de implementarse. F1 y F2 están implementadas e integradas en `main`; F3 se encuentra en planificación y durante el desarrollo local solo se permiten datos sintéticos (ver `03` §6).
 **Responsabilidad:** El usuario define y aprueba el producto; Devin prepara el plan y, después de su aprobación, implementa; el usuario y el equipo revisan cada entrega.
 
 ## 1. Encargo de esta etapa
@@ -140,3 +140,4 @@ La autorización para implementar una etapa debe ser explícita y la implementac
 | 2.1 | 08/10/2026 | Reglas de §3 actualizadas (retenciones solo `SERVICIO`, numeración provisional/oficial, pago sin Cuenta, corrección de pagos V1, catálogo por Perfil); nueva §8 con metodología permanente de documentación de decisiones y protocolo de trabajo; historial de cambios. | Incorporación de decisiones aprobadas y metodología documental por el titular. | Aprobado. |
 | 2.2 | 08/10/2026 | D13-B: aplicación parcial en asignación de pagos con excedente `UNASSIGNED`; D14-C: base de retención por `applies_to`; D15: package `com.cotixgo.app`; D16: JDK 21 LTS para builds Android/Gradle (ambos en §4). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | 2.3 | 11/10/2026 | Estado y resultado esperado actualizados: la hoja de ruta Android-first F1–F8 ya fue aprobada y la implementación avanza por fases con aprobación explícita por fase (F1 implementada y en revisión). El protocolo permanente de §7–§8 se mantiene sin cambios. | Estado documental alineado con la aprobación del plan y la fase F1. | Aprobado. |
+| 2.4 | 11/10/2026 | Estado actualizado: F1 y F2 implementadas e integradas en `main`; F3 en planificación. Registrada la regla aprobada de solo datos sintéticos en desarrollo local hasta verificar la protección de datos en reposo (detalle en `03` §6 y `05` §4). | Estado documental alineado con el avance de fases y la decisión de protección de datos de la ficha F3. | Aprobado. |
