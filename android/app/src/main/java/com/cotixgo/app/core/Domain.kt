@@ -113,3 +113,39 @@ val PROVISIONAL_NUMBER_REGEX = Regex("^[A-Z]+-PEND-[A-Z0-9]{4}$")
 /** Emitir exige al menos una línea; BORRADOR puede guardarse sin líneas. */
 fun validateQuoteForEmit(lineCount: Int): String? =
     if (lineCount < 1) "La cotización necesita al menos una línea para emitirse." else null
+
+// ---------- Trabajos (F4) ----------
+
+enum class JobStatus { BORRADOR, PROGRAMADO, EN_PROCESO, ENTREGADO, CANCELADO }
+enum class JobActivityStatus { PENDIENTE, EN_PROCESO, COMPLETADA }
+
+/**
+ * Matriz aprobada (docs/03 §6): ENTREGADO y CANCELADO son terminales sin
+ * edición ni transición posterior; no existe "Pausar". Editar no es una
+ * transición: conserva el estado mientras no sea terminal.
+ */
+object JobTransitions {
+    private val allowed: Map<JobStatus, Set<JobStatus>> = mapOf(
+        JobStatus.BORRADOR to setOf(JobStatus.PROGRAMADO, JobStatus.EN_PROCESO, JobStatus.CANCELADO),
+        JobStatus.PROGRAMADO to setOf(JobStatus.BORRADOR, JobStatus.EN_PROCESO, JobStatus.CANCELADO),
+        JobStatus.EN_PROCESO to setOf(JobStatus.ENTREGADO, JobStatus.CANCELADO),
+        JobStatus.ENTREGADO to emptySet(),
+        JobStatus.CANCELADO to emptySet(),
+    )
+
+    fun canTransition(from: JobStatus, to: JobStatus): Boolean =
+        (allowed[from] ?: emptySet()).contains(to)
+
+    fun isEditable(status: JobStatus): Boolean =
+        status != JobStatus.ENTREGADO && status != JobStatus.CANCELADO
+
+    /** La dirección de ejecución es obligatoria al pasar a PROGRAMADO. */
+    fun canTransitionWith(from: JobStatus, to: JobStatus, executionAddress: String): String? {
+        if (!isEditable(from)) return "El trabajo está $from y no admite cambios."
+        if (!canTransition(from, to)) return "Transición no permitida: $from → $to."
+        if (to == JobStatus.PROGRAMADO && executionAddress.isBlank()) {
+            return "La dirección de ejecución es obligatoria para programar el trabajo."
+        }
+        return null
+    }
+}

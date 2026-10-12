@@ -337,5 +337,186 @@ check('pull_vencidas_from_nonterminal', ($byId[$q3] ?? '') === 'VENCIDA'
 check('pull_terminales_preserved', ($byId[$q2] ?? '') === 'APROBADA'
     && ($byId[$q5] ?? '') === 'CANCELADA', json_encode([$byId[$q2] ?? '?', $byId[$q5] ?? '?']));
 
+// =====================  F4 — Trabajos  =====================
+
+$jPayload = fn(string $id, string $status, string $addr = '') => [
+    'id' => $id, 'userId' => $userId, 'clientId' => $u('30000001'), 'profileId' => $u('20000001'),
+    'provisionalNumber' => 'TR-PEND-' . strtoupper(substr($id, 0, 4)), 'status' => $status,
+    'startDateEpochDay' => 21000, 'estimatedDateEpochDay' => 21007,
+    'executionAddress' => $addr, 'notes' => 'trabajo sintético',
+    'clientNameSnapshot' => 'Cliente Sintético', 'createdAt' => $now, 'updatedAt' => $now];
+$jop = fn(string $opId, string $id, string $status, int $base, string $addr = '') =>
+    [['operation_id' => $opId, 'entity_type' => 'job', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $base, 'payload' => $jPayload($id, $status, $addr)]];
+
+// BORRADOR sin dirección: permitido.
+$job1 = $u('e1000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e1000000'), $job1, 'BORRADOR', 0)], $token);
+check('job_borrador_sin_direccion', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// →PROGRAMADO sin dirección: rechazado por regla aprobada.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e2000000'), $job1, 'PROGRAMADO', 1)], $token);
+check('job_programado_sin_direccion_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// →PROGRAMADO con dirección: aplica y asigna TR-AAAAMM-NNN.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e3000000'), $job1, 'PROGRAMADO', 1, 'Calle 1 #2-3')], $token);
+$tr1 = $r['results'][0]['official_number'] ?? null;
+check('job_programado_TR_assigned', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && is_string($tr1) && str_starts_with($tr1, 'TR-'), json_encode($r));
+
+// PROGRAMADO→BORRADOR (reversa aprobada): conserva el número ya asignado.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e4000000'), $job1, 'BORRADOR', 2, 'Calle 1 #2-3')], $token);
+check('job_programado_to_borrador', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $tr1, json_encode($r));
+
+// Creación directa en EN_PROCESO: numerada en esa aceptación.
+$job2 = $u('e5000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e5000000'), $job2, 'EN_PROCESO', 0, 'Calle 4 #5-6')], $token);
+$tr2 = $r['results'][0]['official_number'] ?? null;
+check('job_directo_en_proceso_TR', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && is_string($tr2) && str_starts_with($tr2, 'TR-') && $tr2 !== $tr1, json_encode($r));
+
+// EN_PROCESO→PROGRAMADO no existe (no aprobada) → INVALID_TRANSITION.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e6000000'), $job2, 'PROGRAMADO', 1, 'Calle 4 #5-6')], $token);
+check('job_enproceso_to_programado_INVALID', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// EN_PROCESO→ENTREGADO aplica; terminal rechaza edición posterior.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e7000000'), $job2, 'ENTREGADO', 1, 'Calle 4 #5-6')], $token);
+check('job_entregado', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $tr2, json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jop($u('e8000000'), $job2, 'ENTREGADO', 2, 'Calle 4 #5-6')], $token);
+check('job_terminal_sin_edicion', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Dependencias: job con client ajeno → FORBIDDEN_ENTITY (segunda cuenta).
+$ops = [['operation_id' => $u('e9000000'), 'entity_type' => 'job', 'entity_id' => $u('e9000001'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($u('e9000001'), 'BORRADOR'), ['userId' => $reg2['user_id']])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
+check('job_dependency_ownership_FORBIDDEN', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY', json_encode($r));
+
+// Hijos: job_quote (vínculo a cotización APROBADA $q2), actividad y material.
+$ops = [
+    ['operation_id' => $u('ea000000'), 'entity_type' => 'job_quote', 'entity_id' => $u('ea000001'),
+     'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => ['id' => $u('ea000001'), 'jobId' => $job1, 'quoteId' => $q2,
+        'relationType' => 'ORIGEN', 'createdAt' => $now]],
+    ['operation_id' => $u('eb000000'), 'entity_type' => 'job_activity', 'entity_id' => $u('eb000001'),
+     'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => ['id' => $u('eb000001'), 'jobId' => $job1, 'description' => 'Actividad sintética',
+        'status' => 'PENDIENTE', 'position' => 1, 'createdAt' => $now, 'updatedAt' => $now]],
+    ['operation_id' => $u('ec000000'), 'entity_type' => 'job_material', 'entity_id' => $u('ec000001'),
+     'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => ['id' => $u('ec000001'), 'jobId' => $job1, 'description' => 'Material sintético',
+        'origin' => 'PROFESIONAL', 'quantity' => '2', 'unit' => 'und', 'notes' => '',
+        'createdAt' => $now, 'updatedAt' => $now]],
+];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_children_applied', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED', 'APPLIED'], json_encode($r));
+
+// Actividad con estado fuera del enum → VALIDATION_ERROR.
+$ops = [['operation_id' => $u('ed000000'), 'entity_type' => 'job_activity', 'entity_id' => $u('ed000001'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('ed000001'), 'jobId' => $job1, 'description' => 'x',
+            'status' => 'PAUSADA', 'position' => 2, 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_activity_status_invalid', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Hijo de job ajeno → FORBIDDEN_ENTITY.
+$ops = [['operation_id' => $u('ee000000'), 'entity_type' => 'job_activity', 'entity_id' => $u('ee000001'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('ee000001'), 'jobId' => $job1, 'description' => 'robo',
+            'status' => 'PENDIENTE', 'position' => 3, 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
+check('job_child_ownership_FORBIDDEN', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY', json_encode($r));
+
+// Pull: los hijos y el número oficial viajan por el canal normal.
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$types = array_count_values(array_column($r['changes'] ?? [], 'entity_type'));
+check('pull_f4_entities', ($types['job'] ?? 0) >= 2 && ($types['job_quote'] ?? 0) === 1
+    && ($types['job_activity'] ?? 0) === 1 && ($types['job_material'] ?? 0) === 1, json_encode($types));
+$jobRow = array_values(array_filter($r['changes'] ?? [], fn($x) => $x['entity_id'] === $job1))[0] ?? null;
+check('pull_job_official_number', ($jobRow['official_number'] ?? null) === $tr1, json_encode($jobRow));
+
+// ===== Corrección de la revisión F4: validación servidor de vínculos y dependencias =====
+
+// Dependencia requerida vacía: job sin clientId → VALIDATION_ERROR (no se omite).
+$ops = [['operation_id' => $u('ef000000'), 'entity_type' => 'job', 'entity_id' => $u('ef000001'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($u('ef000001'), 'BORRADOR'), ['clientId' => ''])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_sin_clientId_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Dependencia requerida vacía: job sin profileId → VALIDATION_ERROR.
+$ops = [['operation_id' => $u('ef000010'), 'entity_type' => 'job', 'entity_id' => $u('ef000011'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($u('ef000011'), 'BORRADOR'), ['profileId' => ''])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_sin_profileId_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Referencia inexistente: clientId que no existe en el servidor → DEPENDENCY.
+$ops = [['operation_id' => $u('ef000020'), 'entity_type' => 'job', 'entity_id' => $u('ef000021'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($u('ef000021'), 'BORRADOR'), ['clientId' => $u('fffff001')])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_cliente_inexistente_DEPENDENCY', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'DEPENDENCY', json_encode($r));
+
+// F3 endurecido: cotización sin clientId también se rechaza (cliente es requerido).
+$ops = [['operation_id' => $u('ef000030'), 'entity_type' => 'quote', 'entity_id' => $u('ef000031'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($qPayload($u('ef000031'), 'BORRADOR'), ['clientId' => ''])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('quote_sin_clientId_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// job_quote a cotización NO aprobada ($q5 quedó CANCELADA, mismo cliente) → VALIDATION_ERROR.
+$ops = [['operation_id' => $u('ef000040'), 'entity_type' => 'job_quote', 'entity_id' => $u('ef000041'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('ef000041'), 'jobId' => $job1, 'quoteId' => $q5,
+            'relationType' => 'ADICIONAL', 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_quote_no_aprobada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Segundo cliente de la MISMA cuenta + cotización APROBADA de ese cliente.
+$cliente2 = $u('ef000051');
+$q6 = $u('ef000052');
+$ops = [
+    ['operation_id' => $u('ef000050'), 'entity_type' => 'client', 'entity_id' => $cliente2,
+     'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => ['id' => $cliente2, 'userId' => $userId, 'type' => 'EMPRESA', 'name' => 'Cliente Dos Sintético',
+        'createdAt' => $now, 'updatedAt' => $now]],
+    ['operation_id' => $u('ef000053'), 'entity_type' => 'quote', 'entity_id' => $q6,
+     'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => array_merge($qPayload($q6, 'APROBADA'), ['clientId' => $cliente2])],
+];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_quote_otro_cliente_setup', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'], json_encode($r));
+
+// job_quote a cotización APROBADA de OTRO cliente (misma cuenta) → VALIDATION_ERROR.
+$ops = [['operation_id' => $u('ef000054'), 'entity_type' => 'job_quote', 'entity_id' => $u('ef000055'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('ef000055'), 'jobId' => $job1, 'quoteId' => $q6,
+            'relationType' => 'ADICIONAL', 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_quote_otro_cliente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

@@ -482,6 +482,7 @@ fun QuoteDetailScreen(
     onEdit: () -> Unit,
     onArchive: (Boolean) -> Unit,
     onOpenVersion: (Int) -> Unit,
+    onCreateJob: () -> Unit,
     onBack: () -> Unit,
 ) {
     if (quote == null) {
@@ -571,6 +572,11 @@ fun QuoteDetailScreen(
                             Button(onClick = { revalidateDialog = true }) { Text("Revalidar") }
                         }
                         else -> {}
+                    }
+                    // Creación manual del Trabajo desde APROBADA (F4):
+                    // nunca automática — la acción la decide el usuario.
+                    if (effective == QuoteStatus.APROBADA) {
+                        Button(onClick = onCreateJob) { Text("Crear trabajo") }
                     }
                     OutlinedButton(onClick = { onArchive(!quote.archived) }) {
                         Text(if (quote.archived) "Desarchivar" else "Archivar")

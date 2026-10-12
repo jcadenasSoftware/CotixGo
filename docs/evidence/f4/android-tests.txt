@@ -1,0 +1,37 @@
+== CotixGo F4 — verificación Android (datos sintéticos) ==
+Fecha: 2026-10-12 (segunda corrida, correcciones de la revisión del PR #7)
+JDK: 21 (JAVA_HOME explícito) · Dispositivo: Pixel_8 AVD (Android 16, emulator-5554)
+Backend: PHP 8.4 'php -S 0.0.0.0:8080' + MariaDB 13.0 local (cotixgo_dev)
+
+== testDebugUnitTest (JVM) ==
+testsuite name="com.cotixgo.app.ApiErrorParseTest" tests="4" skipped="0" failures="0" errors="0"
+testsuite name="com.cotixgo.app.CalcVectorTest" tests="4" skipped="0" failures="0" errors="0"
+testsuite name="com.cotixgo.app.DomainTest" tests="8" skipped="0" failures="0" errors="0"
+testsuite name="com.cotixgo.app.QuoteDomainTest" tests="5" skipped="0" failures="0" errors="0"
+Total: 21 tests, 0 failures
+
+== connectedDebugAndroidTest (instrumentadas, emulador) ==
+Suite total: 43 tests, 0 failures, 0 errors, 0 skipped
+  JobRepositoryTest: 9 · QuoteRepositoryTest: 12 · SyncE2eTest: 21 · MigrationTest: 1
+
+Casos de la corrección de revisión ejecutados:
+  MigrationTest.migrate4To5_preservesRowsAndCreatesJobTables
+    (base v4 real con filas → v5; datos preservados, tablas/índice único creados)
+  JobRepositoryTest.editarCliente_conVinculos_rechaza_sinVinculos_permite
+    (invariante: recambio de Cliente bloqueado en repo cuando hay job_quote)
+  SyncE2eTest.jobConflict_keepRemote_preservesOfficialNumber
+    (conservar remoto sobre Trabajo con TR- oficial; pull posterior no lo pierde)
+  SyncE2eTest.quoteConflict_keepRemote_preservesOfficialNumber
+    (misma corrección en el camino compartido de Cotización)
+
+Casos F4 previos re-ejecutados sin cambios:
+  createJob_borrador_conNumeroProvisionalTR · matriz_completa_yTerminalesSinEdicion
+  programar_sinDireccion_rechaza_yConDireccion_aplica · actividades_estadosYMarcasDeTiempo
+  materiales_descriptivos_sinInventario · crearDesdeQuoteAprobada_vinculaOrigen
+  vincularAdicional_soloAprobadaMismoCliente · archivar_desarchivar_sinBorrarHistorial
+  job_scheduled_getsTRNumber_childrenSync · job_programado_sinDireccion_servidorRechaza
+  jobConflict_bothCopies_keepLocalApplies · jobRestore_cleanInstall_bringsChildrenAndNumber
+
+== Builds ==
+assembleDebug: BUILD SUCCESSFUL
+assembleRelease: BUILD SUCCESSFUL (lintVitalRelease)

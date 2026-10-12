@@ -38,6 +38,10 @@ object Routes {
     const val QUOTE_EDIT = "quotes/{id}/edit"
     const val QUOTE_DETAIL = "quotes/{id}"
     const val QUOTE_VERSION = "quotes/{id}/version/{v}"
+    const val JOBS = "jobs"
+    const val JOB_NEW = "jobs/new?client={clientId}&quote={quoteId}"
+    const val JOB_EDIT = "jobs/{id}/edit"
+    const val JOB_DETAIL = "jobs/{id}"
     const val SETTINGS = "settings"
     const val SERVICES = "services"
     const val RETENTIONS = "retentions"
@@ -51,6 +55,15 @@ object Routes {
     fun quoteEdit(id: String) = "quotes/$id/edit"
     fun quoteDetail(id: String) = "quotes/$id"
     fun quoteVersion(id: String, v: Int) = "quotes/$id/version/$v"
+    fun jobNew(clientId: String? = null, quoteId: String? = null): String {
+        val args = buildList {
+            clientId?.let { add("client=$it") }
+            quoteId?.let { add("quote=$it") }
+        }
+        return "jobs/new" + if (args.isEmpty()) "" else "?" + args.joinToString("&")
+    }
+    fun jobEdit(id: String) = "jobs/$id/edit"
+    fun jobDetail(id: String) = "jobs/$id"
 }
 
 @Composable
@@ -78,8 +91,10 @@ private fun CotixGoNavHost(
     val user by vm.user.collectAsStateWithLifecycle()
     val retentions by vm.retentions.collectAsStateWithLifecycle()
     val services by vm.services.collectAsStateWithLifecycle()
+    val jobs by vm.jobs.collectAsStateWithLifecycle()
     val currentRoute = backStack?.destination?.route
-    val showBar = currentRoute == Routes.DASHBOARD || currentRoute == Routes.CLIENTS || currentRoute == Routes.QUOTES
+    val showBar = currentRoute == Routes.DASHBOARD || currentRoute == Routes.CLIENTS ||
+        currentRoute == Routes.QUOTES || currentRoute == Routes.JOBS
 
     Scaffold(
         bottomBar = {
@@ -117,6 +132,17 @@ private fun CotixGoNavHost(
                         },
                         icon = { Text("▤") },
                         label = { Text("Cotiz.") },
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == Routes.JOBS,
+                        onClick = {
+                            nav.navigate(Routes.JOBS) {
+                                popUpTo(Routes.DASHBOARD)
+                                launchSingleTop = true
+                            }
+                        },
+                        icon = { Text("⚒") },
+                        label = { Text("Trabajos") },
                     )
                 }
             }
@@ -165,6 +191,7 @@ private fun CotixGoNavHost(
                         .take(5),
                     onNewClient = { nav.navigate(Routes.CLIENT_NEW) },
                     onNewQuote = { nav.navigate(Routes.QUOTE_NEW) },
+                    onNewJob = { nav.navigate(Routes.jobNew()) },
                     onOpenQuote = { nav.navigate(Routes.quoteDetail(it)) },
                     onSettings = { nav.navigate(Routes.SETTINGS) },
                 )
@@ -210,6 +237,7 @@ private fun CotixGoNavHost(
                         vm.setClientArchived(id, archived)
                         nav.popBackStack()
                     },
+                    onNewJob = { nav.navigate(Routes.jobNew(clientId = id)) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -287,6 +315,7 @@ private fun CotixGoNavHost(
                     onEdit = { nav.navigate(Routes.quoteEdit(id)) },
                     onArchive = { archived -> vm.setQuoteArchived(id, archived) },
                     onOpenVersion = { v -> nav.navigate(Routes.quoteVersion(id, v)) },
+                    onCreateJob = { nav.navigate(Routes.jobNew(quoteId = id)) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -303,6 +332,100 @@ private fun CotixGoNavHost(
                 QuoteVersionScreen(
                     snapshot = versions.firstOrNull { it.version == v }
                         ?.let { com.cotixgo.app.data.SnapshotJson.decodeQuote(it.snapshotJson) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.JOBS) {
+                JobsListScreen(
+                    jobs = jobs,
+                    onOpen = { nav.navigate(Routes.jobDetail(it)) },
+                    onNew = { nav.navigate(Routes.jobNew()) },
+                )
+            }
+            composable(
+                Routes.JOB_NEW,
+                arguments = listOf(
+                    navArgument("clientId") {
+                        type = NavType.StringType; nullable = true; defaultValue = null
+                    },
+                    navArgument("quoteId") {
+                        type = NavType.StringType; nullable = true; defaultValue = null
+                    },
+                ),
+            ) { entry ->
+                val preClient = entry.arguments?.getString("clientId")
+                val preQuote = entry.arguments?.getString("quoteId")
+                JobFormScreen(
+                    initial = null,
+                    clients = clients,
+                    profile = profiles.firstOrNull(),
+                    linkableQuotes = quotes.filter { q ->
+                        q.status == com.cotixgo.app.core.QuoteStatus.APROBADA.name &&
+                            (preClient == null || q.clientId == preClient) &&
+                            (preQuote == null || q.clientId == quotes.firstOrNull { it.id == preQuote }?.clientId)
+                    },
+                    preselectedClientId = preClient,
+                    preselectedQuoteId = preQuote,
+                    onSave = { input ->
+                        vm.saveJob(input, null) { id ->
+                            if (id != null) nav.navigate(Routes.jobDetail(id)) {
+                                popUpTo(Routes.JOBS)
+                            } else nav.popBackStack()
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.JOB_EDIT,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val job by vm.observeJob(id).collectAsStateWithLifecycle(null)
+                JobFormScreen(
+                    initial = job,
+                    clients = clients,
+                    profile = profiles.firstOrNull { it.id == job?.profileId } ?: profiles.firstOrNull(),
+                    linkableQuotes = emptyList(),
+                    onSave = { input ->
+                        vm.saveJob(input, id) { nav.popBackStack() }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.JOB_DETAIL,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val job by vm.observeJob(id).collectAsStateWithLifecycle(null)
+                val activities by vm.observeJobActivities(id).collectAsStateWithLifecycle(emptyList())
+                val materials by vm.observeJobMaterials(id).collectAsStateWithLifecycle(emptyList())
+                val links by vm.observeJobQuotes(id).collectAsStateWithLifecycle(emptyList())
+                var transitionError by androidx.compose.runtime.remember {
+                    androidx.compose.runtime.mutableStateOf<String?>(null)
+                }
+                JobDetailScreen(
+                    job = job,
+                    activities = activities,
+                    materials = materials,
+                    links = links,
+                    linkedQuotes = quotes,
+                    transitionError = transitionError,
+                    onTransition = { target ->
+                        vm.setJobStatus(id, target) { transitionError = it }
+                    },
+                    onEdit = { nav.navigate(Routes.jobEdit(id)) },
+                    onArchive = { archived -> vm.setJobArchived(id, archived) },
+                    onAddActivity = { vm.saveJobActivity(it) },
+                    onActivityStatus = { aid, s -> vm.setJobActivityStatus(aid, s) },
+                    onAddMaterial = { vm.saveJobMaterial(it) },
+                    onLinkQuote = { qid -> vm.linkQuoteToJob(id, qid) },
+                    linkableQuotes = quotes.filter { q ->
+                        q.status == com.cotixgo.app.core.QuoteStatus.APROBADA.name &&
+                            q.clientId == job?.clientId &&
+                            links.none { it.quoteId == q.id }
+                    },
                     onBack = { nav.popBackStack() },
                 )
             }

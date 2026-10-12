@@ -184,7 +184,8 @@ components:
           description: UUID único por operación; clave de idempotencia.
         entity_type:
           type: string
-          enum: [user, profile, client, service, retention_config, quote, quote_version]
+          enum: [user, profile, client, service, retention_config, quote, quote_version,
+                 job, job_quote, job_activity, job_material]
         entity_id:
           type: string
           format: uuid
