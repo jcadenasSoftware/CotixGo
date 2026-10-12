@@ -1,6 +1,6 @@
 # CotixGo — Alcance y módulos de V1
 
-**Versión:** 1.3  
+**Versión:** 1.4  
 **Estado:** Especificación de alcance basada en reglas aprobadas  
 **Producto:** Herramienta profesional de campo para trabajadores independientes y pequeños proveedores de servicios.
 
@@ -76,10 +76,14 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 - Crear desde una Cotización o directamente desde un Cliente.
 - Relacionar opcionalmente un Trabajo con una o varias Cotizaciones.
 - Estados aprobados: `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO`, `CANCELADO`.
+- Transiciones aprobadas (F4, `03` §6): `BORRADOR → PROGRAMADO | EN PROCESO | CANCELADO`; `PROGRAMADO → BORRADOR | EN PROCESO | CANCELADO`; `EN PROCESO → ENTREGADO | CANCELADO`; `ENTREGADO` y `CANCELADO` terminales; sin transición ni estado de "Pausar". Un Trabajo entregado o cancelado no se edita; la edición no cambia el estado.
+- La dirección de ejecución es propia del Trabajo: puede quedar pendiente en `BORRADOR` y es obligatoria al pasar a `PROGRAMADO` (aprobado en F4).
+- El Trabajo es numerable: provisional `TR-PEND-XXXX` desde la creación; oficial `TR-AAAAMM-NNN` asignado por el backend en la primera aceptación del Trabajo en `PROGRAMADO` o `EN PROCESO`, sin numeración por Perfil Profesional (aprobado en F4).
+- Actividades subordinadas al Trabajo con estados `PENDIENTE`, `EN PROCESO`, `COMPLETADA` (aprobados en F4).
 - Registrar información general, lugar de ejecución, actividades, materiales utilizados, fotografías, observaciones y herramientas.
 - Clasificar fotografías como `ANTES`, `DURANTE`, `DESPUÉS` u `OTRA`.
 - Distinguir lo cotizado, lo ejecutado y lo consumido del inventario.
-- Registrar explícitamente consumo propio; materiales suministrados por el Cliente no generan movimiento de inventario propio.
+- Registrar explícitamente consumo propio; materiales suministrados por el Cliente no generan movimiento de inventario propio. En el alcance de F4 — sin módulo de inventario — el registro de materiales del Trabajo es descriptivo (descripción, cantidad, unidad, origen `CLIENTE`/`PROFESIONAL`, observaciones), sin catálogo ni `material_id`, sin generar movimientos y sin reinterpretación retroactiva cuando llegue la fase de inventario (aprobado en F4).
 - Al entregar el Trabajo, registrar que la ejecución terminó. El Informe y la Cuenta de Cobro pueden generarse luego.
 
 ### 2.5 Inventario
@@ -186,3 +190,4 @@ La operación se considera cerrada e histórica cuando el Trabajo fue entregado 
 | 1.1 | 08/10/2026 | Regla transversal de numeración documental (provisional `TIPO-PEND-XXXX` + oficial global); retenciones solo sobre `SERVICIO`; catálogo por Perfil; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: base de retención por `applies_to` configurable. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | 1.3 | 11/10/2026 | F1: campos mínimos aprobados de Cliente (§2.2) y Perfil Profesional (§2.8). | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |
+| 1.4 | 12/10/2026 | F4 (planificación aprobada): §2.4 registra la matriz de transiciones de Trabajo con `ENTREGADO`/`CANCELADO` terminales y sin "Pausar", dirección de ejecución propia obligatoria al `PROGRAMADO`, numeración `TR-PEND-XXXX` → `TR-AAAAMM-NNN`, estados de actividad `PENDIENTE`/`EN PROCESO`/`COMPLETADA` y registro de materiales F4 descriptivo sin efecto en inventario. | Aprobación de las decisiones de la ficha F4 por el titular. | Aprobado. |

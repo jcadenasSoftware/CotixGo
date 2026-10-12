@@ -1,6 +1,6 @@
 # CotixGo — Arquitectura y tecnologías
 
-**Versión:** 1.7  
+**Versión:** 1.8  
 **Estado:** Stack y principios aprobados; detalles técnicos pendientes donde se indica.
 
 ## 1. Plataformas y stack
@@ -51,7 +51,7 @@ El diagrama expresa responsabilidades conceptuales; no aprueba nombres de paquet
 
 - La interfaz presenta información y captura acciones; no debe duplicar cálculos comerciales en múltiples pantallas.
 - Los cálculos comunes a Cotizaciones y Cuentas de Cobro deben tener una única regla funcional compartida y resultados consistentes en móvil, web y servidor.
-- El backend valida identidad, permisos y consistencia de operaciones sincronizadas. La estrategia exacta de autoridad para conflictos queda pendiente.
+- El backend valida identidad, permisos y consistencia de operaciones sincronizadas. La estrategia de autoridad para conflictos quedó aprobada como política de producto (`03` §6: detección explícita por versión base, preservación de ambas copias, resolución del usuario) e implementada en local para las entidades de F3 (§5.1); la misma política quedó extendida por decisión a las entidades de F4 (`03` §6) pendiente de implementación.
 - MySQL no debe usar claves locales autoincrementales como identidad global de entidades creadas offline.
 - Las fotografías/documentos deben poder asociarse localmente a su Trabajo/entidad antes de sincronizar.
 
@@ -66,7 +66,7 @@ Requisitos aprobados:
 - Recuperación de información sincronizada al iniciar sesión en otro dispositivo.
 - Gestión explícita de cambios simultáneos y conflictos; no resolverlos mediante sobrescritura silenciosa.
 
-**PENDIENTE DE DECISIÓN (técnica):** protocolo/orden de sincronización, cursores, estructuras físicas de `SyncOperation`/`AuditEvent`, límites concretos de reintento y contrato de endpoints. Aprobado para F3 en `03` §6: política de conflicto por entidad (detección explícita, preservación de ambas copias, resolución del usuario; versión de resolución nueva para Cotizaciones), operaciones nunca descartadas (reintentos persistentes; errores de atención pausados con reintento manual), resultados parciales por operación, recuperación por descarga completa en instalación limpia y reglas de cambio de cuenta. Algoritmo de ID aprobado: UUIDv4 aleatorio generado en el dispositivo (F1). Regla aprobada: cualquier documento archivado se puede desarchivar; los datos generados no se eliminan y archivar/desarchivar solo afecta su visibilidad, no sus efectos.
+**Resuelto para las entidades de F3 (implementación local, §5.1):** protocolo/orden de sincronización (push por lotes de una operación por entidad con rebase + pull por cursor `server_seq`), estructuras físicas de `SyncOperation`/`AuditEvent` (tablas `sync_operations`, `sync_conflicts`, `sync_meta`, `audit_events`, `processed_operations`), límites de reintento y contrato de endpoints (`shared/contracts/openapi.yaml`). Permanece pendiente la extensión de implementación a las entidades de F4 y de fases posteriores. Aprobado para F3 en `03` §6: política de conflicto por entidad (detección explícita, preservación de ambas copias, resolución del usuario; versión de resolución nueva para Cotizaciones), operaciones nunca descartadas (reintentos persistentes; errores de atención pausados con reintento manual), resultados parciales por operación, recuperación por descarga completa en instalación limpia y reglas de cambio de cuenta. Algoritmo de ID aprobado: UUIDv4 aleatorio generado en el dispositivo (F1). Regla aprobada: cualquier documento archivado se puede desarchivar; los datos generados no se eliminan y archivar/desarchivar solo afecta su visibilidad, no sus efectos.
 
 ### 2.4 Documentos históricos
 
@@ -101,7 +101,7 @@ El tratamiento de impuestos, incluidos tipos, porcentajes, valores predeterminad
 
 La documentación funcional confirma identidad asociada a cuenta y propiedad de datos del usuario, pero no define todavía:
 
-- detalles del flujo de autenticación (registro e inicio de sesión con email y contraseña están aprobados como base de producto para F3; el contrato concreto permanece pendiente);
+- flujo de autenticación: implementado en local para F3 (registro/login email y contraseña, token bearer, contrato en `openapi.yaml`; §5.1); permanecen pendientes para producción el proveedor/envío real de recuperación, el endpoint de restablecimiento y el cierre de sesión en dispositivos perdidos;
 - recuperación de acceso: aprobada por correo antes de usar cuentas o datos reales; proveedor, envío y configuración pendientes — el correo disponible en Hostinger puede considerarse sin configurarlo aún. Cierre de sesión en dispositivos perdidos sigue pendiente;
 - cifrado de transporte: HTTPS es obligatorio para credenciales o datos reales (HTTP solo es aceptable en desarrollo local `php -S`);
 - cifrado/protección de datos locales en reposo: pendiente de definición tecnológica. Decisión aprobada en la ficha F3 (`03` §6): solo datos sintéticos en desarrollo y pruebas hasta definir, implementar y verificar la protección antes de usar datos reales; no se añade al alcance de F3 automáticamente;
@@ -148,3 +148,4 @@ Pendientes que quedan fuera de esta entrega: HTTPS y despliegue en Hostinger, pr
 | 1.5 | 12/10/2026 | F3 en implementación: §5.1 registra elecciones técnicas (PHP puro + PDO, MariaDB local de desarrollo, migraciones versionadas, token bearer, `server_order` de versiones, `mail_outbox` como mecanismo local de recuperación sin envío real, OkHttp/WorkManager, `server_seq` solo cursor). Pendientes técnicos sin cerrar: HTTPS, MySQL Hostinger, proveedor de correo real, protección en reposo. | Registro de elecciones técnicas de implementación F3 autorizada por el titular. | Aprobado. |
 | 1.6 | 12/10/2026 | F3 implementada en local: §5.1 actualizado con el estado final (cola Android `sync_operations`/`sync_conflicts`/`sync_meta`, `server_seq` por contador explícito, memoización solo de resultados definitivos, lote de una operación por entidad con rebase, URL configurable y cleartext solo desarrollo). Verificación: e2e backend PHP/MariaDB local y suite instrumentada en emulador, todo con datos sintéticos. | Cierre de la implementación local de F3; pendiente revisión del titular vía PR. | Aprobado. |
 | 1.7 | 12/10/2026 | Correcciones de revisión sobre F3: registro envía `local_user_id` y la vinculación reasigna `entityId`/`payload.id` de la entidad `user` sin duplicar filas; `quote_versions` admite números concurrentes conservados con `serverOrder` local (Room v4); cleartext limitado a builds debug con rechazo de HTTP en release; dependencias exigen misma cuenta (`FORBIDDEN_ENTITY`); conflicto de versiones bloquea también EMITIDA a APROBADA; resolución keep-local encola operación nueva con `supersedes`; memorización de idempotencia dentro de la transacción de la operación; recuperación documentada como flujo incompleto (outbox local, sin endpoint de restablecimiento). | Corrección de los defectos detectados en la revisión del PR de F3. | Aprobado. |
+| 1.8 | 12/10/2026 | F3 integrada en `main` (merge `9e1a29c`). Corrección factual: los pendientes técnicos de sincronización (protocolo, cursores, estructuras de cola/auditoría, contrato de endpoints) y el contrato de autenticación quedaron resueltos como implementación local para las entidades de F3 (§5.1); siguen pendientes su extensión a entidades de fases posteriores y los pendientes de producción (HTTPS/Hostinger, MySQL remota, proveedor real de correo y endpoint de restablecimiento, protección en reposo, backups, cierre de sesión en dispositivos perdidos). La política de conflictos quedó extendida por decisión a las entidades de F4 (`03` §6). | Alineación del documento con el estado real posterior al merge de F3 y registro de las decisiones de alcance de F4. | Aprobado. |

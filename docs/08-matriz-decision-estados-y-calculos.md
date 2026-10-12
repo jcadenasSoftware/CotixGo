@@ -1,6 +1,6 @@
 # CotixGo — Matriz de decisiones: estados y cálculos
 
-**Versión:** 1.2  
+**Versión:** 1.3  
 **Estado:** Respuestas del titular registradas. Las reglas confirmadas ya se trasladan al anexo de decisiones aprobadas; las aclaraciones abiertas se enumeran en la sección 8.
 
 Este documento conserva las respuestas del titular y las decisiones pendientes para cerrar los ciclos de vida y cálculos. El estado vigente está resumido en la sección 8 y formalizado en el anexo de reglas aprobadas.
@@ -17,7 +17,17 @@ Foto del Trabajo: ANTES | DURANTE | DESPUÉS | OTRA
 Material: NUEVO | USADO
 ```
 
-El sistema controla las transiciones de Trabajo y Cuenta de Cobro; deben documentarse las condiciones residuales y validaciones que no estén cubiertas por las reglas aprobadas.
+El sistema controla las transiciones de Trabajo y Cuenta de Cobro. Las transiciones de Trabajo quedaron aprobadas en la planificación de F4 (`03` §6):
+
+```text
+BORRADOR   → PROGRAMADO | EN PROCESO | CANCELADO
+PROGRAMADO → BORRADOR | EN PROCESO | CANCELADO
+EN PROCESO → ENTREGADO | CANCELADO
+ENTREGADO y CANCELADO son terminales; no existe transición ni estado de "Pausar".
+Un Trabajo ENTREGADO o CANCELADO no se edita; la edición no cambia el estado.
+```
+
+Permanecen pendientes las condiciones residuales y validaciones de las transiciones de Cuenta de Cobro y de las demás entidades no cubiertas por reglas aprobadas.
 
 ## 2. Cotizaciones — respuestas registradas
 
@@ -112,6 +122,7 @@ Las reglas confirmadas en el consolidado se trasladan a `03-anexo-decisiones-apr
 - El congelamiento expresa cierre comercial/histórico, no una consecuencia automática de cada cambio de estado. La operación queda cerrada cuando el Trabajo fue entregado y la Cuenta de Cobro correspondiente está completamente pagada. Una garantía posterior no reabre automáticamente documentos.
 - Mantener `Cotizar → Ejecutar → Documentar → Cobrar` como principio de producto y priorizar la simplicidad; las funciones adicionales deben facilitar ese flujo y no convertir CotixGo en un ERP rígido.
 - Cotización: estados `BORRADOR`, `EMITIDA`, `APROBADA`, `RECHAZADA`, `VENCIDA`, `CANCELADA`; aprobación manual; vigencia elegida por el profesional al crear; rechazo reversible hasta aprobación; aprobación habilita crear Trabajo manualmente.
+- Trabajo (aprobado en F4): `BORRADOR→PROGRAMADO|EN PROCESO|CANCELADO`; `PROGRAMADO→BORRADOR|EN PROCESO|CANCELADO`; `EN PROCESO→ENTREGADO|CANCELADO`; `ENTREGADO`/`CANCELADO` terminales sin edición y sin "Pausar"; dirección de ejecución propia obligatoria al `PROGRAMADO`; numerable `TR-PEND-XXXX`/`TR-AAAAMM-NNN` en primera aceptación `PROGRAMADO`/`EN PROCESO`; actividades `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; materiales F4 descriptivos sin efecto en inventario ni reinterpretación retroactiva.
 - El profesional puede ajustar el inventario para cargar existencias previas. Confirmar una Compra incrementa el inventario por sus líneas. Solo el consumo propio registrado en un Trabajo descuenta existencias; no se valida contra el saldo y este puede quedar negativo. Cotizar o informar no modifica inventario. Una Compra confirmada puede anularse mediante movimiento inverso, editarse o archivarse. Editarla ajusta el inventario por la diferencia entre cantidades anteriores y nuevas, con movimientos trazables. Archivar cualquier documento o registro solo lo oculta y desarchivarlo vuelve a mostrarlo; nunca se eliminan datos ni se revierten movimientos, pagos, transacciones o relaciones. La anulación es distinta del archivo.
 - El comprobante de compra pertenece al registro de Compra; el Informe de Trabajo se genera desde el Trabajo. Son documentos distintos.
 - Informe de Trabajo: `BORRADOR`/`EMITIDO`; sin edición después de emisión; corrección mediante versión nueva referenciada, conservando la anterior.
@@ -143,3 +154,4 @@ Las respuestas del titular se conservan junto a las preguntas originales. Los pe
 | 1.0 | 30/09/2026 | Matriz de decisiones sobre estados y cálculos. | Registrar respuestas del titular. | Aprobado. |
 | 1.1 | 08/10/2026 | Base de retención solo `SERVICIO` con ejemplo aprobado; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1 vía `payment_adjustments`; numeración provisional `TIPO-PEND-XXXX` y oficial global; catálogo por Perfil; aclaraciones 8 y 9. | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: base de retención por `applies_to` configurable (`OTRO` sin comportamiento fijo); aclaraciones 8 y 9 resueltas y retiradas de pendientes. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
+| 1.3 | 12/10/2026 | Planificación de F4: §1 registra la matriz de transiciones de Trabajo aprobada (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", sin edición en terminal); §8 consolida las reglas de F4 (dirección de ejecución, numeración `TR`, actividades, materiales descriptivos). | Registro de las decisiones de la ficha F4 aprobadas por el titular. | Aprobado. |
