@@ -1,6 +1,6 @@
 # CotixGo — Tipos y contratos de datos
 
-**Versión:** 1.4  
+**Versión:** 1.5  
 **Estado:** Convenciones conceptuales para alinear el modelo; no constituye DDL ni esquema de API final.
 
 ## 1. Propósito
@@ -34,7 +34,7 @@ Dar a Devin un vocabulario común para campos, tipos y relaciones sin fingir que
 - Cada entidad sincronizable tiene ID técnico global, `user_id` o vínculo equivalente de propiedad y marcas de tiempo necesarias para sincronización.
 - Clientes, Inventario, categorías de inventario y Métodos de Cobro pertenecen globalmente al Usuario/Titular. Las operaciones/documentos identifican el Perfil Profesional que les corresponde; el Cliente puede compartirse entre perfiles del mismo titular.
 - `device_id` puede identificar el origen técnico de una operación, pero nunca reemplaza al propietario `user_id`.
-- El número visible `COT-...`, `JOB-...`, `INF-...` o `CC-...` es distinto del ID técnico. Los documentos usan un número provisional `TIPO-PEND-XXXX` desde su creación hasta que el backend asigna el número oficial `TIPO-AAAAMM-NNN` sobre el mismo documento; la secuencia oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional. Para Cotización, el número oficial se asigna cuando el backend acepta por primera vez una versión `EMITIDA`/`APROBADA` (aprobado en la planificación de F3); el momento para otros tipos permanece pendiente.
+- El número visible `COT-...`, `TR-...`, `INF-...` o `CC-...` es distinto del ID técnico. Los documentos usan un número provisional `TIPO-PEND-XXXX` desde su creación hasta que el backend asigna el número oficial `TIPO-AAAAMM-NNN` sobre el mismo documento; la secuencia oficial es global por Usuario/Titular + tipo + período, independiente del Perfil Profesional. Para Cotización, el número oficial se asigna cuando el backend acepta por primera vez una versión `EMITIDA`/`APROBADA` (aprobado en la planificación de F3). Para Trabajo, el número oficial se asigna cuando el backend acepta por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO`, lo que ocurra primero (aprobado en la planificación de F4); el momento para otros tipos permanece pendiente.
 
 ### 3.2 Importes y cálculo
 
@@ -66,6 +66,7 @@ Los siguientes conjuntos están aprobados:
 
 ```text
 Trabajo: BORRADOR | PROGRAMADO | EN PROCESO | ENTREGADO | CANCELADO
+Actividad de Trabajo: PENDIENTE | EN PROCESO | COMPLETADA
 Cuenta de Cobro: PENDIENTE | PARCIAL | PAGADA | CANCELADA
 Cotización: BORRADOR | EMITIDA | APROBADA | RECHAZADA | VENCIDA | CANCELADA
 Informe: BORRADOR | EMITIDO
@@ -121,3 +122,4 @@ No fijar todavía tablas, nombres físicos, índices ni claves compuestas a part
 | 1.2 | 08/10/2026 | D13-B: asignación de pagos con aplicación parcial (excedente `UNASSIGNED`); D14-C: enum de concepto `SERVICIO`/`MATERIAL`/`OTRO` y base de retención por `applies_to` configurable. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | 1.3 | 11/10/2026 | F1: algoritmo de ID global aprobado (UUIDv4); fecha comercial = fecha local del dispositivo y marcas de tiempo = `Instant` UTC ISO-8601. | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |
 | 1.4 | 11/10/2026 | Planificación de F3: §3.1 registra el momento aprobado de asignación del número oficial para Cotización (primera `EMITIDA`/`APROBADA` aceptada por el backend); otros tipos pendientes. | Registro de la decisión de numeración de la ficha F3. | Aprobado. |
+| 1.5 | 12/10/2026 | Planificación de F4: §3.1 registra el momento aprobado de asignación del número oficial para Trabajo (primera aceptación del backend en `PROGRAMADO` o `EN PROCESO`) y el tipo visible `TR-` reemplaza al ejemplo `JOB-`; §3.4 añade los estados aprobados de actividad de Trabajo `PENDIENTE`/`EN PROCESO`/`COMPLETADA`. | Registro de las decisiones de la ficha F4. | Aprobado. |

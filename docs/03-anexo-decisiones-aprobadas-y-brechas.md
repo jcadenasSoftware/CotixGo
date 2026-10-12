@@ -1,6 +1,6 @@
 # CotixGo — Anexo de decisiones aprobadas y revisión de brechas
 
-**Versión:** 1.5  
+**Versión:** 1.7  
 **Estado:** Registro de decisiones aprobadas en el contexto del proyecto y revisión documental  
 **Alcance:** Complementa `01-reglas-de-negocio-v0.2.md` y señala ajustes necesarios en el borrador `02-modelo-de-datos.md`.
 
@@ -22,7 +22,7 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 
 ### 2.2 Trabajos y relación con cotizaciones
 
-- Estados de Trabajo aprobados: `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO` y `CANCELADO`.
+- Estados de Trabajo aprobados: `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO` y `CANCELADO`. Transiciones aprobadas en la ficha F4: ver §6.
 - Un Trabajo puede crearse con una Cotización o directamente para un Cliente sin Cotización.
 - Un Trabajo puede relacionarse con varias Cotizaciones. Son válidos tanto `Cliente → Cotización → Trabajo` como `Cliente → Trabajo`.
 - El Trabajo puede registrar información general, actividades, materiales utilizados, fotografías, observaciones y herramientas.
@@ -111,7 +111,7 @@ Los asuntos bajo **PENDIENTE DE DECISIÓN** no deben ser completados por Devin m
 | Tema | Estado del borrador actual | Alineación requerida |
 |---|---|---|
 | Trabajo sin Cotización | `Job` enumera cotización de origen; la sección de relaciones explica varias cotizaciones, pero no declara claramente que la relación es opcional. | Expresar que el Cliente basta para crear un Trabajo y que la asociación a Cotizaciones es opcional y muchos a muchos. |
-| Estados de Trabajo | El borrador enumera estados conceptuales distintos y deja nombres/transiciones para después. | Reemplazar el conjunto conceptual por los cinco estados aprobados. Las transiciones siguen pendientes si no están definidas en reglas aprobadas. |
+| Estados de Trabajo | El borrador enumera estados conceptuales distintos y deja nombres/transiciones para después. | Resuelto: el modelo registra los cinco estados aprobados y las transiciones de Trabajo aprobadas en la ficha F4 (§6). |
 | Cuenta de Cobro ↔ Cotización | El borrador modela asociación con Trabajos, pero no una relación entre Cuenta de Cobro y Cotizaciones. | Añadir relación asociativa que permita cero o varias Cotizaciones, además de cero o varios Trabajos, conforme a las decisiones aprobadas. |
 | Cuenta de Cobro independiente | El borrador enumera relaciones con Trabajos y no deja explícito el caso de cobro directo sin Cotización ni Trabajo. | Admitir una Cuenta de Cobro vinculada al Cliente y al Perfil Profesional sin Cotización ni Trabajo. El flujo de emergencia puede registrar el pago sin crear Informe o fotografías. |
 | Retenciones e impuestos | Las retenciones están aprobadas; no se aprobó un sistema de impuestos para V1. | Mantener las reglas aprobadas de retenciones. El tratamiento de impuestos, administrador, porcentajes y configuración permanece pendiente y no es requisito de V1. |
@@ -129,13 +129,13 @@ La tabla describe cambios de documentación requeridos, no decisiones de impleme
 
 Estos asuntos no quedan resueltos por las reglas aprobadas disponibles. Las respuestas posteriores de la sección 6 cierran varias decisiones que antes aparecían como pendientes.
 
-1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema. (Cotización: resueltas para F2 en §6.)
+1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema. (Cotización: resueltas para F2 en §6. Trabajo: resueltas para F4 en §6.)
 2. Especificación visual/técnica del Consolidado de Cuentas de Cobro y detalles de su relación con operaciones históricas, sin crear un mecanismo de pago directo sobre varias Cuentas.
-3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos. **Parcialmente resuelto:** la política de producto para las entidades de F3 está aprobada en §6 (detección explícita, preservación de ambas copias y resolución del usuario; versiones de Cotización con versión de resolución nueva). Permanece pendiente la estructura técnica (`SyncOperation`, `AuditEvent`, versionado del servidor, contrato) y su extensión a entidades de fases posteriores.
+3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos. **Parcialmente resuelto:** la política de producto para las entidades de F3 está aprobada en §6 (detección explícita, preservación de ambas copias y resolución del usuario; versiones de Cotización con versión de resolución nueva) e implementada en local para esas entidades — cola `sync_operations`/`sync_conflicts`/`sync_meta`, `audit_events`, versionado del servidor y contrato (`05` §5.1). La misma política quedó extendida por decisión a las entidades de F4 en la ficha F4 (§6). Permanece pendiente su implementación para las entidades de F4 y la extensión a entidades de fases posteriores.
 4. Si una Cuenta de Cobro puede combinar Cotizaciones y Trabajos en el mismo documento y cómo evitar doble cobro de un concepto.
 5. Confirmación final del diseño del mecanismo `payment_adjustments` para corregir o anular Pagos (la capacidad de corrección/anulación ya está aprobada para V1).
 6. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida.
-7. Campos definitivos y valores obligatorios de Trabajo y Cuenta de Cobro, aparte de los enumerados en reglas. (Cliente y Perfil Profesional: mínimos aprobados para F1 en §2.6. Cotización: campos de F2 aprobados en §6.)
+7. Campos definitivos y valores obligatorios de Trabajo y Cuenta de Cobro, aparte de los enumerados en reglas. (Cliente y Perfil Profesional: mínimos aprobados para F1 en §2.6. Cotización: campos de F2 aprobados en §6. Trabajo: avance en F4 — dirección de ejecución propia aprobada, obligatoria al pasar a `PROGRAMADO`, y numeración documental `TR` aprobada; ver §6. La lista definitiva de campos de Trabajo y de Cuenta de Cobro sigue pendiente.)
 8. Tecnología concreta de protección de datos locales en reposo (cifrado u otra solución). Requerida antes de usar datos personales o cuentas reales en el dispositivo; mientras tanto solo se permiten datos sintéticos (decisión de la ficha F3 en §6). Su definición no se completa por inferencia y no forma parte del alcance de F3 automáticamente.
 
 ## 5. Próxima revisión documental
@@ -262,6 +262,48 @@ Decisiones de producto aprobadas por el titular el 11/10/2026 durante la planifi
 - Recuperación de acceso por correo, aprobada antes de usar cuentas o datos reales; proveedor, envío y configuración pendientes (el correo de Hostinger disponible puede considerarse, sin configurarlo aún).
 - HTTPS es obligatorio para credenciales o datos reales; HTTP solo es aceptable en desarrollo local `php -S`.
 
+### Trabajos — fase F4 (local Android con sincronización)
+
+Decisiones aprobadas por el titular el 12/10/2026 para planificar F4 (Trabajos locales en Android con sincronización). Esta ficha no autoriza la implementación: F4 requiere aprobación de etapa explícita según el protocolo.
+
+**Estados y transiciones**
+
+- `BORRADOR → PROGRAMADO | EN PROCESO | CANCELADO`
+- `PROGRAMADO → BORRADOR | EN PROCESO | CANCELADO`
+- `EN PROCESO → ENTREGADO | CANCELADO`
+- `ENTREGADO` y `CANCELADO` son terminales.
+- No existe transición ni estado de "Pausar".
+- Un Trabajo `ENTREGADO` o `CANCELADO` no se edita; los demás estados permanecen editables según las reglas vigentes y la edición no cambia el estado.
+
+**Dirección de ejecución**
+
+- El Trabajo tiene su propia dirección de ejecución, que no se deduce necesariamente de la del Cliente (regla previa confirmada en §2.6).
+- La dirección puede quedar pendiente mientras el Trabajo está en `BORRADOR`; es obligatoria al pasar a `PROGRAMADO`.
+
+**Numeración**
+
+- El Trabajo es numerable: identificador provisional `TR-PEND-XXXX` desde su creación.
+- El backend asigna `TR-AAAAMM-NNN` sobre el mismo `entity_id`, con secuencia global por Usuario/Titular + tipo + período.
+- El número oficial se asigna la primera vez que el backend acepta el Trabajo en `PROGRAMADO` o `EN PROCESO`, lo que ocurra primero; un Trabajo creado directamente en `EN PROCESO` recibe su número al aceptarse esa transición.
+- No existe numeración por Perfil Profesional.
+
+**Materiales del Trabajo**
+
+- En F4 los materiales se registran de forma descriptiva: descripción, cantidad, unidad, origen `CLIENTE` o `PROFESIONAL` y observaciones.
+- En F4 no se requiere catálogo ni `material_id`; estos registros no modifican inventario ni generan movimientos.
+- La futura integración con inventario requiere la fase correspondiente y no debe reinterpretar retroactivamente los registros descriptivos.
+
+**Actividades**
+
+- Estados de actividad aprobados: `PENDIENTE`, `EN PROCESO`, `COMPLETADA`.
+- Las actividades permanecen subordinadas al Trabajo y no añaden reglas de inventario.
+
+**Sincronización y conflictos**
+
+- Se extiende a las entidades nuevas de F4 (`Job`, `JobQuote`, `JobActivity`, `JobMaterial`) la política aprobada para las entidades de F3: detección de concurrencia por versión base, preservación de ambas copias y resolución explícita del usuario; no se elige ganador por reloj del dispositivo ni se sobrescribe silenciosamente.
+- La consistencia de propiedad y referencias entre Trabajo, Cliente, Perfil, Cotizaciones y elementos hijos se conserva con los mecanismos ya aprobados, sin una política de producto distinta: cada entidad (padre o hija) registra su propio conflicto y preserva ambas copias hasta que el usuario resuelve; las referencias exigen propiedad de la misma cuenta y se rechazan en caso contrario; la resolución elegida se sincroniza como una operación nueva encadenada a la pausada, conservando la trazabilidad.
+- Se reutilizan la idempotencia, la cola durable, los reintentos y los cursores de F3 donde corresponda.
+
 ## 7. Historial de cambios
 
 | Versión | Fecha | Cambio | Motivo | Estado |
@@ -273,3 +315,4 @@ Decisiones de producto aprobadas por el titular el 11/10/2026 durante la planifi
 | 1.4 | 11/10/2026 | Planificación de F3: solo datos sintéticos en desarrollo y pruebas hasta definir, implementar y verificar la protección de datos locales en reposo (§6); tecnología de cifrado local queda pendiente (§4.8) y no se añade a F3 automáticamente; recuperación de acceso por correo aprobada en principio con proveedor pendiente; no se requiere MySQL de Hostinger durante la planificación ni el desarrollo local. | Aprobación de la decisión de protección de datos locales de la ficha F3. | Aprobado. |
 | 1.5 | 11/10/2026 | Planificación de F3 — pase documental completo (§6): identidad canónica del servidor y vinculación transaccional de datos locales; reglas de cambio de cuenta; política de conflictos aprobada (detección explícita, preservación, resolución del usuario, versión de resolución nueva en Cotizaciones, `emittedVersion` a la versión de resolución); rechazo de transiciones obsoletas con estado actual; reintentos persistentes sin descarte e idempotencia por `operation_id` + payload inmutable con operación corregida encadenada; momento del número oficial aprobado para Cotización (primera `EMITIDA`/`APROBADA` aceptada por el backend); auth email/contraseña como base; HTTPS obligatorio para datos reales. Pendiente §4.3 marcado parcialmente resuelto (estructura técnica pendiente). | Registro documental de las decisiones de producto de F3 ya aprobadas por el titular. | Aprobado. |
 | 1.6 | 11/10/2026 | F3 — alcance de `VENCIDA` aclarado (§6): el vencimiento solo aplica a los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA`; `APROBADA` y `CANCELADA` permanecen terminales (la aprobada puede originar un Trabajo). El vencimiento materializado se sincroniza como transición `→VENCIDA` aceptada por el servidor desde los mismos estados. | Aclaración del alcance de la regla de vencimiento para alinear Android y API. | Aprobado. |
+| 1.7 | 12/10/2026 | F3 integrada en `main` (merge `9e1a29c`). Planificación de F4 aprobada (§6): matriz de transiciones de Trabajo (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", edición solo fuera de terminales); dirección de ejecución propia obligatoria al `PROGRAMADO`; Trabajo numerable `TR-PEND-XXXX` → `TR-AAAAMM-NNN` en primera aceptación `PROGRAMADO`/`EN PROCESO`; materiales F4 descriptivos sin efecto en inventario ni reinterpretación retroactiva; actividades `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; política de conflictos de F3 extendida a las entidades de F4. Brechas §3.2 y pendientes §4.1, §4.3 y §4.7 actualizados (estructura técnica de sincronización implementada en local para entidades F3; extensión de implementación a F4 y fases posteriores pendiente). | Registro de las decisiones de alcance de F4 aprobadas por el titular y corrección del estado posterior al merge de F3. | Aprobado. |

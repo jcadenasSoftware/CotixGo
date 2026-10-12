@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v0.3
+## Documento de diseño v0.6
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -472,11 +472,12 @@ No es una copia de la cotización.
 - `id`
 - `user_id`
 - `client_id`
-- número documental
+- número documental (numerable: provisional `TR-PEND-XXXX` desde la creación; oficial `TR-AAAAMM-NNN` asignado por el backend sobre el mismo `entity_id` en la primera aceptación del Trabajo en `PROGRAMADO` o `EN PROCESO` — aprobado en F4, `03` §6)
 - estado
 - fecha de inicio
 - fecha estimada
 - fecha de entrega
+- dirección de ejecución propia del Trabajo (no se deduce necesariamente de la del Cliente; puede quedar pendiente en `BORRADOR` y es obligatoria al pasar a `PROGRAMADO` — aprobado en F4, `03` §6)
 - observaciones
 - información de cierre
 - snapshot relevante del cliente
@@ -499,15 +500,17 @@ Para preservar esta flexibilidad, la relación debe modelarse mediante una entid
 
 ### Estado operativo
 
-El trabajo debe poder permanecer abierto y editable mientras esté en proceso.
+Estados aprobados: `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO`, `CANCELADO`.
 
-Estados conceptuales:
+Transiciones aprobadas en la planificación de F4 (`03` §6):
 
-- en proceso;
-- entregado/completado;
-- cancelado.
+- `BORRADOR → PROGRAMADO | EN PROCESO | CANCELADO`
+- `PROGRAMADO → BORRADOR | EN PROCESO | CANCELADO`
+- `EN PROCESO → ENTREGADO | CANCELADO`
+- `ENTREGADO` y `CANCELADO` son terminales.
+- No existe transición ni estado de "Pausar".
 
-La lista definitiva y sus transiciones se formalizarán después.
+El trabajo permanece abierto y editable mientras no esté en un estado terminal; un Trabajo `ENTREGADO` o `CANCELADO` no se edita y la edición no cambia el estado.
 
 ### Regla de cierre histórico
 
@@ -546,7 +549,7 @@ Representa una actividad realizada durante un trabajo.
 - `id`
 - `job_id`
 - descripción
-- estado
+- estado (`PENDIENTE`, `EN PROCESO`, `COMPLETADA` — aprobados en F4, `03` §6)
 - fecha/hora de inicio cuando corresponda
 - fecha/hora de finalización cuando corresponda
 - observaciones
@@ -591,6 +594,8 @@ Solo cuando:
 debe generarse el movimiento de inventario correspondiente.
 
 El consumo se registra en el Trabajo según lo realmente utilizado, sin validarlo contra la existencia disponible. Si la cantidad supera el stock, el saldo puede quedar negativo; esto no bloquea ni modifica el Trabajo o su Informe. Cotizaciones e Informes no generan movimientos de inventario.
+
+Alcance de F4 (`03` §6): el registro de materiales del Trabajo es descriptivo — descripción, cantidad, unidad, origen `CLIENTE`/`PROFESIONAL` y observaciones — sin catálogo ni `material_id`, sin modificar inventario ni generar movimientos. La futura fase de inventario no reinterpretará retroactivamente estos registros descriptivos.
 
 ---
 
@@ -1262,16 +1267,16 @@ Estas son vistas, enums, configuraciones o comportamientos, salvo que una regla 
 
 Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
-1. transiciones completas permitidas de cada entidad y sus actores;
+1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6);
 2. transiciones/estados restantes de Compras, archivos y sincronización;
 3. relación de versiones de Informe; la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
 5. instante exacto de vencimiento de Cotización — resuelto para F2 y aclarado en F3: `fecha_vencimiento` es el último día válido y pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior, solo desde los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA` (`03` §6);
-6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); otros tipos de documento siguen pendientes;
+6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); otros tipos de documento siguen pendientes;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
 9. timestamps y control de versiones;
-10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6); la estructura técnica queda pendiente;
+10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6), pendiente de implementación para ellas y para entidades de fases posteriores;
 11. estructura exacta de `SyncOperation`;
 12. estructura exacta de `AuditEvent`;
 13. campos finales de cada entidad;
@@ -1349,3 +1354,4 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.3 | 08/10/2026 | D13-B: asignación de pagos sin asignar con aplicación parcial — el excedente sobre el saldo del destino permanece `UNASSIGNED` en el mismo Pago; D14-C: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento hardcodeado). | Aprobación de las decisiones pendientes de la etapa V1.1. | Cambio aprobado; el documento sigue en borrador. |
 | v0.4 | 11/10/2026 | F1: mínimos aprobados registrados en `ProfessionalProfile` (§5) y `Client` (§6). | Aprobación de las decisiones pendientes de la ficha F1. | Cambio aprobado; el documento sigue en borrador. |
 | v0.5 | 11/10/2026 | Pendientes §36 actualizados: vencimiento de Cotización resuelto en F2; momento del número oficial resuelto para Cotización en F3; política de conflicto aprobada para entidades de F3 (referencia a `03` §6). | Registro de decisiones de F2/F3 que cierran pendientes del modelo. | Cambio aprobado; el documento sigue en borrador. |
+| v0.6 | 12/10/2026 | F4: `Job` §12 registra los cinco estados aprobados y la matriz de transiciones (`ENTREGADO`/`CANCELADO` terminales, sin "Pausar", sin edición en terminal), dirección de ejecución propia obligatoria al `PROGRAMADO` y numeración `TR-PEND-XXXX` → `TR-AAAAMM-NNN`; `JobActivity` §14 con estados `PENDIENTE`/`EN PROCESO`/`COMPLETADA`; `JobMaterial` §15 con alcance F4 descriptivo sin efecto en inventario ni reinterpretación retroactiva. Pendientes §36 actualizados (transiciones de Trabajo, momento de numeración, política de conflictos extendida a F4). | Aprobación de las decisiones de la ficha F4 por el titular. | Cambio aprobado; el documento sigue en borrador. |
