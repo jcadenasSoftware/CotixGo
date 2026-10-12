@@ -1266,12 +1266,12 @@ Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 2. transiciones/estados restantes de Compras, archivos y sincronización;
 3. relación de versiones de Informe; la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
-5. instante exacto de vencimiento de Cotización;
-6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional;
+5. instante exacto de vencimiento de Cotización — resuelto para F2: `fecha_vencimiento` es el último día válido y pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior (`03` §6);
+6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); otros tipos de documento siguen pendientes;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
 9. timestamps y control de versiones;
-10. resolución de conflictos;
+10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6); la estructura técnica queda pendiente;
 11. estructura exacta de `SyncOperation`;
 12. estructura exacta de `AuditEvent`;
 13. campos finales de cada entidad;
@@ -1348,3 +1348,4 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.2 | 08/10/2026 | Numeración provisional `TIPO-PEND-XXXX` y oficial global por usuario+tipo+período; `Payment` admite existir sin Cuenta de Cobro (anticipo) con asociación posterior; nueva entidad `PaymentAdjustment` para corrección/anulación de Pagos en V1; catálogo de servicios por Perfil Profesional; aclarada base de retención sobre conceptos `SERVICIO`; actualizados los pendientes. | Incorporación de decisiones aprobadas por el titular. | Cambio aprobado; el documento sigue en borrador. |
 | v0.3 | 08/10/2026 | D13-B: asignación de pagos sin asignar con aplicación parcial — el excedente sobre el saldo del destino permanece `UNASSIGNED` en el mismo Pago; D14-C: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento hardcodeado). | Aprobación de las decisiones pendientes de la etapa V1.1. | Cambio aprobado; el documento sigue en borrador. |
 | v0.4 | 11/10/2026 | F1: mínimos aprobados registrados en `ProfessionalProfile` (§5) y `Client` (§6). | Aprobación de las decisiones pendientes de la ficha F1. | Cambio aprobado; el documento sigue en borrador. |
+| v0.5 | 11/10/2026 | Pendientes §36 actualizados: vencimiento de Cotización resuelto en F2; momento del número oficial resuelto para Cotización en F3; política de conflicto aprobada para entidades de F3 (referencia a `03` §6). | Registro de decisiones de F2/F3 que cierran pendientes del modelo. | Cambio aprobado; el documento sigue en borrador. |

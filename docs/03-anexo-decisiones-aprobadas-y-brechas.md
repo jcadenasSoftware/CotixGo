@@ -1,6 +1,6 @@
 # CotixGo — Anexo de decisiones aprobadas y revisión de brechas
 
-**Versión:** 1.3  
+**Versión:** 1.5  
 **Estado:** Registro de decisiones aprobadas en el contexto del proyecto y revisión documental  
 **Alcance:** Complementa `01-reglas-de-negocio-v0.2.md` y señala ajustes necesarios en el borrador `02-modelo-de-datos.md`.
 
@@ -131,11 +131,12 @@ Estos asuntos no quedan resueltos por las reglas aprobadas disponibles. Las resp
 
 1. Condiciones y validaciones residuales de las transiciones gestionadas por el sistema. (Cotización: resueltas para F2 en §6.)
 2. Especificación visual/técnica del Consolidado de Cuentas de Cobro y detalles de su relación con operaciones históricas, sin crear un mecanismo de pago directo sobre varias Cuentas.
-3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos.
+3. Política de resolución de conflictos de sincronización por entidad y por campo, incluyendo cambios simultáneos. **Parcialmente resuelto:** la política de producto para las entidades de F3 está aprobada en §6 (detección explícita, preservación de ambas copias y resolución del usuario; versiones de Cotización con versión de resolución nueva). Permanece pendiente la estructura técnica (`SyncOperation`, `AuditEvent`, versionado del servidor, contrato) y su extensión a entidades de fases posteriores.
 4. Si una Cuenta de Cobro puede combinar Cotizaciones y Trabajos en el mismo documento y cómo evitar doble cobro de un concepto.
 5. Confirmación final del diseño del mecanismo `payment_adjustments` para corregir o anular Pagos (la capacidad de corrección/anulación ya está aprobada para V1).
 6. Retención y almacenamiento de fotografías/archivos, límites de tamaño, compresión, permisos y sincronización fallida.
 7. Campos definitivos y valores obligatorios de Trabajo y Cuenta de Cobro, aparte de los enumerados en reglas. (Cliente y Perfil Profesional: mínimos aprobados para F1 en §2.6. Cotización: campos de F2 aprobados en §6.)
+8. Tecnología concreta de protección de datos locales en reposo (cifrado u otra solución). Requerida antes de usar datos personales o cuentas reales en el dispositivo; mientras tanto solo se permiten datos sintéticos (decisión de la ficha F3 en §6). Su definición no se completa por inferencia y no forma parte del alcance de F3 automáticamente.
 
 ## 5. Próxima revisión documental
 
@@ -209,6 +210,53 @@ Decisiones aprobadas por el titular el 11/10/2026 para la ficha F2:
 
 - El catálogo de servicios se administra por Perfil Profesional.
 
+### Protección de datos locales y entorno de desarrollo — planificación de F3
+
+Decisiones aprobadas por el titular el 11/10/2026 para la planificación de F3 (sincronización Android ↔ backend):
+
+- Durante el desarrollo y las pruebas de F3 solo se permiten datos sintéticos en Android, la base de datos local, la API y la base local de pruebas.
+- No se usarán datos personales ni cuentas reales hasta definir, implementar y verificar la protección de datos locales en reposo.
+- La tecnología concreta de cifrado/protección local permanece pendiente (§4.8); no se elige ninguna solución por inferencia.
+- Esta decisión no añade cifrado local al alcance de F3 automáticamente; su inclusión requiere definir y aprobar la solución antes de usar datos reales.
+- Recuperación de acceso: aprobada por correo antes de usar cuentas o datos reales; el proveedor, el envío y la configuración técnica quedan pendientes — el correo disponible en Hostinger puede considerarse, sin solicitar credenciales ni configurar el servicio todavía.
+- No se requiere crear ni configurar la base MySQL de Hostinger durante la planificación ni el desarrollo local; el titular será avisado antes del hito de provisión o despliegue remoto.
+
+### Sincronización, identidad y autenticación — planificación de F3
+
+Decisiones de producto aprobadas por el titular el 11/10/2026 durante la planificación de F3. Los detalles técnicos (contrato de endpoints, esquema físico, estructura de `SyncOperation`/`AuditEvent` y mecanismos de servidor) permanecen pendientes y no se resuelven por inferencia.
+
+**Identidad y vinculación**
+
+- La identidad canónica es la cuenta del servidor, no el dispositivo.
+- Al vincular una instalación con datos locales, se conservan los UUID de las entidades y se reasignan sus referencias al ID canónico de Usuario mediante una transacción local segura; las operaciones ya encoladas se regeneran con la identidad canónica (nuevos `operation_id`) conservando su orden.
+- En una instalación limpia que inicia sesión se usa la identidad devuelta por el servidor (restauración por descarga).
+- El servidor vincula cada `entity_id` al `user_id` en la primera escritura aceptada; el mismo `entity_id` usado desde otra cuenta se rechaza.
+- Cambio de cuenta: exige reautenticación y confirmación explícita; se comprueba que no haya operaciones en cola ni entidades pendientes de sincronización. Solo entonces se permite limpiar la copia local y descargar la cuenta nueva. Si hay pendientes o no se puede confirmar el estado, el cambio se bloquea conservando los datos; no se transfieren ni mezclan datos automáticamente.
+
+**Conflictos**
+
+- La detección de concurrencia es explícita y los datos local y remoto se preservan hasta que el usuario resuelve el conflicto. El `updated_at` del dispositivo no se usa como ganador automático.
+- Una transición de estado solicitada desde un estado obsoleto se rechaza con el estado actual del servidor y un aviso visible, conservando el contenido de la operación pendiente.
+- Ediciones concurrentes de una Cotización: se conservan todas las versiones; el documento queda bloqueado para nuevas emisiones y aprobaciones mientras exista conflicto; la resolución por elección del usuario o por fusión se registra como una versión nueva, sin reescribir snapshots existentes. La secuencia autoritativa del servidor queda fuera del snapshot inmutable.
+- Si la Cotización ya había sido emitida, el snapshot emitido permanece intacto, el número oficial se conserva sobre el mismo `entity_id` y `emittedVersion` pasa a apuntar a la versión de resolución.
+
+**Reintentos e idempotencia**
+
+- Las operaciones pendientes no se descartan. Los fallos transitorios se reintentan de forma persistente; los errores que requieren atención se pausan con aviso visible y reintento manual tras corregir la causa. El payload y el historial de la operación se conservan.
+- La idempotencia usa `operation_id` único y payload inmutable como clave de reintento idéntico; reutilizar un `operation_id` con payload distinto está prohibido (`IDEMPOTENCY_KEY_REUSED`). Una operación corregida recibe `operation_id` nuevo y conserva la relación con la operación pausada. El control de concurrencia por entidad/versión es un mecanismo separado de la clave de idempotencia.
+- La escritura local de la entidad y su operación pendiente se registran de forma segura en la misma transacción.
+
+**Numeración oficial**
+
+- El número oficial se asigna cuando el backend acepta por primera vez una Cotización en estado `EMITIDA` o `APROBADA`, sobre el mismo `entity_id`, y se conserva en transiciones posteriores.
+- Una revalidación crea un documento nuevo que recibe su propio número oficial cuando se emite; los borradores conservan su provisional.
+
+**Autenticación**
+
+- Registro e inicio de sesión con email y contraseña (base de producto; contrato de endpoints pendiente).
+- Recuperación de acceso por correo, aprobada antes de usar cuentas o datos reales; proveedor, envío y configuración pendientes (el correo de Hostinger disponible puede considerarse, sin configurarlo aún).
+- HTTPS es obligatorio para credenciales o datos reales; HTTP solo es aceptable en desarrollo local `php -S`.
+
 ## 7. Historial de cambios
 
 | Versión | Fecha | Cambio | Motivo | Estado |
@@ -217,3 +265,5 @@ Decisiones aprobadas por el titular el 11/10/2026 para la ficha F2:
 | 1.1 | 08/10/2026 | Base de retención solo `SERVICIO` con ejemplo aprobado; numeración provisional `TIPO-PEND-XXXX` y oficial global usuario+tipo+período; pago sin Cuenta previa (anticipo); corrección/anulación de Pagos en V1 vía `payment_adjustments`; catálogo por Perfil; pendientes actualizados (numeración y alcance de catálogo resueltos; nuevos pendientes de asignación de pagos y concepto `OTRO`). | Incorporación de decisiones aprobadas por el titular. | Aprobado. |
 | 1.2 | 08/10/2026 | D13-B aprobada: asignación de pagos sin asignar con aplicación parcial — el excedente sobre el saldo del destino permanece `UNASSIGNED`; D14-C aprobada: base de retención determinada por `applies_to` configurable por regla (`OTRO` sin comportamiento hardcodeado); decisiones técnicas aprobadas: package Android `com.cotixgo.app` y JDK 21 LTS (registradas en `05`). Pendientes resueltos: mecánica de asignación de pagos y tratamiento de `OTRO`. | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | 1.3 | 11/10/2026 | F1: mínimos aprobados de Cliente y Perfil Profesional (§2.6); pendiente §4.7 acotado a Trabajo, Cotización y Cuenta de Cobro. | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |
+| 1.4 | 11/10/2026 | Planificación de F3: solo datos sintéticos en desarrollo y pruebas hasta definir, implementar y verificar la protección de datos locales en reposo (§6); tecnología de cifrado local queda pendiente (§4.8) y no se añade a F3 automáticamente; recuperación de acceso por correo aprobada en principio con proveedor pendiente; no se requiere MySQL de Hostinger durante la planificación ni el desarrollo local. | Aprobación de la decisión de protección de datos locales de la ficha F3. | Aprobado. |
+| 1.5 | 11/10/2026 | Planificación de F3 — pase documental completo (§6): identidad canónica del servidor y vinculación transaccional de datos locales; reglas de cambio de cuenta; política de conflictos aprobada (detección explícita, preservación, resolución del usuario, versión de resolución nueva en Cotizaciones, `emittedVersion` a la versión de resolución); rechazo de transiciones obsoletas con estado actual; reintentos persistentes sin descarte e idempotencia por `operation_id` + payload inmutable con operación corregida encadenada; momento del número oficial aprobado para Cotización (primera `EMITIDA`/`APROBADA` aceptada por el backend); auth email/contraseña como base; HTTPS obligatorio para datos reales. Pendiente §4.3 marcado parcialmente resuelto (estructura técnica pendiente). | Registro documental de las decisiones de producto de F3 ya aprobadas por el titular. | Aprobado. |
