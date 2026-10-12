@@ -77,7 +77,7 @@ Número documental: PROVISIONAL | OFFICIAL
 Concepto de línea: SERVICIO | MATERIAL | OTRO
 ```
 
-Estados de Compra y sincronización requieren especificación antes de cerrar modelos/API. El comportamiento funcional del archivo está aprobado: archivar oculta, desarchivar vuelve a mostrar y ninguna acción elimina datos o revierte efectos; su representación técnica y la matriz completa de transiciones siguen pendientes.
+Estados de Compra y sincronización requieren especificación antes de cerrar modelos/API. El comportamiento funcional del archivo está aprobado: archivar oculta, desarchivar vuelve a mostrar y ninguna acción elimina datos o revierte efectos; su representación técnica y la matriz completa de transiciones siguen pendientes. Para Cotización, el vencimiento por fecha solo aplica a los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA`; `APROBADA` y `CANCELADA` son terminales (`03` §6).
 
 ## 4. Entidades conceptuales
 

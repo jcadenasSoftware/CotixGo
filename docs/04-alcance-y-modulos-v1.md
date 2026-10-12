@@ -63,7 +63,7 @@ Los módulos siguientes forman parte del producto definido. Las funciones enumer
 - Tratar precios de catálogo como sugerencias; guardar en cada documento la descripción, cantidades y valores utilizados.
 - El profesional define la vigencia al crear cada Cotización; el sistema calcula su fecha de vencimiento.
 - Modificar cotizaciones abiertas manteniendo versiones internas.
-- Estados: `BORRADOR`, `EMITIDA`, `APROBADA`, `RECHAZADA`, `VENCIDA`, `CANCELADA`. El profesional registra manualmente la aprobación; puede editar `BORRADOR` y `EMITIDA` antes del vencimiento y cancelar cualquiera de esos dos estados. El vencimiento se determina automáticamente por fecha.
+- Estados: `BORRADOR`, `EMITIDA`, `APROBADA`, `RECHAZADA`, `VENCIDA`, `CANCELADA`. El profesional registra manualmente la aprobación; puede editar `BORRADOR` y `EMITIDA` antes del vencimiento y cancelar cualquiera de esos dos estados. El vencimiento se determina automáticamente por fecha y solo alcanza a los estados no terminales (`BORRADOR`, `EMITIDA`, `RECHAZADA`); `APROBADA` y `CANCELADA` son terminales (`03` §6).
 - Aprobar una Cotización habilita la creación manual de un Trabajo, pero no lo crea automáticamente. El sistema controla las transiciones de estado.
 - No permitir editar/aprobar una cotización vencida bajo sus condiciones anteriores; permitir usarla como base de una nueva.
 - Permitir revertir un rechazo mientras la Cotización no haya sido aprobada; el sistema valida las transiciones según el estado actual.

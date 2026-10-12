@@ -286,17 +286,16 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         } ?: QuoteStatus.BORRADOR
         if (existing != null && !QuoteTransitions.isEditable(effective)) {
             if (effective.name != existing.status) {
-                // Materializa el vencimiento derivado de forma segura. La
-                // matriz del servidor solo admite EMITIDA→VENCIDA: desde
-                // otros estados el vencimiento queda como estado local.
+                // Materializa el vencimiento derivado y lo encola para el
+                // servidor: la regla aprobada vence desde cualquier estado
+                // no terminal (BORRADOR/EMITIDA/RECHAZADA); APROBADA y
+                // CANCELADA son terminales y nunca llegan aquí.
                 val vencida = existing.copy(status = effective.name, updatedAt = now,
-                    pendingSync = existing.status == "EMITIDA")
+                    pendingSync = true)
                 db.withTransaction {
                     db.quoteDao().upsert(vencida)
-                    if (existing.status == "EMITIDA") {
-                        sync?.enqueue(EntityTypes.QUOTE, vencida.id,
-                            SyncPayloads.quote(vencida), existing.serverVersion)
-                    }
+                    sync?.enqueue(EntityTypes.QUOTE, vencida.id,
+                        SyncPayloads.quote(vencida), existing.serverVersion)
                 }
             }
             return null
@@ -364,19 +363,15 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         )
         if (effective.name != quote.status) {
             // Materializa el vencimiento derivado en la siguiente escritura.
-            // Solo EMITIDA→VENCIDA es transición válida en el servidor;
-            // desde otros estados el vencimiento queda como estado local.
-            val serverVisible = quote.status == "EMITIDA"
+            // El servidor acepta →VENCIDA desde cualquier estado no
+            // terminal (regla aprobada): la operación sincroniza el
+            // vencimiento igual que una transición manual.
             quote = quote.copy(status = effective.name, updatedAt = nowEpochMillis(),
-                pendingSync = quote.pendingSync || serverVisible)
-            if (serverVisible) {
-                db.withTransaction {
-                    db.quoteDao().upsert(quote)
-                    sync?.enqueue(EntityTypes.QUOTE, quote.id,
-                        SyncPayloads.quote(quote), quote.serverVersion)
-                }
-            } else {
+                pendingSync = true)
+            db.withTransaction {
                 db.quoteDao().upsert(quote)
+                sync?.enqueue(EntityTypes.QUOTE, quote.id,
+                    SyncPayloads.quote(quote), quote.serverVersion)
             }
         }
         if (!QuoteTransitions.canTransition(effective, to)) return false
@@ -425,13 +420,11 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         if (effective != QuoteStatus.VENCIDA) return null
         if (effective.name != source.status) {
             val vencida = source.copy(status = effective.name, updatedAt = nowEpochMillis(),
-                pendingSync = source.status == "EMITIDA")
+                pendingSync = true)
             db.withTransaction {
                 db.quoteDao().upsert(vencida)
-                if (source.status == "EMITIDA") {
-                    sync?.enqueue(EntityTypes.QUOTE, vencida.id,
-                        SyncPayloads.quote(vencida), source.serverVersion)
-                }
+                sync?.enqueue(EntityTypes.QUOTE, vencida.id,
+                    SyncPayloads.quote(vencida), source.serverVersion)
             }
         }
         val latest = db.quoteVersionDao().getLatest(id) ?: return null

@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.cotixgo.app.core.ConceptType
 import com.cotixgo.app.core.Ids
+import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.data.AppDatabase
 import com.cotixgo.app.data.AppRepository
 import com.cotixgo.app.data.AuthRepository
@@ -28,6 +29,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -452,5 +454,94 @@ class SyncE2eTest {
         val final = db.clientDao().get(client.id)!!
         assertEquals("Local posterior", final.name)
         assertTrue(!final.pendingSync)
+    }
+
+    // --- Regla de vencimiento (alcance aclarado en F3): vencen los estados
+    // no terminales; APROBADA/CANCELADA permanecen terminales. ---
+
+    /** Simula el paso del tiempo sobre una fila ya persistida. */
+    private suspend fun backdateExpiry(quoteId: String) {
+        val q = db.quoteDao().get(quoteId)!!
+        db.quoteDao().upsert(
+            q.copy(
+                issueDateEpochDay = LocalDate.now().toEpochDay() - 30,
+                expiryDateEpochDay = LocalDate.now().toEpochDay() - 10,
+            ),
+        )
+    }
+
+    @Test
+    fun vencidaFromBorrador_materializes_syncs_andRestoresOnOtherDevice() = runBlocking {
+        val quoteId = seedQuote() // BORRADOR vigente
+        sync.syncNow() // el servidor la conoce como BORRADOR
+        backdateExpiry(quoteId)
+
+        // La siguiente escritura materializa VENCIDA y encola la transición
+        // (emitir se rechaza por estar ya vencida).
+        assertFalse(repo.setQuoteStatus(quoteId, QuoteStatus.EMITIDA))
+        assertEquals("VENCIDA", db.quoteDao().get(quoteId)!!.status)
+        assertTrue("materialización encolada", db.syncDao().pendingCount() > 0)
+
+        sync.syncNow()
+        assertFalse(db.quoteDao().get(quoteId)!!.pendingSync)
+
+        // Otro dispositivo (instalación limpia) la ve VENCIDA: el servidor
+        // almacenó la transición BORRADOR→VENCIDA.
+        sync.wipeLocalData()
+        session.setCursor(0)
+        sync.pullAll()
+        assertEquals("VENCIDA", db.quoteDao().get(quoteId)!!.status)
+    }
+
+    @Test
+    fun vencidaFromRechazada_syncsAsTransition() = runBlocking {
+        val quoteId = seedQuote()
+        repo.emitQuote(quoteId)
+        assertTrue(repo.setQuoteStatus(quoteId, QuoteStatus.RECHAZADA))
+        sync.syncNow() // servidor: EMITIDA→RECHAZADA aplicadas
+        val official = db.quoteDao().get(quoteId)!!.officialNumber
+        backdateExpiry(quoteId)
+
+        // Rechazada es no terminal: la escritura materializa VENCIDA.
+        assertFalse(repo.setQuoteStatus(quoteId, QuoteStatus.EMITIDA))
+        assertEquals("VENCIDA", db.quoteDao().get(quoteId)!!.status)
+        sync.syncNow()
+
+        val q = db.quoteDao().get(quoteId)!!
+        assertFalse(q.pendingSync)
+        assertEquals("número oficial conservado", official, q.officialNumber)
+
+        sync.wipeLocalData()
+        session.setCursor(0)
+        sync.pullAll()
+        assertEquals("VENCIDA", db.quoteDao().get(quoteId)!!.status)
+        assertEquals(official, db.quoteDao().get(quoteId)!!.officialNumber)
+    }
+
+    @Test
+    fun terminalQuotes_doNotBecomeVencida() = runBlocking {
+        val aprobada = seedQuote()
+        repo.emitQuote(aprobada)
+        assertTrue(repo.setQuoteStatus(aprobada, QuoteStatus.APROBADA))
+        val cancelada = seedQuote()
+        assertTrue(repo.setQuoteStatus(cancelada, QuoteStatus.CANCELADA))
+        sync.syncNow()
+        assertEquals(0, db.syncDao().pendingCount())
+
+        backdateExpiry(aprobada)
+        backdateExpiry(cancelada)
+
+        // Escritura sobre estados terminales: sin materialización ni op nueva.
+        assertFalse(repo.setQuoteStatus(aprobada, QuoteStatus.RECHAZADA))
+        assertFalse(repo.setQuoteStatus(cancelada, QuoteStatus.RECHAZADA))
+        assertEquals("APROBADA", db.quoteDao().get(aprobada)!!.status)
+        assertEquals("CANCELADA", db.quoteDao().get(cancelada)!!.status)
+        assertEquals("no se encoló vencimiento para terminales",
+            0, db.syncDao().pendingCount())
+
+        // Pull de ida y vuelta: el servidor tampoco convierte terminales.
+        sync.pullAll()
+        assertEquals("APROBADA", db.quoteDao().get(aprobada)!!.status)
+        assertEquals("CANCELADA", db.quoteDao().get(cancelada)!!.status)
     }
 }

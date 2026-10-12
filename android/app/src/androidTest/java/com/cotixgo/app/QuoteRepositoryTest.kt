@@ -263,4 +263,32 @@ class QuoteRepositoryTest {
         assertEquals("6", snap.retentions[0].ratePercent)
         assertEquals("1364000.00", snap.net)
     }
+
+    @Test
+    fun expiredTerminal_staysTerminal_noVencidaMaterialization() = runTest {
+        val (_, profileId, clientId) = seed()
+        // APROBADA cuya vigencia venció después de aprobarse: se conserva
+        // APROBADA (puede originar un Trabajo); el vencimiento no la materializa.
+        val approved = repo.saveQuote(input(profileId, clientId))!!
+        repo.emitQuote(approved)
+        repo.setQuoteStatus(approved, QuoteStatus.APROBADA)
+        db.quoteDao().upsert(db.quoteDao().get(approved)!!.copy(
+            issueDateEpochDay = LocalDate.now().toEpochDay() - 10,
+            expiryDateEpochDay = LocalDate.now().toEpochDay() - 6,
+        ))
+        assertFalse(repo.setQuoteStatus(approved, QuoteStatus.RECHAZADA))
+        assertEquals(QuoteStatus.APROBADA.name, repo.observeQuote(approved).first()!!.status)
+        // CANCELADA con la vigencia vencida: mismo tratamiento terminal.
+        val cancelled = repo.saveQuote(input(profileId, clientId))!!
+        repo.setQuoteStatus(cancelled, QuoteStatus.CANCELADA)
+        db.quoteDao().upsert(db.quoteDao().get(cancelled)!!.copy(
+            issueDateEpochDay = LocalDate.now().toEpochDay() - 10,
+            expiryDateEpochDay = LocalDate.now().toEpochDay() - 6,
+        ))
+        assertFalse(repo.setQuoteStatus(cancelled, QuoteStatus.RECHAZADA))
+        assertEquals(QuoteStatus.CANCELADA.name, repo.observeQuote(cancelled).first()!!.status)
+        // Ninguna de las dos admite revalidación (solo VENCIDA).
+        assertNull(repo.revalidateQuote(approved, 15))
+        assertNull(repo.revalidateQuote(cancelled, 15))
+    }
 }

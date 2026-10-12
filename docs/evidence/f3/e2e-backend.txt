@@ -31,5 +31,16 @@ PASS approve_after_resolve_APPLIED
 PASS official_number_preserved
 PASS idempotency_memo_committed
 PASS idempotency_memo_approve
+PASS q3_borrador_created
+PASS borrador_to_vencida_APPLIED
+PASS emitida_to_vencida_APPLIED
+PASS q4_emitted
+PASS q4_rechazada
+PASS rechazada_to_vencida_APPLIED
+PASS aprobada_to_vencida_INVALID
+PASS q5_cancelada
+PASS cancelada_to_vencida_INVALID
+PASS pull_vencidas_from_nonterminal
+PASS pull_terminales_preserved
 
-33 passed, 0 failed
+44 passed, 0 failed

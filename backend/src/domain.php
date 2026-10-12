@@ -10,11 +10,18 @@ declare(strict_types=1);
 
 const QUOTE_STATUSES = ['BORRADOR', 'EMITIDA', 'APROBADA', 'RECHAZADA', 'VENCIDA', 'CANCELADA'];
 
-/** Transiciones permitidas del servidor (validadas contra el estado persistido). */
+/**
+ * Transiciones permitidas del servidor (validadas contra el estado persistido).
+ * `VENCIDA` es la materialización del vencimiento calculado por el dispositivo
+ * (fecha local > último día válido); se acepta únicamente desde los estados
+ * NO terminales BORRADOR/EMITIDA/RECHAZADA. `APROBADA` y `CANCELADA` son
+ * terminales y nunca pasan a VENCIDA — la aprobada conserva su capacidad de
+ * originar Trabajos (regla aprobada, docs/03 §6).
+ */
 const QUOTE_TRANSITIONS = [
-    'BORRADOR'  => ['EMITIDA', 'CANCELADA'],
+    'BORRADOR'  => ['EMITIDA', 'CANCELADA', 'VENCIDA'],
     'EMITIDA'   => ['APROBADA', 'RECHAZADA', 'CANCELADA', 'VENCIDA'],
-    'RECHAZADA' => ['EMITIDA', 'CANCELADA'],
+    'RECHAZADA' => ['EMITIDA', 'CANCELADA', 'VENCIDA'],
     'APROBADA'  => [],
     'VENCIDA'   => [],
     'CANCELADA' => [],

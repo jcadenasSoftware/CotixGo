@@ -256,5 +256,86 @@ check('idempotency_memo_committed', $memo === 1);
 $memo2 = (int) $pdo->query('SELECT COUNT(*) FROM processed_operations WHERE operation_id = ' . $pdo->quote($u('f7000000')))->fetchColumn();
 check('idempotency_memo_approve', $memo2 === 1);
 
+// --- Regla de vencimiento (alcance aclarado en F3): →VENCIDA solo desde ---
+// --- estados no terminales; APROBADA/CANCELADA permanecen terminales.   ---
+
+$qPayload = fn(string $id, string $status, int $emitted = 0) => [
+    'id' => $id, 'userId' => $userId, 'clientId' => $u('30000001'), 'profileId' => $u('20000001'),
+    'provisionalNumber' => 'COT-PEND-VX', 'status' => $status,
+    'issueDateEpochDay' => 19000, 'validityDays' => 15, 'expiryDateEpochDay' => 19015,
+    'currency' => 'COP', 'currentVersion' => 1, 'emittedVersion' => $emitted,
+    'gross' => '10', 'totalRetained' => '0', 'net' => '10', 'createdAt' => $now, 'updatedAt' => $now];
+$qop = fn(string $opId, string $id, string $status, int $base, int $emitted = 0) =>
+    [['operation_id' => $opId, 'entity_type' => 'quote', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $base, 'payload' => $qPayload($id, $status, $emitted)]];
+
+// BORRADOR→VENCIDA: la materialización del vencimiento se acepta y sincroniza.
+$q3 = $u('d1000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d1000000'), $q3, 'BORRADOR', 0)], $token);
+check('q3_borrador_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d2000000'), $q3, 'VENCIDA', 1)], $token);
+check('borrador_to_vencida_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === null, json_encode($r));
+
+// EMITIDA→VENCIDA conserva el número oficial ($quoteId quedó EMITIDA, sv=4).
+$vencE = $qop($u('d3000000'), $quoteId, 'VENCIDA', 4, 1);
+$vencE[0]['payload'] = array_merge($vencE[0]['payload'], [
+    'provisionalNumber' => 'COT-PEND-TST1', 'issueDateEpochDay' => 21000,
+    'expiryDateEpochDay' => 21015, 'gross' => '1400000.00', 'totalRetained' => '36000.00',
+    'net' => '1364000.00']);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $vencE], $token);
+check('emitida_to_vencida_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $official, json_encode($r));
+
+// RECHAZADA→VENCIDA: flujo completo create→emit→reject→expire, número intacto.
+$q4 = $u('d4000001');
+http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d4000000'), $q4, 'BORRADOR', 0)], $token);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d5000000'), $q4, 'EMITIDA', 1, 1)], $token);
+$official4 = $r['results'][0]['official_number'] ?? null;
+check('q4_emitted', ($r['results'][0]['status'] ?? '') === 'APPLIED' && is_string($official4), json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d6000000'), $q4, 'RECHAZADA', 2, 1)], $token);
+check('q4_rechazada', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d7000000'), $q4, 'VENCIDA', 3, 1)], $token);
+check('rechazada_to_vencida_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $official4, json_encode($r));
+
+// APROBADA→VENCIDA rechazada: $q2 quedó APROBADA (sv=5); el estado terminal se conserva.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d8000000'), $q2, 'VENCIDA', 5, 1)], $token);
+check('aprobada_to_vencida_INVALID', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// CANCELADA→VENCIDA rechazada: mismo tratamiento terminal.
+$q5 = $u('d9000001');
+http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('d9000000'), $q5, 'BORRADOR', 0)], $token);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('da000000'), $q5, 'CANCELADA', 1)], $token);
+check('q5_cancelada', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $qop($u('db000000'), $q5, 'VENCIDA', 2)], $token);
+check('cancelada_to_vencida_INVALID', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// La misma regla consultada desde "otro dispositivo" (pull autoritativo):
+// vencidas materializadas en VENCIDA; terminales conservan su estado.
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId = [];
+foreach ($r['changes'] ?? [] as $ch) {
+    $p = $ch['payload'];
+    $byId[$ch['entity_id']] = (is_array($p) ? $p : json_decode($p, true))['status'] ?? null;
+}
+check('pull_vencidas_from_nonterminal', ($byId[$q3] ?? '') === 'VENCIDA'
+    && ($byId[$quoteId] ?? '') === 'VENCIDA' && ($byId[$q4] ?? '') === 'VENCIDA',
+    json_encode([$byId[$q3] ?? '?', $byId[$quoteId] ?? '?', $byId[$q4] ?? '?']));
+check('pull_terminales_preserved', ($byId[$q2] ?? '') === 'APROBADA'
+    && ($byId[$q5] ?? '') === 'CANCELADA', json_encode([$byId[$q2] ?? '?', $byId[$q5] ?? '?']));
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

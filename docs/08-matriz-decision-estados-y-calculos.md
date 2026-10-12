@@ -27,9 +27,10 @@ La regla aprobada establece que una Cotización vencida no se puede aprobar ni e
 
 ```text
 BORRADOR → EMITIDA → APROBADA
-                    → RECHAZADA
-                    → VENCIDA
-                    → CANCELADA (si se define quién y cuándo puede cancelarla)
+                    → RECHAZADA → (vuelve a EMITIDA antes de APROBADA)
+                    → CANCELADA
+BORRADOR | EMITIDA | RECHAZADA → VENCIDA (por fecha; estados no terminales)
+APROBADA y CANCELADA son terminales: no pasan a VENCIDA.
 ```
 
 Al aprobarse la Cotización, puede originar uno o varios Trabajos; la creación de Trabajo no debe suponerse automática hasta aprobar esa regla. La Cotización vencida permanece histórica y se puede usar como base de una nueva.
