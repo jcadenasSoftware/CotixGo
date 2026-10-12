@@ -16,6 +16,7 @@ import com.cotixgo.app.net.longOr
 import com.cotixgo.app.net.str
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -230,6 +231,7 @@ class SyncRepository(
             val batch = db.syncDao().pendingOps()
                 .groupBy { it.entityType to it.entityId }
                 .map { it.value.first() }
+                .filter { pushableNow(it) }
                 .take(100)
             if (batch.isEmpty()) break
             val ops = batch.map { op ->
@@ -265,6 +267,20 @@ class SyncRepository(
         }
         pulled += pullAll()
         return SyncSummary(pushed = pushed, paused = paused, pulled = pulled)
+    }
+
+    /**
+     * `job_quote` no solo necesita que la Cotización exista en el servidor:
+     * la regla aprobada exige que esté APROBADA, lo que puede requerir
+     * varias operaciones previas suyas (emitir, aprobar) aún en cola. Como
+     * cada tanda lleva una sola operación por entidad, el vínculo espera a
+     * que la Cotización no tenga operaciones activas; si las suyas quedan
+     * pausadas, el vínculo se envía y el rechazo del servidor queda visible.
+     */
+    private suspend fun pushableNow(op: SyncOperationEntity): Boolean {
+        if (op.entityType != EntityTypes.JOB_QUOTE) return true
+        val quoteId = json.parseToJsonElement(op.payloadJson).jsonObject.str("quoteId") ?: return true
+        return db.syncDao().activeOpsForEntity(EntityTypes.QUOTE, quoteId) == 0
     }
 
     private suspend fun applyApplied(op: SyncOperationEntity, r: JsonObject) {
@@ -399,7 +415,8 @@ class SyncRepository(
             db.syncDao().insertConflict(
                 SyncConflictEntity(
                     entityType = type, entityId = id,
-                    remoteJson = payload.toString(), remoteServerVersion = sv,
+                    remoteJson = remoteWithMeta(payload, c).toString(),
+                    remoteServerVersion = sv,
                     detectedAt = now,
                 ),
             )
@@ -409,6 +426,16 @@ class SyncRepository(
         upsertFromPayload(type, id, payload, sv)
         applyQuoteMeta(type, id, c)
     }
+
+    /** Payload remoto + metadatos del servidor (official_number y
+     *  has_version_conflict viajan fuera del payload) para que la copia
+     *  remota de un conflicto conserve el documento completo. */
+    private fun remoteWithMeta(payload: JsonObject, c: JsonObject): JsonObject =
+        buildJsonObject {
+            payload.forEach { (k, v) -> put(k, v) }
+            put("official_number", c["official_number"] ?: JsonNull)
+            put("has_version_conflict", c.boolOr("has_version_conflict"))
+        }
 
     private suspend fun applyQuoteMeta(type: String, id: String, c: JsonObject) {
         if (type == EntityTypes.QUOTE) {
@@ -762,6 +789,17 @@ class SyncRepository(
                 json.parseToJsonElement(conflict.remoteJson).jsonObject,
                 conflict.remoteServerVersion,
             )
+            // El número oficial y el conflicto de versiones viajan fuera del
+            // payload (meta del servidor): reaplicarlos para que conservar
+            // remoto no pierda el documento completo.
+            val remote = json.parseToJsonElement(conflict.remoteJson).jsonObject
+            when (conflict.entityType) {
+                EntityTypes.JOB -> db.jobDao().updateOfficial(
+                    conflict.entityId, remote.str("official_number"), nowEpochMillis())
+                EntityTypes.QUOTE -> db.quoteDao().updateSyncFields(
+                    conflict.entityId, remote.str("official_number"),
+                    remote.boolOr("has_version_conflict"), nowEpochMillis())
+            }
             db.syncDao().resolveConflict(conflictId)
         }
     }

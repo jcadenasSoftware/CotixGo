@@ -38,6 +38,18 @@ const DEPENDENCIES = [
     'job_material'     => [['job', 'jobId']],
 ];
 
+/** Estado remoto para resultados CONFLICT/REJECTED: el payload persistido
+ *  más los metadatos del servidor (official_number, has_version_conflict),
+ *  que no viajan dentro del payload, de modo que la resolución
+ *  "conservar remoto" del cliente preserve el documento completo. */
+function serverState(array $row): array
+{
+    $state = json_decode($row['payload'], true) ?: [];
+    $state['official_number'] = $row['official_number'];
+    $state['has_version_conflict'] = (int) ($row['has_version_conflict'] ?? 0) === 1;
+    return $state;
+}
+
 function entityRow(PDO $pdo, string $type, string $id): ?array
 {
     $stmt = $pdo->prepare('SELECT * FROM entities WHERE entity_type = ? AND id = ?');
@@ -153,7 +165,12 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
     // rechaza igual que usar la entidad misma desde otra cuenta).
     foreach (DEPENDENCIES[$type] ?? [] as [$depType, $field]) {
         $depId = (string) ($payload[$field] ?? '');
-        if ($depId === '') continue;
+        // Todas las dependencias declaradas son requeridas: un id vacío no
+        // omite la validación (endurecido por la revisión del PR F4).
+        if ($depId === '') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                "La referencia $field es obligatoria para $type.");
+        }
         $dep = entityRow($pdo, $depType, $depId);
         if ($dep === null) {
             return result($opId, 'REJECTED', 'DEPENDENCY', "Falta la entidad $depType $depId referenciada.");
@@ -173,6 +190,27 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
 
     if ($type === 'job') {
         return applyJob($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
+    }
+
+    // Vínculo Trabajo↔Cotización (F4): validado sobre las entidades ya
+    // persistidas — nunca con datos declarados por el cliente —: la
+    // Cotización debe estar APROBADA y pertenecer al mismo Cliente del
+    // Trabajo. Existencia y propiedad de cuenta quedaron cubiertas por
+    // DEPENDENCIES (Trabajo, Cotización y por tanto su Cliente son de la
+    // misma cuenta autenticada).
+    if ($type === 'job_quote') {
+        $jobRow = entityRow($pdo, 'job', (string) $payload['jobId']);
+        $quoteRow = entityRow($pdo, 'quote', (string) $payload['quoteId']);
+        $jobClient = (string) (json_decode($jobRow['payload'], true)['clientId'] ?? '');
+        $quoteClient = (string) (json_decode($quoteRow['payload'], true)['clientId'] ?? '');
+        if ((string) $quoteRow['status'] !== 'APROBADA') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Solo se pueden vincular cotizaciones en estado APROBADA.');
+        }
+        if ($quoteClient === '' || $quoteClient !== $jobClient) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La cotización pertenece a un cliente distinto del trabajo.');
+        }
     }
 
     // Hijos del Trabajo (F4): valores enum del contrato.
@@ -198,7 +236,7 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
     if ($base !== (int) $current['server_version']) {
         return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
             'La entidad cambió desde la versión conocida por el dispositivo.',
-            (int) $current['server_version'], json_decode($current['payload'], true));
+            (int) $current['server_version'], serverState($current));
     }
     updateEntity($pdo, $type, $entityId, $current, $payload);
     audit($pdo, $userId, $deviceId, $opId, $type, $entityId, 'UPDATE', ['supersedes' => $supersedes]);
@@ -230,14 +268,14 @@ function applyQuote(PDO $pdo, string $userId, string $deviceId, string $opId,
     if ($base !== (int) $current['server_version']) {
         return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
             'La cotización cambió desde la versión conocida por el dispositivo.',
-            (int) $current['server_version'], json_decode($current['payload'], true));
+            (int) $current['server_version'], serverState($current));
     }
 
     $oldStatus = (string) $current['status'];
     if (!validQuoteTransition($oldStatus, $newStatus)) {
         return result($opId, 'REJECTED', 'INVALID_TRANSITION',
             "Transición no permitida $oldStatus → $newStatus; estado actual $oldStatus.",
-            (int) $current['server_version'], json_decode($current['payload'], true));
+            (int) $current['server_version'], serverState($current));
     }
     // Documento en conflicto de versiones: bloquear cualquier transición
     // hacia un estado numerado (emisiones y aprobaciones nuevas) mientras
@@ -300,7 +338,7 @@ function applyJob(PDO $pdo, string $userId, string $deviceId, string $opId,
     if ($base !== (int) $current['server_version']) {
         return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
             'El trabajo cambió desde la versión conocida por el dispositivo.',
-            (int) $current['server_version'], json_decode($current['payload'], true));
+            (int) $current['server_version'], serverState($current));
     }
 
     $oldStatus = (string) $current['status'];
@@ -308,12 +346,12 @@ function applyJob(PDO $pdo, string $userId, string $deviceId, string $opId,
     if (in_array($oldStatus, JOB_TERMINAL_STATUSES, true)) {
         return result($opId, 'REJECTED', 'INVALID_TRANSITION',
             "El trabajo está $oldStatus (terminal) y no admite cambios.",
-            (int) $current['server_version'], json_decode($current['payload'], true));
+            (int) $current['server_version'], serverState($current));
     }
     if (!validJobTransition($oldStatus, $newStatus)) {
         return result($opId, 'REJECTED', 'INVALID_TRANSITION',
             "Transición no permitida $oldStatus → $newStatus; estado actual $oldStatus.",
-            (int) $current['server_version'], json_decode($current['payload'], true));
+            (int) $current['server_version'], serverState($current));
     }
 
     $official = $current['official_number'];

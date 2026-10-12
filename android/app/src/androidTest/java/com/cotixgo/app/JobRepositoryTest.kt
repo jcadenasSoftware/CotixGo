@@ -209,6 +209,38 @@ class JobRepositoryTest {
         assertEquals(false, repo.linkQuoteToJob(jobId, q))
     }
 
+    /** Corrección revisión F4: recambiar el Cliente con vínculos activos los
+     *  invalidaría — el repositorio lo bloquea, no solo la UI. */
+    @Test
+    fun editarCliente_conVinculos_rechaza_sinVinculos_permite() = runTest {
+        val (userId, profileId, clientId) = seed()
+        repo.saveClient(ClientInput(type = ClientType.PERSONA, name = "Cliente B"))
+        val clienteB = db.clientDao().observeForUser(userId).first().first { it.name == "Cliente B" }
+
+        val jobId = repo.saveJob(jobInput(clientId, profileId))!!
+        val q = repo.saveQuote(
+            QuoteInput(
+                clientId = clientId, profileId = profileId,
+                issueDateEpochDay = LocalDate.now().toEpochDay(), validityDays = 15,
+                currency = "COP",
+                lines = listOf(QuoteLineInput(ConceptType.SERVICIO, "Svc", "1", "und", "100")),
+                retentions = emptyList(),
+            ),
+        )!!
+        repo.emitQuote(q)
+        repo.setQuoteStatus(q, QuoteStatus.APROBADA)
+        assertTrue(repo.linkQuoteToJob(jobId, q))
+
+        // Con vínculo activo: el cambio de Cliente queda bloqueado.
+        assertNull(repo.saveJob(jobInput(clienteB.id, profileId), jobId))
+        assertEquals(clientId, db.jobDao().get(jobId)!!.clientId)
+
+        // Sin vínculos el cambio es válido (no invalida ninguna asociación).
+        val job2 = repo.saveJob(jobInput(clientId, profileId))!!
+        assertNotNull(repo.saveJob(jobInput(clienteB.id, profileId), job2))
+        assertEquals(clienteB.id, db.jobDao().get(job2)!!.clientId)
+    }
+
     @Test
     fun archivar_desarchivar_sinBorrarHistorial() = runTest {
         val (_, profileId, clientId) = seed()

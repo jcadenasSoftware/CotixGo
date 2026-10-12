@@ -714,4 +714,90 @@ class SyncE2eTest {
         assertEquals(1, db.jobActivityDao().forJob(jobId).size)
         assertEquals(1, db.jobMaterialDao().observeForJob(jobId).first().size)
     }
+
+    /**
+     * Corrección de la revisión F4: "conservar remoto" debe reaplicar la
+     * meta del servidor — el número oficial viaja fuera del payload y no
+     * puede perderse, ni tras un pull sin cambios nuevos.
+     */
+    @Test
+    fun jobConflict_keepRemote_preservesOfficialNumber() = runBlocking {
+        val client = seedJobClient()
+        val jobId = repo.saveJob(
+            JobInput(clientId = client.id, profileId = profileId(), executionAddress = "Obra 7"),
+        )!!
+        repo.setJobStatus(jobId, com.cotixgo.app.core.JobStatus.PROGRAMADO)
+        sync.syncNow()
+        val job = db.jobDao().get(jobId)!!
+        val official = job.officialNumber!!
+        assertTrue(official.startsWith("TR-"))
+
+        api.push(
+            "e2e-other-device",
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.JOB)
+                    put("entity_id", jobId)
+                    put("type", "upsert")
+                    put("base_server_version", job.serverVersion)
+                    put("payload", SyncPayloads.job(job.copy(notes = "Remoto gana")))
+                },
+            ),
+        )
+        repo.saveJob(
+            JobInput(clientId = client.id, profileId = profileId(),
+                executionAddress = "Obra 7", notes = "Local pierde"),
+            existingId = jobId,
+        )
+        sync.syncNow()
+
+        val conflict = db.syncDao().observeConflicts().first().first { it.entityId == jobId }
+        sync.resolveKeepRemote(conflict.id)
+        var final = db.jobDao().get(jobId)!!
+        assertEquals("Remoto gana", final.notes)
+        assertEquals(official, final.officialNumber)
+
+        // Pull posterior sin cambios nuevos: el número oficial permanece.
+        sync.pullAll()
+        final = db.jobDao().get(jobId)!!
+        assertEquals(official, final.officialNumber)
+    }
+
+    /** Misma corrección aplicada a Cotización (camino compartido). */
+    @Test
+    fun quoteConflict_keepRemote_preservesOfficialNumber() = runBlocking {
+        val quoteId = seedQuote()
+        assertTrue(repo.emitQuote(quoteId))
+        sync.syncNow()
+        val quote = db.quoteDao().get(quoteId)!!
+        val official = quote.officialNumber!!
+        assertTrue(official.startsWith("COT-"))
+
+        api.push(
+            "e2e-other-device",
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.QUOTE)
+                    put("entity_id", quoteId)
+                    put("type", "upsert")
+                    put("base_server_version", quote.serverVersion)
+                    put("payload", SyncPayloads.quote(quote.copy(notes = "Remoto gana")))
+                },
+            ),
+        )
+        repo.setQuoteArchived(quoteId, true) // edición local sobre base obsoleta
+        sync.syncNow()
+
+        val conflict = db.syncDao().observeConflicts().first().first { it.entityId == quoteId }
+        sync.resolveKeepRemote(conflict.id)
+        var final = db.quoteDao().get(quoteId)!!
+        assertEquals("Remoto gana", final.notes)
+        assertEquals(official, final.officialNumber)
+
+        sync.pullAll()
+        final = db.quoteDao().get(quoteId)!!
+        assertEquals(official, final.officialNumber)
+    }
 }

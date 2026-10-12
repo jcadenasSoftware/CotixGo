@@ -451,5 +451,72 @@ check('pull_f4_entities', ($types['job'] ?? 0) >= 2 && ($types['job_quote'] ?? 0
 $jobRow = array_values(array_filter($r['changes'] ?? [], fn($x) => $x['entity_id'] === $job1))[0] ?? null;
 check('pull_job_official_number', ($jobRow['official_number'] ?? null) === $tr1, json_encode($jobRow));
 
+// ===== Corrección de la revisión F4: validación servidor de vínculos y dependencias =====
+
+// Dependencia requerida vacía: job sin clientId → VALIDATION_ERROR (no se omite).
+$ops = [['operation_id' => $u('ef000000'), 'entity_type' => 'job', 'entity_id' => $u('ef000001'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($u('ef000001'), 'BORRADOR'), ['clientId' => ''])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_sin_clientId_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Dependencia requerida vacía: job sin profileId → VALIDATION_ERROR.
+$ops = [['operation_id' => $u('ef000010'), 'entity_type' => 'job', 'entity_id' => $u('ef000011'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($u('ef000011'), 'BORRADOR'), ['profileId' => ''])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_sin_profileId_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Referencia inexistente: clientId que no existe en el servidor → DEPENDENCY.
+$ops = [['operation_id' => $u('ef000020'), 'entity_type' => 'job', 'entity_id' => $u('ef000021'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($u('ef000021'), 'BORRADOR'), ['clientId' => $u('fffff001')])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_cliente_inexistente_DEPENDENCY', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'DEPENDENCY', json_encode($r));
+
+// F3 endurecido: cotización sin clientId también se rechaza (cliente es requerido).
+$ops = [['operation_id' => $u('ef000030'), 'entity_type' => 'quote', 'entity_id' => $u('ef000031'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($qPayload($u('ef000031'), 'BORRADOR'), ['clientId' => ''])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('quote_sin_clientId_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// job_quote a cotización NO aprobada ($q5 quedó CANCELADA, mismo cliente) → VALIDATION_ERROR.
+$ops = [['operation_id' => $u('ef000040'), 'entity_type' => 'job_quote', 'entity_id' => $u('ef000041'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('ef000041'), 'jobId' => $job1, 'quoteId' => $q5,
+            'relationType' => 'ADICIONAL', 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_quote_no_aprobada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Segundo cliente de la MISMA cuenta + cotización APROBADA de ese cliente.
+$cliente2 = $u('ef000051');
+$q6 = $u('ef000052');
+$ops = [
+    ['operation_id' => $u('ef000050'), 'entity_type' => 'client', 'entity_id' => $cliente2,
+     'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => ['id' => $cliente2, 'userId' => $userId, 'type' => 'EMPRESA', 'name' => 'Cliente Dos Sintético',
+        'createdAt' => $now, 'updatedAt' => $now]],
+    ['operation_id' => $u('ef000053'), 'entity_type' => 'quote', 'entity_id' => $q6,
+     'type' => 'upsert', 'base_server_version' => 0,
+     'payload' => array_merge($qPayload($q6, 'APROBADA'), ['clientId' => $cliente2])],
+];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_quote_otro_cliente_setup', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'], json_encode($r));
+
+// job_quote a cotización APROBADA de OTRO cliente (misma cuenta) → VALIDATION_ERROR.
+$ops = [['operation_id' => $u('ef000054'), 'entity_type' => 'job_quote', 'entity_id' => $u('ef000055'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('ef000055'), 'jobId' => $job1, 'quoteId' => $q6,
+            'relationType' => 'ADICIONAL', 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('job_quote_otro_cliente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

@@ -508,6 +508,14 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         if (existing != null && !JobTransitions.isEditable(JobStatus.valueOf(existing.status))) {
             return null // terminal: sin edición
         }
+        // El Cliente ancla los vínculos job_quote (regla: cotizaciones
+        // APROBADA del mismo Cliente). Recambiarlo con vínculos existentes
+        // los dejaría inválidos — bloqueado en el repositorio, no solo en la UI.
+        if (existing != null && input.clientId != existing.clientId
+            && db.jobQuoteDao().forJob(existing.id).isNotEmpty()
+        ) {
+            return null
+        }
         val jobId = existing?.id ?: Ids.new()
         val job = JobEntity(
             id = jobId,

@@ -56,5 +56,12 @@ PASS job_activity_status_invalid
 PASS job_child_ownership_FORBIDDEN
 PASS pull_f4_entities
 PASS pull_job_official_number
+PASS job_sin_clientId_REJECTED
+PASS job_sin_profileId_REJECTED
+PASS job_cliente_inexistente_DEPENDENCY
+PASS quote_sin_clientId_REJECTED
+PASS job_quote_no_aprobada_REJECTED
+PASS job_quote_otro_cliente_setup
+PASS job_quote_otro_cliente_REJECTED
 
-58 passed, 0 failed
+65 passed, 0 failed

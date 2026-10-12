@@ -38,6 +38,11 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // Esquemas Room exportados accesibles a MigrationTestHelper.
+    sourceSets {
+        getByName("androidTest").assets.srcDirs("$projectDir/schemas")
+    }
 }
 
 ksp {
@@ -65,5 +70,6 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

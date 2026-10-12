@@ -434,6 +434,9 @@ interface SyncDao {
     @Query("SELECT * FROM sync_operations WHERE entityType = :type AND entityId = :id AND state IN ('PENDING','RETRY','PAUSED') ORDER BY seq ASC")
     suspend fun pendingOpsForEntity(type: String, id: String): List<SyncOperationEntity>
 
+    @Query("SELECT COUNT(*) FROM sync_operations WHERE entityType = :type AND entityId = :id AND state IN ('PENDING','RETRY')")
+    suspend fun activeOpsForEntity(type: String, id: String): Int
+
     @Query("UPDATE sync_operations SET state = :state, resultJson = :resultJson, resultCode = :resultCode, attempts = attempts + 1, updatedAt = :now WHERE opId = :opId")
     suspend fun updateOpResult(opId: String, state: String, resultJson: String?, resultCode: String?, now: Long)
 
@@ -699,7 +702,8 @@ abstract class AppDatabase : RoomDatabase() {
          * N:N con Cotizaciones y los hijos subordinados (actividades y
          * materiales descriptivos), todos sincronizables.
          */
-        private val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+        // Interna (no privada): la prueba de migración la ejerce directamente.
+        internal val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL(
                     """CREATE TABLE IF NOT EXISTS `jobs` (
