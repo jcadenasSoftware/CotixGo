@@ -92,6 +92,9 @@ fun OnboardingScreen(onComplete: (String, String) -> Unit) {
 fun DashboardScreen(
     userName: String,
     expiringQuotes: List<com.cotixgo.app.data.QuoteEntity>,
+    syncPending: Int,
+    syncPaused: Int,
+    boundEmail: String?,
     onNewClient: () -> Unit,
     onNewQuote: () -> Unit,
     onOpenQuote: (String) -> Unit,
@@ -113,7 +116,16 @@ fun DashboardScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text("Hola, $userName", style = MaterialTheme.typography.headlineSmall)
-            Text("Sin sincronizar", color = MaterialTheme.colorScheme.secondary)
+            Text(
+                when {
+                    boundEmail == null -> "Sin cuenta vinculada"
+                    syncPaused > 0 -> "$syncPaused operaciones requieren atención"
+                    syncPending > 0 -> "$syncPending operaciones pendientes de sincronizar"
+                    else -> "Sincronizado"
+                },
+                color = if (syncPaused > 0) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.secondary,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onNewClient, modifier = Modifier.weight(1f)) {
                     Text("+ Cliente")

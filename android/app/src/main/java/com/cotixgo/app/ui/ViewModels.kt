@@ -3,9 +3,11 @@ package com.cotixgo.app.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.cotixgo.app.BuildConfig
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.data.AppRepository
+import com.cotixgo.app.data.AuthRepository
 import com.cotixgo.app.data.ClientEntity
 import com.cotixgo.app.data.ProfileEntity
 import com.cotixgo.app.data.QuoteEntity
@@ -14,8 +16,12 @@ import com.cotixgo.app.data.RetentionConfigEntity
 import com.cotixgo.app.data.RetentionInput
 import com.cotixgo.app.data.ServiceEntity
 import com.cotixgo.app.data.ServiceInput
+import com.cotixgo.app.data.SyncConflictEntity
+import com.cotixgo.app.data.SyncOperationEntity
+import com.cotixgo.app.data.SyncRepository
 import com.cotixgo.app.data.UserEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -25,7 +31,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class AppViewModel(private val repo: AppRepository) : ViewModel() {
+class AppViewModel(
+    private val repo: AppRepository,
+    private val sync: SyncRepository,
+    private val auth: AuthRepository,
+) : ViewModel() {
 
     val user: StateFlow<UserEntity?> = repo.observeUser()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -54,6 +64,110 @@ class AppViewModel(private val repo: AppRepository) : ViewModel() {
     val retentions: StateFlow<List<RetentionConfigEntity>> = user.flatMapLatest { u ->
         if (u == null) flowOf(emptyList()) else repo.observeRetentions(u.id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    // ---------- Estado de sincronización (F3) ----------
+
+    val accountEmail = MutableStateFlow(sync.session.accountEmail)
+    val apiBaseUrl = MutableStateFlow(sync.session.apiBaseUrl)
+    val syncing = MutableStateFlow(false)
+    val lastSyncMessage = MutableStateFlow<String?>(null)
+
+    val pendingOps: StateFlow<Int> = sync.observePendingCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    val pausedOps: StateFlow<Int> = sync.observePausedCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    val conflicts: StateFlow<List<SyncConflictEntity>> = sync.observeConflicts()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val paused: StateFlow<List<SyncOperationEntity>> = sync.observePaused()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val versionConflictQuotes: StateFlow<List<QuoteEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeVersionConflictQuotes(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun syncNow() {
+        if (!sync.session.isBound) {
+            lastSyncMessage.value = "Vincula una cuenta para sincronizar."
+            return
+        }
+        viewModelScope.launch {
+            syncing.value = true
+            try {
+                val s = sync.syncNow()
+                lastSyncMessage.value =
+                    "Sincronizado: ${s.pushed} enviadas, ${s.pulled} recibidas" +
+                        if (s.paused > 0) ", ${s.paused} requieren atención" else "."
+            } catch (e: Exception) {
+                lastSyncMessage.value = "Sin conexión con el servidor local; se reintentará."
+            } finally {
+                syncing.value = false
+            }
+        }
+    }
+
+    fun register(name: String, email: String, pass: String) {
+        viewModelScope.launch {
+            val err = auth.register(name, email, pass)
+            accountEmail.value = sync.session.accountEmail
+            lastSyncMessage.value = err ?: "Cuenta creada y vinculada."
+            if (err == null) syncNow()
+        }
+    }
+
+    fun login(email: String, pass: String) {
+        viewModelScope.launch {
+            val err = auth.login(email, pass)
+            accountEmail.value = sync.session.accountEmail
+            lastSyncMessage.value = err ?: "Sesión iniciada y cuenta vinculada."
+            if (err == null) syncNow()
+        }
+    }
+
+    fun recover(email: String) {
+        viewModelScope.launch { lastSyncMessage.value = auth.recover(email) }
+    }
+
+    fun switchAccount(currentPass: String, newEmail: String, newPass: String, confirmed: Boolean) {
+        viewModelScope.launch {
+            val err = auth.switchAccount(currentPass, newEmail, newPass, confirmed)
+            accountEmail.value = sync.session.accountEmail
+            lastSyncMessage.value = err ?: "Cuenta cambiada; descargando datos."
+            if (err == null) syncNow()
+        }
+    }
+
+    fun setBaseUrl(url: String) {
+        val u = url.trim()
+        if (!BuildConfig.DEBUG && u.startsWith("http://", ignoreCase = true)) {
+            // Release no admite cleartext: HTTPS obligatorio (decisión F3).
+            lastSyncMessage.value = "HTTPS obligatorio: HTTP en claro solo está permitido en desarrollo."
+            return
+        }
+        sync.session.apiBaseUrl = u
+        apiBaseUrl.value = sync.session.apiBaseUrl
+    }
+
+    fun resolveKeepLocal(conflictId: Long) {
+        viewModelScope.launch { sync.resolveKeepLocal(conflictId); syncNow() }
+    }
+
+    fun resolveKeepRemote(conflictId: Long) {
+        viewModelScope.launch { sync.resolveKeepRemote(conflictId) }
+    }
+
+    fun retryPaused(opId: String) {
+        viewModelScope.launch { sync.retryPaused(opId); syncNow() }
+    }
+
+    fun resolveQuoteVersions(quoteId: String, keepVersionRowId: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            onDone(sync.resolveQuoteVersions(quoteId, keepVersionRowId))
+            syncNow()
+        }
+    }
 
     fun observeQuote(id: String) = repo.observeQuote(id)
 
@@ -129,10 +243,11 @@ class AppViewModel(private val repo: AppRepository) : ViewModel() {
     }
 
     companion object {
-        fun factory(repo: AppRepository) = object : ViewModelProvider.Factory {
-            @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                AppViewModel(repo) as T
-        }
+        fun factory(repo: AppRepository, sync: SyncRepository, auth: AuthRepository) =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    AppViewModel(repo, sync, auth) as T
+            }
     }
 }

@@ -163,7 +163,7 @@ Esta sección recoge respuestas confirmadas en `08-matriz-decision-estados-y-cal
 Decisiones aprobadas por el titular el 11/10/2026 para la ficha F2:
 
 - Campos: `origen_material` opcional por línea `MATERIAL` con valores `CLIENTE`/`PROFESIONAL`; no se añade campo específico de motivo de rechazo (se reutilizan las observaciones); emitir exige al menos una línea, mientras que `BORRADOR` puede guardarse sin líneas.
-- Vigencia: corre desde la creación, incluida la permanencia en `BORRADOR`; `fecha_vencimiento` es el último día válido y la Cotización pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior a ese día.
+- Vigencia: corre desde la creación, incluida la permanencia en `BORRADOR`; `fecha_vencimiento` es el último día válido y la Cotización pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior a ese día. Alcance aclarado en F3 (§6): el vencimiento solo aplica a los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA`; `APROBADA` y `CANCELADA` son terminales y conservan su estado.
 - Retenciones: se configuran globalmente por Usuario/Titular (no por Perfil); cada Cotización conserva el snapshot de las retenciones aplicadas.
 - PDF: la exportación de PDF queda diferida a una fase posterior; no forma parte de F2.
 - Transiciones de F2: `APROBADA`, `VENCIDA` y `CANCELADA` son terminales; `RECHAZADA` puede volver a `EMITIDA` antes de `APROBADA`; la edición no cambia el estado.
@@ -251,6 +251,11 @@ Decisiones de producto aprobadas por el titular el 11/10/2026 durante la planifi
 - El número oficial se asigna cuando el backend acepta por primera vez una Cotización en estado `EMITIDA` o `APROBADA`, sobre el mismo `entity_id`, y se conserva en transiciones posteriores.
 - Una revalidación crea un documento nuevo que recibe su propio número oficial cuando se emite; los borradores conservan su provisional.
 
+**Estados y vencimiento**
+
+- Al terminar la vigencia pasan a `VENCIDA` únicamente los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA`. `APROBADA` y `CANCELADA` permanecen terminales y no cambian a `VENCIDA`; una Cotización `APROBADA` conserva su capacidad de originar un Trabajo.
+- El vencimiento se materializa en la siguiente escritura local y se sincroniza como transición `→VENCIDA`, que el servidor acepta desde esos mismos tres estados no terminales. Un pull, push, reintento o uso desde otro dispositivo no puede convertir `APROBADA` o `CANCELADA` en `VENCIDA`, ni reactivar una cotización vencida cambiando sus fechas.
+
 **Autenticación**
 
 - Registro e inicio de sesión con email y contraseña (base de producto; contrato de endpoints pendiente).
@@ -267,3 +272,4 @@ Decisiones de producto aprobadas por el titular el 11/10/2026 durante la planifi
 | 1.3 | 11/10/2026 | F1: mínimos aprobados de Cliente y Perfil Profesional (§2.6); pendiente §4.7 acotado a Trabajo, Cotización y Cuenta de Cobro. | Aprobación de las decisiones pendientes de la ficha F1. | Aprobado. |
 | 1.4 | 11/10/2026 | Planificación de F3: solo datos sintéticos en desarrollo y pruebas hasta definir, implementar y verificar la protección de datos locales en reposo (§6); tecnología de cifrado local queda pendiente (§4.8) y no se añade a F3 automáticamente; recuperación de acceso por correo aprobada en principio con proveedor pendiente; no se requiere MySQL de Hostinger durante la planificación ni el desarrollo local. | Aprobación de la decisión de protección de datos locales de la ficha F3. | Aprobado. |
 | 1.5 | 11/10/2026 | Planificación de F3 — pase documental completo (§6): identidad canónica del servidor y vinculación transaccional de datos locales; reglas de cambio de cuenta; política de conflictos aprobada (detección explícita, preservación, resolución del usuario, versión de resolución nueva en Cotizaciones, `emittedVersion` a la versión de resolución); rechazo de transiciones obsoletas con estado actual; reintentos persistentes sin descarte e idempotencia por `operation_id` + payload inmutable con operación corregida encadenada; momento del número oficial aprobado para Cotización (primera `EMITIDA`/`APROBADA` aceptada por el backend); auth email/contraseña como base; HTTPS obligatorio para datos reales. Pendiente §4.3 marcado parcialmente resuelto (estructura técnica pendiente). | Registro documental de las decisiones de producto de F3 ya aprobadas por el titular. | Aprobado. |
+| 1.6 | 11/10/2026 | F3 — alcance de `VENCIDA` aclarado (§6): el vencimiento solo aplica a los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA`; `APROBADA` y `CANCELADA` permanecen terminales (la aprobada puede originar un Trabajo). El vencimiento materializado se sincroniza como transición `→VENCIDA` aceptada por el servidor desde los mismos estados. | Aclaración del alcance de la regla de vencimiento para alinear Android y API. | Aprobado. |

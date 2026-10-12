@@ -49,9 +49,11 @@ enum class ConceptType { SERVICIO, MATERIAL, OTRO }
 enum class MaterialOrigin { CLIENTE, PROFESIONAL }
 
 /**
- * Transiciones aprobadas. `VENCIDA` no figura como destino: la produce el
- * paso del tiempo (ver [effectiveQuoteStatus]), no una acción del usuario.
- * Editar no es una transición: conserva el estado y crea versión interna.
+ * Transiciones aprobadas para acciones del usuario. `VENCIDA` no figura como
+ * destino: la produce el paso del tiempo (ver [effectiveQuoteStatus]) y se
+ * sincroniza como materialización, aceptada por el servidor desde los mismos
+ * estados no terminales. Editar no es una transición: conserva el estado y
+ * crea versión interna.
  */
 object QuoteTransitions {
     private val allowed: Map<QuoteStatus, Set<QuoteStatus>> = mapOf(
@@ -74,8 +76,11 @@ object QuoteTransitions {
  * Estado efectivo: la vigencia corre desde la creación (incluso en BORRADOR)
  * y `fecha_vencimiento` es el último día válido — la Cotización pasa a
  * VENCIDA cuando la fecha local del dispositivo es posterior a ese día
- * (decisión DP2-F2). Se deriva al leer; se materializa en la siguiente
- * escritura (sin trabajo en segundo plano).
+ * (decisión DP2-F2, alcance aclarado en F3). Solo vencen los estados NO
+ * terminales: BORRADOR, EMITIDA y RECHAZADA. APROBADA y CANCELADA son
+ * terminales y conservan su estado (la aprobada puede originar Trabajos).
+ * Se deriva al leer; se materializa en la siguiente escritura (sin trabajo
+ * en segundo plano) y se sincroniza como transición →VENCIDA.
  */
 fun effectiveQuoteStatus(
     status: QuoteStatus,

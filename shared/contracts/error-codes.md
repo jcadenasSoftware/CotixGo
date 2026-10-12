@@ -1,6 +1,6 @@
-# CotixGo — Convención de errores de API (v0.1)
+# CotixGo — Convención de errores de API (v0.2)
 
-Convención compartida entre backend PHP y clientes (Android/web). Borrador de E0; se extiende cuando se apruebe el contrato de endpoints completo.
+Convención compartida entre backend PHP y clientes (Android/web). v0.2 añade los códigos usados por el contrato de sincronización de F3.
 
 ## Envelope de error
 
@@ -33,11 +33,27 @@ Toda respuesta de error usa HTTP apropiado y cuerpo JSON:
 | 409 | `INVALID_STATE_TRANSITION` | Transición no permitida según el estado actual de la entidad. |
 | 422 | `BUSINESS_RULE_VIOLATION` | Regla de negocio incumplida (p. ej. intentar aplicar a una Cuenta o Consolidado un importe mayor que su saldo pendiente). |
 | 500 | `INTERNAL_ERROR` | Error no controlado del servidor. |
+| 401 | `INVALID_CREDENTIALS` | Email/contraseña incorrectos en login. |
+| 409 | `ACCOUNT_EXISTS` | Registro con un email ya asociado a una cuenta. |
+
+## Resultados por operación (`/sync/push`)
+
+Dentro de `results[]`, cada operación devuelve `status` (`APPLIED` | `REJECTED` | `CONFLICT`) y, cuando aplica, un `code` de motivo. Estos códigos no son errores HTTP: el lote siempre responde 200 y cada operación decide por separado.
+
+| `code` | Uso |
+|---|---|
+| `INVALID_TRANSITION` | Transición de estado no permitida desde el estado persistido actual. |
+| `DEPENDENCY` | La entidad referenciada por la operación aún no existe en el servidor (falta una operación previa). |
+| `FORBIDDEN_ENTITY` | El `entity_id` —o una entidad referenciada en el payload— pertenece a otra cuenta de usuario. |
+| `STALE_BASE_VERSION` | `base_server_version` no coincide con la versión vigente del servidor. |
+| `VERSION_CONFLICT` | Versión de Cotización concurrente conservada; el documento queda marcado para resolución. |
+| `CONFLICT_BLOCKED` | Transición hacia `EMITIDA`/`APROBADA` bloqueada mientras el documento tiene un conflicto de versiones sin resolver. |
+| `VALIDATION_ERROR` | Payload incompleto o inválido para la entidad. |
 
 ## Reglas
 
 - Los clientes deben tratar `code` como contrato estable y `message` como texto variable.
-- Errores de sincronización deben incluir `details.entity_id` y `details.operation_id` cuando apliquen.
+- Los errores HTTP de sincronización usan `details.entity_id`/`details.operation_id` cuando apliquen; los resultados por operación de `/sync/push` llevan `operation_id` y `entity_id` como campos propios del resultado.
 - Un error nunca deja al cliente con estado ambiguo: la operación fue aceptada, rechazada o marcada como conflicto.
 
 ### Pagos y saldos (D13-B)

@@ -837,6 +837,7 @@ fun SettingsScreen(
     onServices: () -> Unit,
     onRetentions: () -> Unit,
     onProfile: () -> Unit,
+    onAccount: () -> Unit,
     onBack: () -> Unit,
 ) {
     var currency by remember { mutableStateOf(user?.mainCurrency ?: "") }
@@ -853,6 +854,7 @@ fun SettingsScreen(
             OutlinedButton(onClick = onServices, modifier = Modifier.fillMaxWidth()) { Text("Catálogo de servicios") }
             OutlinedButton(onClick = onRetentions, modifier = Modifier.fillMaxWidth()) { Text("Retenciones") }
             OutlinedButton(onClick = onProfile, modifier = Modifier.fillMaxWidth()) { Text("Perfil profesional") }
+            OutlinedButton(onClick = onAccount, modifier = Modifier.fillMaxWidth()) { Text("Cuenta y sincronización") }
             TextButton(onClick = onBack) { Text("Volver") }
         }
     }

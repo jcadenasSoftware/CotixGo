@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.time.LocalDate
 
-class AppRepository(private val db: AppDatabase) {
+class AppRepository(private val db: AppDatabase, private val sync: SyncRepository? = null) {
 
     fun observeUser(): Flow<UserEntity?> = db.userDao().observe()
 
@@ -48,9 +48,12 @@ class AppRepository(private val db: AppDatabase) {
         )
         // Transacción: si alguna inserción falla no queda un Usuario
         // sin su primer Perfil ni se omite el onboarding al reiniciar.
+        // F3: la escritura y sus operaciones de sincronización van juntas.
         db.withTransaction {
             db.userDao().insert(user)
             db.profileDao().insert(profile)
+            sync?.enqueue(EntityTypes.USER, user.id, SyncPayloads.user(user), 0)
+            sync?.enqueue(EntityTypes.PROFILE, profile.id, SyncPayloads.profile(profile), 0)
         }
     }
 
@@ -70,36 +73,49 @@ class AppRepository(private val db: AppDatabase) {
             archived = existing?.archived ?: false,
             createdAt = existing?.createdAt ?: now,
             updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
         )
-        db.clientDao().upsert(client)
+        db.withTransaction {
+            db.clientDao().upsert(client)
+            sync?.enqueue(EntityTypes.CLIENT, client.id, SyncPayloads.client(client), existing?.serverVersion ?: 0)
+        }
     }
 
     suspend fun setClientArchived(id: String, archived: Boolean) {
         val client = db.clientDao().get(id) ?: return
-        db.clientDao().upsert(
-            client.copy(archived = archived, updatedAt = nowEpochMillis()),
-        )
+        val updated = client.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.clientDao().upsert(updated)
+            sync?.enqueue(EntityTypes.CLIENT, updated.id, SyncPayloads.client(updated), client.serverVersion)
+        }
     }
 
     // ---------- Usuario / Perfil (F2) ----------
 
     suspend fun setMainCurrency(code: String) {
         val user = db.userDao().observe().first() ?: return
-        db.userDao().insert(user.copy(mainCurrency = code.uppercase(), updatedAt = nowEpochMillis()))
+        val updated = user.copy(mainCurrency = code.uppercase(), updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.userDao().insert(updated)
+            sync?.enqueue(EntityTypes.USER, updated.id, SyncPayloads.user(updated), user.serverVersion)
+        }
     }
 
     suspend fun updateProfile(id: String, businessName: String, description: String, commercialInfo: String, vigenciaDias: Int?) {
         val profile = db.profileDao().observeForUser(requireUser().id).first()
             .firstOrNull { it.id == id } ?: return
-        db.profileDao().insert(
-            profile.copy(
-                businessName = businessName.trim(),
-                description = description.trim(),
-                commercialInfo = commercialInfo.trim(),
-                vigenciaDias = vigenciaDias,
-                updatedAt = nowEpochMillis(),
-            ),
+        val updated = profile.copy(
+            businessName = businessName.trim(),
+            description = description.trim(),
+            commercialInfo = commercialInfo.trim(),
+            vigenciaDias = vigenciaDias,
+            updatedAt = nowEpochMillis(),
         )
+        db.withTransaction {
+            db.profileDao().insert(updated)
+            sync?.enqueue(EntityTypes.PROFILE, updated.id, SyncPayloads.profile(updated), profile.serverVersion)
+        }
     }
 
     // ---------- Catálogo de servicios (por Perfil) ----------
@@ -111,24 +127,32 @@ class AppRepository(private val db: AppDatabase) {
         val user = requireUser()
         val now = nowEpochMillis()
         val existing = existingId?.let { db.serviceDao().get(it) }
-        db.serviceDao().upsert(
-            ServiceEntity(
-                id = existing?.id ?: Ids.new(),
-                userId = existing?.userId ?: user.id,
-                profileId = input.profileId,
-                name = input.name.trim(),
-                description = input.description.trim(),
-                suggestedPrice = input.suggestedPrice.trim(),
-                archived = existing?.archived ?: false,
-                createdAt = existing?.createdAt ?: now,
-                updatedAt = now,
-            ),
+        val service = ServiceEntity(
+            id = existing?.id ?: Ids.new(),
+            userId = existing?.userId ?: user.id,
+            profileId = input.profileId,
+            name = input.name.trim(),
+            description = input.description.trim(),
+            suggestedPrice = input.suggestedPrice.trim(),
+            archived = existing?.archived ?: false,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
         )
+        db.withTransaction {
+            db.serviceDao().upsert(service)
+            sync?.enqueue(EntityTypes.SERVICE, service.id, SyncPayloads.service(service), existing?.serverVersion ?: 0)
+        }
     }
 
     suspend fun setServiceArchived(id: String, archived: Boolean) {
         val service = db.serviceDao().get(id) ?: return
-        db.serviceDao().upsert(service.copy(archived = archived, updatedAt = nowEpochMillis()))
+        val updated = service.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.serviceDao().upsert(updated)
+            sync?.enqueue(EntityTypes.SERVICE, updated.id, SyncPayloads.service(updated), service.serverVersion)
+        }
     }
 
     // ---------- Configuración de retenciones (global Usuario/Titular) ----------
@@ -140,29 +164,40 @@ class AppRepository(private val db: AppDatabase) {
         val user = requireUser()
         val now = nowEpochMillis()
         val existing = existingId?.let { db.retentionDao().get(it) }
-        db.retentionDao().upsert(
-            RetentionConfigEntity(
-                id = existing?.id ?: Ids.new(),
-                userId = existing?.userId ?: user.id,
-                name = input.name.trim(),
-                ratePercent = input.ratePercent.trim(),
-                appliesTo = input.appliesTo.sorted().joinToString(",") { it.name },
-                archived = existing?.archived ?: false,
-                createdAt = existing?.createdAt ?: now,
-                updatedAt = now,
-            ),
+        val config = RetentionConfigEntity(
+            id = existing?.id ?: Ids.new(),
+            userId = existing?.userId ?: user.id,
+            name = input.name.trim(),
+            ratePercent = input.ratePercent.trim(),
+            appliesTo = input.appliesTo.sorted().joinToString(",") { it.name },
+            archived = existing?.archived ?: false,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
         )
+        db.withTransaction {
+            db.retentionDao().upsert(config)
+            sync?.enqueue(EntityTypes.RETENTION, config.id, SyncPayloads.retention(config), existing?.serverVersion ?: 0)
+        }
     }
 
     suspend fun setRetentionArchived(id: String, archived: Boolean) {
         val config = db.retentionDao().get(id) ?: return
-        db.retentionDao().upsert(config.copy(archived = archived, updatedAt = nowEpochMillis()))
+        val updated = config.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.retentionDao().upsert(updated)
+            sync?.enqueue(EntityTypes.RETENTION, updated.id, SyncPayloads.retention(updated), config.serverVersion)
+        }
     }
 
     // ---------- Cotizaciones ----------
 
     fun observeQuotes(userId: String): Flow<List<QuoteEntity>> =
         db.quoteDao().observeForUser(userId)
+
+    fun observeVersionConflictQuotes(userId: String): Flow<List<QuoteEntity>> =
+        db.quoteDao().observeVersionConflicts(userId)
 
     fun observeQuote(id: String): Flow<QuoteEntity?> = db.quoteDao().observeOne(id)
 
@@ -251,10 +286,17 @@ class AppRepository(private val db: AppDatabase) {
         } ?: QuoteStatus.BORRADOR
         if (existing != null && !QuoteTransitions.isEditable(effective)) {
             if (effective.name != existing.status) {
-                // Materializa el vencimiento derivado de forma segura.
-                db.quoteDao().upsert(
-                    existing.copy(status = effective.name, updatedAt = now),
-                )
+                // Materializa el vencimiento derivado y lo encola para el
+                // servidor: la regla aprobada vence desde cualquier estado
+                // no terminal (BORRADOR/EMITIDA/RECHAZADA); APROBADA y
+                // CANCELADA son terminales y nunca llegan aquí.
+                val vencida = existing.copy(status = effective.name, updatedAt = now,
+                    pendingSync = true)
+                db.withTransaction {
+                    db.quoteDao().upsert(vencida)
+                    sync?.enqueue(EntityTypes.QUOTE, vencida.id,
+                        SyncPayloads.quote(vencida), existing.serverVersion)
+                }
             }
             return null
         }
@@ -265,41 +307,45 @@ class AppRepository(private val db: AppDatabase) {
         } ?: QuoteStatus.BORRADOR
 
         val quoteId = existing?.id ?: Ids.new()
+        val quoteEntity = QuoteEntity(
+            id = quoteId,
+            userId = existing?.userId ?: user.id,
+            clientId = input.clientId,
+            profileId = input.profileId,
+            provisionalNumber = snapshot.provisionalNumber,
+            status = status.name,
+            issueDateEpochDay = input.issueDateEpochDay,
+            validityDays = input.validityDays,
+            expiryDateEpochDay = expiry,
+            currency = snapshot.currency,
+            notes = snapshot.notes,
+            currentVersion = snapshot.version,
+            emittedVersion = if (status == QuoteStatus.EMITIDA) snapshot.version
+                else existing?.emittedVersion ?: 0,
+            gross = snapshot.gross,
+            totalRetained = snapshot.totalRetained,
+            net = snapshot.net,
+            clientNameSnapshot = client.name,
+            archived = existing?.archived ?: false,
+            officialNumber = existing?.officialNumber,
+            versionConflict = existing?.versionConflict ?: false,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        val versionEntity = QuoteVersionEntity(
+            id = Ids.new(),
+            quoteId = quoteId,
+            version = snapshot.version,
+            snapshotJson = SnapshotJson.encode(snapshot),
+            createdAt = now,
+        )
         db.withTransaction {
-            db.quoteDao().upsert(
-                QuoteEntity(
-                    id = quoteId,
-                    userId = existing?.userId ?: user.id,
-                    clientId = input.clientId,
-                    profileId = input.profileId,
-                    provisionalNumber = snapshot.provisionalNumber,
-                    status = status.name,
-                    issueDateEpochDay = input.issueDateEpochDay,
-                    validityDays = input.validityDays,
-                    expiryDateEpochDay = expiry,
-                    currency = snapshot.currency,
-                    notes = snapshot.notes,
-                    currentVersion = snapshot.version,
-                    emittedVersion = if (status == QuoteStatus.EMITIDA) snapshot.version
-                        else existing?.emittedVersion ?: 0,
-                    gross = snapshot.gross,
-                    totalRetained = snapshot.totalRetained,
-                    net = snapshot.net,
-                    clientNameSnapshot = client.name,
-                    archived = existing?.archived ?: false,
-                    createdAt = existing?.createdAt ?: now,
-                    updatedAt = now,
-                ),
-            )
-            db.quoteVersionDao().insert(
-                QuoteVersionEntity(
-                    id = Ids.new(),
-                    quoteId = quoteId,
-                    version = snapshot.version,
-                    snapshotJson = SnapshotJson.encode(snapshot),
-                    createdAt = now,
-                ),
-            )
+            db.quoteDao().upsert(quoteEntity)
+            db.quoteVersionDao().insert(versionEntity)
+            sync?.enqueue(EntityTypes.QUOTE, quoteId, SyncPayloads.quote(quoteEntity), existing?.serverVersion ?: 0)
+            sync?.enqueue(EntityTypes.QUOTE_VERSION, versionEntity.id, SyncPayloads.quoteVersion(versionEntity), 0)
         }
         return quoteId
     }
@@ -317,17 +363,27 @@ class AppRepository(private val db: AppDatabase) {
         )
         if (effective.name != quote.status) {
             // Materializa el vencimiento derivado en la siguiente escritura.
-            quote = quote.copy(status = effective.name, updatedAt = nowEpochMillis())
-            db.quoteDao().upsert(quote)
+            // El servidor acepta →VENCIDA desde cualquier estado no
+            // terminal (regla aprobada): la operación sincroniza el
+            // vencimiento igual que una transición manual.
+            quote = quote.copy(status = effective.name, updatedAt = nowEpochMillis(),
+                pendingSync = true)
+            db.withTransaction {
+                db.quoteDao().upsert(quote)
+                sync?.enqueue(EntityTypes.QUOTE, quote.id,
+                    SyncPayloads.quote(quote), quote.serverVersion)
+            }
         }
         if (!QuoteTransitions.canTransition(effective, to)) return false
-        db.quoteDao().upsert(
-            quote.copy(
-                status = to.name,
-                emittedVersion = if (to == QuoteStatus.EMITIDA) quote.currentVersion else quote.emittedVersion,
-                updatedAt = nowEpochMillis(),
-            ),
+        val updated = quote.copy(
+            status = to.name,
+            emittedVersion = if (to == QuoteStatus.EMITIDA) quote.currentVersion else quote.emittedVersion,
+            updatedAt = nowEpochMillis(),
         )
+        db.withTransaction {
+            db.quoteDao().upsert(updated)
+            sync?.enqueue(EntityTypes.QUOTE, updated.id, SyncPayloads.quote(updated), quote.serverVersion)
+        }
         return true
     }
 
@@ -341,7 +397,11 @@ class AppRepository(private val db: AppDatabase) {
 
     suspend fun setQuoteArchived(id: String, archived: Boolean) {
         val quote = db.quoteDao().get(id) ?: return
-        db.quoteDao().upsert(quote.copy(archived = archived, updatedAt = nowEpochMillis()))
+        val updated = quote.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.quoteDao().upsert(updated)
+            sync?.enqueue(EntityTypes.QUOTE, updated.id, SyncPayloads.quote(updated), quote.serverVersion)
+        }
     }
 
     /**
@@ -359,9 +419,13 @@ class AppRepository(private val db: AppDatabase) {
         )
         if (effective != QuoteStatus.VENCIDA) return null
         if (effective.name != source.status) {
-            db.quoteDao().upsert(
-                source.copy(status = effective.name, updatedAt = nowEpochMillis()),
-            )
+            val vencida = source.copy(status = effective.name, updatedAt = nowEpochMillis(),
+                pendingSync = true)
+            db.withTransaction {
+                db.quoteDao().upsert(vencida)
+                sync?.enqueue(EntityTypes.QUOTE, vencida.id,
+                    SyncPayloads.quote(vencida), source.serverVersion)
+            }
         }
         val latest = db.quoteVersionDao().getLatest(id) ?: return null
         val old = SnapshotJson.decodeQuote(latest.snapshotJson)

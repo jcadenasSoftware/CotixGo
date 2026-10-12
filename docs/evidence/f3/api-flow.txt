@@ -1,0 +1,26 @@
+=== CotixGo F3 — flujo API local (php -S 0.0.0.0:8080, MariaDB cotixgo_dev) ===
+=== Datos 100% sinteticos ===
+
+--- GET /health ---
+{"status":"ok","service":"cotixgo-api"}
+HTTP 200
+
+--- POST /auth/register (cuenta sintetica) ---
+{"user_id":"dc2e3d55-79cd-4470-9673-7d83b3db82c2","token":"bcff9edee1bcabe04269d71ec27ea4baea59197a2fe7728b1ad6ea23eedd6909","expires_at":"2026-11-11T02:25:56Z"}
+HTTP 200
+
+--- POST /auth/register duplicado ---
+{"error":{"code":"ACCOUNT_EXISTS","message":"Ya existe una cuenta con ese correo. Usa inicio de sesión."}}
+HTTP 409
+
+--- POST /auth/login password incorrecta ---
+{"error":{"code":"INVALID_CREDENTIALS","message":"Correo o contraseña incorrectos."}}
+HTTP 401
+
+--- POST /auth/recover (outbox local, sin envio real) ---
+{"status":"ok"}
+HTTP 200
+
+--- GET /sync/pull sin token ---
+{"error":{"code":"UNAUTHENTICATED","message":"Falta el token de sesión."}}
+HTTP 401
