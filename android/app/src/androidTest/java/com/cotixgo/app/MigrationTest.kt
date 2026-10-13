@@ -97,4 +97,97 @@ class MigrationTest {
             assertEquals(1, c.getInt(0))
         }
     }
+
+    /**
+     * Migración real v5→v6 (F5): crea una base v5 con datos preexistentes
+     * (usuario, cliente, trabajo y operación de cola), migra y verifica que
+     * las filas sobreviven y que las tablas e índices de Informes quedan
+     * creados. No abre una base v6 fresca.
+     */
+    @Test
+    fun migrate5To6_preservesRowsAndCreatesReportTables() {
+        // Semilla sobre la base v5 real (columnas del esquema exportado 5.json).
+        helper.createDatabase(testDb, 5).apply {
+            execSQL(
+                "INSERT INTO users (id, name, mainCurrency, email, createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('u1', 'Usuario Sintético', 'COP', 'u@synthetic.local', 1, 1, 0, 1)",
+            )
+            execSQL(
+                "INSERT INTO clients (id, userId, type, name, phone, email, address, notes, archived," +
+                    " createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('c1', 'u1', 'PERSONA', 'Cliente Sintético', '', '', '', '', 0, 1, 1, 1, 1)",
+            )
+            execSQL(
+                "INSERT INTO jobs (id, userId, clientId, profileId, provisionalNumber, status," +
+                    " executionAddress, notes, clientNameSnapshot, archived, createdAt, updatedAt," +
+                    " pendingSync, serverVersion) VALUES ('j1', 'u1', 'c1', 'p1', 'TR-PEND-0001'," +
+                    " 'EN_PROCESO', 'Obra', '', 'Cliente Sintético', 0, 1, 1, 1, 3)",
+            )
+            execSQL(
+                "INSERT INTO job_activities (id, jobId, description, status, position, notes," +
+                    " createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('a1', 'j1', 'Actividad previa', 'COMPLETADA', 1, '', 1, 1, 1, 2)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(testDb, 6, true, AppDatabase.MIGRATION_5_6)
+
+        // Filas preexistentes F1–F4 sobreviven intactas tras la migración.
+        db.query("SELECT provisionalNumber, status FROM jobs WHERE id = 'j1'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("TR-PEND-0001", c.getString(0))
+            assertEquals("EN_PROCESO", c.getString(1))
+        }
+        db.query("SELECT COUNT(*) FROM job_activities WHERE jobId = 'j1'").use { c ->
+            c.moveToFirst()
+            assertEquals(1, c.getInt(0))
+        }
+
+        // Tablas F5 creadas.
+        for (table in listOf("reports", "report_jobs", "report_versions")) {
+            db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", arrayOf(table))
+                .use { c -> assertTrue("tabla $table creada", c.moveToFirst()) }
+        }
+
+        // Índice único de numeración provisional INF operativo.
+        db.execSQL(
+            "INSERT INTO reports (id, userId, clientId, profileId, provisionalNumber, status," +
+                " title, destination, content, currentVersion, emittedVersion, clientNameSnapshot," +
+                " archived, officialNumber, versionConflict, createdAt, updatedAt, pendingSync," +
+                " serverVersion) VALUES ('r1', 'u1', 'c1', 'p1', 'INF-PEND-TEST', 'BORRADOR'," +
+                " 'Informe', 'CLIENTE', '', 0, 0, 'Cliente Sintético', 0, NULL, 0, 1, 1, 1, 0)",
+        )
+        var dupFailed = false
+        try {
+            db.execSQL(
+                "INSERT INTO reports (id, userId, clientId, profileId, provisionalNumber, status," +
+                    " title, destination, content, currentVersion, emittedVersion, clientNameSnapshot," +
+                    " archived, officialNumber, versionConflict, createdAt, updatedAt, pendingSync," +
+                    " serverVersion) VALUES ('r2', 'u1', 'c1', 'p1', 'INF-PEND-TEST', 'BORRADOR'," +
+                    " 'Informe 2', 'INTERNO', '', 0, 0, 'Cliente Sintético', 0, NULL, 0, 1, 1, 1, 0)",
+            )
+        } catch (e: android.database.sqlite.SQLiteConstraintException) {
+            dupFailed = true
+        }
+        assertTrue("índice único provisionalNumber operativo", dupFailed)
+
+        // Vínculo y snapshot aceptan filas.
+        db.execSQL(
+            "INSERT INTO report_jobs (id, reportId, jobId, position, createdAt, pendingSync, serverVersion)" +
+                " VALUES ('rj1', 'r1', 'j1', 1, 1, 1, 0)",
+        )
+        db.execSQL(
+            "INSERT INTO report_versions (id, reportId, version, snapshotJson, previousVersionId," +
+                " serverOrder, createdAt) VALUES ('rv1', 'r1', 1, '{}', NULL, NULL, 1)",
+        )
+        db.query("SELECT COUNT(*) FROM report_jobs WHERE reportId = 'r1'").use { c ->
+            c.moveToFirst()
+            assertEquals(1, c.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM report_versions WHERE reportId = 'r1'").use { c ->
+            c.moveToFirst()
+            assertEquals(1, c.getInt(0))
+        }
+    }
 }

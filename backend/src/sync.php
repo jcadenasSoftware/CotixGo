@@ -22,6 +22,7 @@ const ENTITY_TYPES = [
     'user', 'profile', 'client', 'service', 'retention_config',
     'quote', 'quote_version',
     'job', 'job_quote', 'job_activity', 'job_material',
+    'report', 'report_job', 'report_version',
 ];
 
 /** Dependencias: la entidad padre debe existir en el servidor antes de aplicar. */
@@ -36,6 +37,9 @@ const DEPENDENCIES = [
     'job_quote'        => [['job', 'jobId'], ['quote', 'quoteId']],
     'job_activity'     => [['job', 'jobId']],
     'job_material'     => [['job', 'jobId']],
+    'report'           => [['client', 'clientId'], ['profile', 'profileId']],
+    'report_job'       => [['report', 'reportId'], ['job', 'jobId']],
+    'report_version'   => [['report', 'reportId']],
 ];
 
 /** Estado remoto para resultados CONFLICT/REJECTED: el payload persistido
@@ -190,6 +194,36 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
 
     if ($type === 'job') {
         return applyJob($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
+    }
+
+    if ($type === 'report') {
+        return applyReport($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
+    }
+
+    if ($type === 'report_version') {
+        return applyReportVersion($pdo, $userId, $deviceId, $opId, $entityId, $payload, $opType === 'resolve');
+    }
+
+    // Vínculo Informe↔Trabajo (F5): validado sobre las entidades ya
+    // persistidas — nunca con datos declarados por el cliente —: el
+    // Trabajo debe compartir el Cliente Y el Perfil Profesional del
+    // Informe (regla aprobada, docs/03 §6), y el Informe debe seguir en
+    // BORRADOR porque un emitido es inmutable.
+    if ($type === 'report_job') {
+        $reportRow = entityRow($pdo, 'report', (string) $payload['reportId']);
+        $jobRow = entityRow($pdo, 'job', (string) $payload['jobId']);
+        $reportData = json_decode($reportRow['payload'], true) ?: [];
+        $jobData = json_decode($jobRow['payload'], true) ?: [];
+        if ((string) $reportRow['status'] !== 'BORRADOR') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Solo se pueden asociar trabajos a un informe en estado BORRADOR.');
+        }
+        if (($jobData['clientId'] ?? '') === ''
+            || $jobData['clientId'] !== ($reportData['clientId'] ?? null)
+            || $jobData['profileId'] !== ($reportData['profileId'] ?? null)) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El trabajo no coincide en cliente y perfil con el informe.');
+        }
     }
 
     // Vínculo Trabajo↔Cotización (F4): validado sobre las entidades ya
@@ -433,6 +467,182 @@ function applyQuoteVersion(PDO $pdo, string $userId, string $deviceId, string $o
     return $concurrent
         ? result($opId, 'APPLIED', 'VERSION_CONFLICT',
             'Versión concurrente conservada; la cotización requiere resolución del usuario.')
+        : result($opId, 'APPLIED');
+}
+
+/**
+ * F5 — Informe de Trabajo (docs/03 §6): estados BORRADOR/EMITIDO, título y
+ * destino obligatorios, emitido inmutable (un EMITIDO→EMITIDO solo puede
+ * archivar/desarchivar), corrección como reapertura del borrador y número
+ * oficial INF-AAAAMM-NNN sobre el mismo entity_id en la primera emisión
+ * aceptada. La emisión exige al menos un Trabajo asociado ya persistido.
+ */
+function applyReport(PDO $pdo, string $userId, string $deviceId, string $opId,
+                     string $entityId, array $payload, ?array $current, int $base): array
+{
+    $newStatus = (string) ($payload['status'] ?? '');
+    if (!in_array($newStatus, REPORT_STATUSES, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Estado de informe desconocido.');
+    }
+    if (!in_array((string) ($payload['destination'] ?? ''), REPORT_DESTINATIONS, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Destino de informe desconocido.');
+    }
+    if (trim((string) ($payload['title'] ?? '')) === '') {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'El título del informe es obligatorio.');
+    }
+
+    if ($current === null) {
+        if ($base !== 0) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'La entidad no existe en el servidor pero la base no es cero.', 0, null);
+        }
+        // Un Informe nace en BORRADOR: emitir exige trabajos asociados ya
+        // persistidos, imposibles antes de crear el Informe → un EMITIDO en
+        // creación es fabricado y se rechaza (misma regla de abajo).
+        if ($newStatus === 'EMITIDO') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Un informe EMITIDO requiere al menos un trabajo asociado persistido.');
+        }
+        insertEntity($pdo, 'report', $entityId, $userId, $payload, $newStatus);
+        audit($pdo, $userId, $deviceId, $opId, 'report', $entityId, 'CREATE', ['status' => $newStatus]);
+        return result($opId, 'APPLIED', null, null, 1);
+    }
+
+    if ($base !== (int) $current['server_version']) {
+        return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+            'El informe cambió desde la versión conocida por el dispositivo.',
+            (int) $current['server_version'], serverState($current));
+    }
+
+    $oldStatus = (string) $current['status'];
+    if (!validReportTransition($oldStatus, $newStatus)) {
+        return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+            "Transición no permitida $oldStatus → $newStatus; estado actual $oldStatus.",
+            (int) $current['server_version'], serverState($current));
+    }
+
+    // Emitido inmutable: un EMITIDO→EMITIDO solo puede cambiar el flag
+    // `archived` (y updatedAt). Cualquier otra diferencia de contenido es
+    // una edición fabricada del documento emitido y se rechaza.
+    if ($oldStatus === 'EMITIDO' && $newStatus === 'EMITIDO') {
+        $prevData = json_decode($current['payload'], true) ?: [];
+        foreach (['title', 'destination', 'content', 'clientId', 'profileId',
+                  'provisionalNumber', 'currentVersion', 'emittedVersion'] as $f) {
+            if (($prevData[$f] ?? null) !== ($payload[$f] ?? null)) {
+                return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                    'El informe emitido es inmutable; la corrección crea una versión nueva.',
+                    (int) $current['server_version'], serverState($current));
+            }
+        }
+    }
+
+    // Conflicto de versiones: bloquear una nueva emisión hasta que el
+    // usuario resuelva (espejo de la regla de Cotización).
+    if ((int) $current['has_version_conflict'] === 1
+        && $newStatus === 'EMITIDO' && $oldStatus !== 'EMITIDO') {
+        return result($opId, 'REJECTED', 'CONFLICT_BLOCKED',
+            'El informe tiene versiones en conflicto; resuélvelas antes de emitir.',
+            (int) $current['server_version']);
+    }
+
+    // Emisión (BORRADOR→EMITIDO y reemisión tras corrección): el Informe
+    // debe tener al menos un Trabajo asociado persistido en el servidor —
+    // nunca confiando en lo declarado por el cliente.
+    if ($newStatus === 'EMITIDO' && $oldStatus !== 'EMITIDO') {
+        $links = $pdo->prepare(
+            "SELECT COUNT(*) FROM entities WHERE entity_type = 'report_job'
+             AND user_id = ? AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.reportId')) = ?"
+        );
+        $links->execute([$userId, $entityId]);
+        if ((int) $links->fetchColumn() === 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El informe requiere al menos un trabajo asociado para emitirse.');
+        }
+    }
+
+    $official = $current['official_number'];
+    if ($official === null && $oldStatus !== 'EMITIDO'
+        && in_array($newStatus, REPORT_NUMBERED_STATUSES, true)) {
+        $official = ensureOfficialNumber($pdo, $userId, $entityId, 'INF');
+    }
+    updateEntity($pdo, 'report', $entityId, $current, $payload, $newStatus, $official);
+    audit($pdo, $userId, $deviceId, $opId, 'report', $entityId,
+        $oldStatus === $newStatus ? 'UPDATE' : 'TRANSITION',
+        ['from' => $oldStatus, 'to' => $newStatus]);
+    return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1, null, $official);
+}
+
+/**
+ * F5 — Versión de Informe: snapshot inmutable por entity_id, dedupe de
+ * replays, versiones concurrentes conservadas con server_order autoritativo
+ * y resolución aprobada como versión nueva (espejo de applyQuoteVersion).
+ */
+function applyReportVersion(PDO $pdo, string $userId, string $deviceId, string $opId,
+                            string $entityId, array $payload, bool $isResolve): array
+{
+    $reportId = (string) ($payload['reportId'] ?? '');
+    $version = (int) ($payload['version'] ?? 0);
+    $report = entityRow($pdo, 'report', $reportId);
+    if ($report === null) {
+        return result($opId, 'REJECTED', 'DEPENDENCY', 'El informe no existe en el servidor.');
+    }
+    if ($report['user_id'] !== $userId) {
+        return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', 'El informe pertenece a otra cuenta.');
+    }
+
+    $snapshot = (string) ($payload['snapshotJson'] ?? '');
+    $stmt = $pdo->prepare(
+        "SELECT id, payload FROM entities WHERE entity_type = 'report_version'
+         AND user_id = ? AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.reportId')) = ?
+         AND JSON_EXTRACT(payload, '$.version') = ?"
+    );
+    $stmt->execute([$userId, $reportId, $version]);
+    $existing = $stmt->fetch() ?: null;
+
+    $nextOrderRaw = $pdo->query(
+        "SELECT COALESCE(MAX(server_order), 0) + 1 FROM entities
+         WHERE entity_type = 'report_version' AND user_id = " . $pdo->quote($userId)
+        . " AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.reportId')) = " . $pdo->quote($reportId)
+    )->fetchColumn();
+    $nextOrder = $nextOrderRaw === false ? 1 : (int) $nextOrderRaw;
+
+    $concurrent = false;
+    if ($existing !== null) {
+        $prevPayload = json_decode($existing['payload'], true);
+        if (($prevPayload['snapshotJson'] ?? '') === $snapshot) {
+            return result($opId, 'APPLIED', null, null, null, null, null); // misma versión, dedupe
+        }
+        // Edición concurrente: se conserva completa y se marca el documento.
+        $concurrent = true;
+        $pdo->prepare('UPDATE entities SET has_version_conflict = 1, server_version = server_version + 1,
+                       server_seq = ?, updated_at_server = ? WHERE entity_type = ? AND id = ?')
+            ->execute([nextServerSeq($pdo), nowUtc(), 'report', $reportId]);
+    }
+
+    insertEntity($pdo, 'report_version', $entityId, $userId, $payload, null, null, $nextOrder);
+
+    if ($isResolve) {
+        // Resolución aprobada: versión nueva que queda vigente; snapshots previos intactos.
+        $reportData = json_decode($report['payload'], true) ?: [];
+        $emitted = $report['status'] === 'EMITIDO' ? $version : (int) ($reportData['emittedVersion'] ?? 0);
+        $reportData['currentVersion'] = $version;
+        $reportData['emittedVersion'] = $emitted;
+        $reportData['hasVersionConflict'] = false;
+        $pdo->prepare('UPDATE entities SET has_version_conflict = 0, server_version = server_version + 1,
+                       server_seq = ?, status = status, payload = ?, updated_at_server = ? WHERE entity_type = ? AND id = ?')
+            ->execute([nextServerSeq($pdo), json_encode($reportData, JSON_UNESCAPED_UNICODE), nowUtc(), 'report', $reportId]);
+        audit($pdo, $userId, $deviceId, $opId, 'report_version', $entityId, 'RESOLVE_VERSION_CONFLICT',
+            ['report_id' => $reportId, 'version' => $version]);
+        return result($opId, 'APPLIED', null, null, (int) $report['server_version'] + 1);
+    }
+
+    audit($pdo, $userId, $deviceId, $opId, 'report_version', $entityId,
+        $concurrent ? 'VERSION_CONFLICT' : 'CREATE',
+        ['report_id' => $reportId, 'version' => $version, 'server_order' => $nextOrder]);
+
+    return $concurrent
+        ? result($opId, 'APPLIED', 'VERSION_CONFLICT',
+            'Versión concurrente conservada; el informe requiere resolución del usuario.')
         : result($opId, 'APPLIED');
 }
 

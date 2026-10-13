@@ -17,6 +17,7 @@ import com.cotixgo.app.data.JobInput
 import com.cotixgo.app.data.JobMaterialInput
 import com.cotixgo.app.data.QuoteInput
 import com.cotixgo.app.data.QuoteLineInput
+import com.cotixgo.app.data.ReportInput
 import com.cotixgo.app.data.RetentionInput
 import com.cotixgo.app.data.ServiceInput
 import com.cotixgo.app.data.Session
@@ -798,6 +799,270 @@ class SyncE2eTest {
 
         sync.pullAll()
         final = db.quoteDao().get(quoteId)!!
+        assertEquals(official, final.officialNumber)
+    }
+
+    // ---------- F5 — Informes de Trabajo ----------
+
+    private suspend fun seedReport(): String {
+        val client = seedJobClient()
+        val profileId = profileId()
+        val jobId = repo.saveJob(
+            JobInput(
+                clientId = client.id, profileId = profileId,
+                startDateEpochDay = LocalDate.now().toEpochDay(),
+                executionAddress = "Obra Inf", notes = "sintético",
+            ),
+        )!!
+        val a = repo.saveJobActivity(JobActivityInput(jobId = jobId, description = "Hecha"))!!
+        repo.setJobActivityStatus(a, com.cotixgo.app.core.JobActivityStatus.EN_PROCESO)
+        repo.setJobActivityStatus(a, com.cotixgo.app.core.JobActivityStatus.COMPLETADA)
+        return repo.saveReport(
+            ReportInput(
+                clientId = client.id, profileId = profileId,
+                title = "Informe E2E", jobIds = listOf(jobId),
+            ),
+        )!!
+    }
+
+    /** Flujo completo: BORRADOR con vínculo → EMITIDO → INF oficial +
+     *  versión/snapshot y vínculo sincronizados; re-push idempotente. */
+    @Test
+    fun report_emitted_getsINFNumber_versionAndLinkSync() = runBlocking {
+        val reportId = seedReport()
+        // BORRADOR sincroniza sin número oficial.
+        sync.syncNow()
+        assertNull(db.reportDao().get(reportId)!!.officialNumber)
+
+        assertTrue(repo.emitReport(reportId))
+        sync.syncNow()
+        val report = db.reportDao().get(reportId)!!
+        assertNotNull(report.officialNumber)
+        assertTrue(report.officialNumber!!.startsWith("INF-"))
+        assertTrue(!report.pendingSync)
+        assertEquals(0, db.syncDao().pendingCount())
+        assertTrue(db.reportJobDao().forReport(reportId).all { !it.pendingSync })
+
+        // Re-push idempotente: mismo número, sin versiones duplicadas.
+        sync.syncNow()
+        assertEquals(report.officialNumber, db.reportDao().get(reportId)!!.officialNumber)
+        assertEquals(1, db.reportVersionDao().observeForReport(reportId).first().size)
+    }
+
+    /** Corrección: EMITIDO→BORRADOR→EMITIDO crea versión enlazada y el
+     *  número oficial permanece sobre el mismo entity_id. */
+    @Test
+    fun reportCorrection_newLinkedVersion_stableINF() = runBlocking {
+        val reportId = seedReport()
+        repo.emitReport(reportId)
+        sync.syncNow()
+        val official = db.reportDao().get(reportId)!!.officialNumber!!
+
+        assertTrue(repo.correctReport(reportId))
+        val client = db.clientDao().observeForUser(session.accountUserId!!).first().first()
+        repo.saveReport(
+            ReportInput(
+                clientId = client.id, profileId = profileId(),
+                title = "Informe corregido", content = "Contenido corregido",
+            ),
+            existingId = reportId,
+        )
+        assertTrue(repo.emitReport(reportId))
+        sync.syncNow()
+
+        val report = db.reportDao().get(reportId)!!
+        assertEquals(official, report.officialNumber)
+        val versions = db.reportVersionDao().observeForReport(reportId).first()
+        assertEquals(2, versions.size)
+        val v2 = versions.maxBy { it.version }
+        assertEquals(versions.minBy { it.version }.id, v2.previousVersionId)
+    }
+
+    /** Operación fabricada: EMITIDO en creación (sin trabajos persistidos)
+     *  → el servidor rechaza; nunca confía en lo declarado por el cliente. */
+    @Test
+    fun report_emitOnCreate_serverRejects() = runBlocking {
+        val reportId = seedReport()
+        sync.syncNow() // dependencias persistidas: la op llega a la regla de dominio
+        val report = db.reportDao().get(reportId)!!
+        val res = api.push(
+            session.deviceId,
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.REPORT)
+                    put("entity_id", Ids.new())
+                    put("type", "upsert")
+                    put("base_server_version", 0)
+                    put("payload", SyncPayloads.report(report.copy(status = "EMITIDO")))
+                },
+            ),
+        )
+        val r = res["results"]!!.jsonArray[0].jsonObject
+        assertEquals("REJECTED", r.str("status"))
+        assertEquals("VALIDATION_ERROR", r.str("code"))
+    }
+
+    /** Vínculo fabricado: trabajo de OTRO Cliente → el servidor lo rechaza
+     *  validando con los datos persistidos, no con lo declarado. */
+    @Test
+    fun reportJob_differentClient_serverRejects() = runBlocking {
+        val reportId = seedReport()
+        // Segundo cliente con su trabajo — distinto del Cliente del Informe.
+        repo.saveClient(
+            ClientInput(type = com.cotixgo.app.core.ClientType.PERSONA, name = "Otro Cliente"),
+        )
+        val otherClient = db.clientDao().observeForUser(session.accountUserId!!).first()
+            .first { it.name == "Otro Cliente" }
+        val otherJob = repo.saveJob(
+            JobInput(clientId = otherClient.id, profileId = profileId()),
+        )!!
+        sync.syncNow() // todo persistido en el servidor
+
+        val res = api.push(
+            "e2e-other-device",
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.REPORT_JOB)
+                    put("entity_id", Ids.new())
+                    put("type", "upsert")
+                    put("base_server_version", 0)
+                    put("payload", buildJsonObject {
+                        put("id", Ids.new()); put("reportId", reportId); put("jobId", otherJob)
+                        put("position", 2); put("createdAt", 1L)
+                    })
+                },
+            ),
+        )
+        val r = res["results"]!!.jsonArray[0].jsonObject
+        assertEquals("REJECTED", r.str("status"))
+        assertEquals("VALIDATION_ERROR", r.str("code"))
+    }
+
+    /** Emitido inmutable: una edición fabricada EMITIDO→EMITIDO con otro
+     *  contenido es rechazada por el servidor; solo `archived` puede variar. */
+    @Test
+    fun reportEmitted_immutableEdit_serverRejects() = runBlocking {
+        val reportId = seedReport()
+        repo.emitReport(reportId)
+        sync.syncNow()
+        val report = db.reportDao().get(reportId)!!
+        val res = api.push(
+            "e2e-other-device",
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.REPORT)
+                    put("entity_id", reportId)
+                    put("type", "upsert")
+                    put("base_server_version", report.serverVersion)
+                    put("payload", SyncPayloads.report(report.copy(content = "Edición fabricada")))
+                },
+            ),
+        )
+        val r = res["results"]!!.jsonArray[0].jsonObject
+        assertEquals("REJECTED", r.str("status"))
+        assertEquals("INVALID_TRANSITION", r.str("code"))
+    }
+
+    /** Conflicto de versiones de Informe: copia concurrente conservada,
+     *  documento marcado y resolución como versión nueva. */
+    @Test
+    fun reportVersionConflict_resolvedByNewVersion() = runBlocking {
+        val reportId = seedReport()
+        repo.emitReport(reportId)
+        sync.syncNow()
+        val official = db.reportDao().get(reportId)!!.officialNumber
+
+        api.push(
+            "e2e-other-device",
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.REPORT_VERSION)
+                    put("entity_id", Ids.new())
+                    put("type", "upsert")
+                    put("base_server_version", 0)
+                    put("payload", buildJsonObject {
+                        put("id", Ids.new()); put("reportId", reportId); put("version", 1)
+                        put("snapshotJson", """{"version":1,"concurrente":"remota"}""")
+                    })
+                },
+            ),
+        )
+        sync.pullAll()
+        assertTrue(db.reportDao().get(reportId)!!.versionConflict)
+        // Ambas copias v1 conservadas con server_order.
+        val v1s = db.reportVersionDao().observeForReport(reportId).first().filter { it.version == 1 }
+        assertEquals(2, v1s.size)
+
+        val localV1 = v1s.first { !it.snapshotJson.contains("concurrente") }
+        assertTrue(sync.resolveReportVersions(reportId, localV1.id))
+        sync.syncNow()
+        val resolved = db.reportDao().get(reportId)!!
+        assertTrue(!resolved.versionConflict)
+        assertEquals(2, resolved.currentVersion)
+        assertEquals(official, resolved.officialNumber)
+    }
+
+    /** Restauración en instalación limpia: Informe + vínculo + versión
+     *  emitida + número oficial INF. */
+    @Test
+    fun reportRestore_cleanInstall_bringsLinkVersionAndNumber() = runBlocking {
+        val reportId = seedReport()
+        repo.emitReport(reportId)
+        sync.syncNow()
+        val official = db.reportDao().get(reportId)!!.officialNumber
+
+        sync.wipeLocalData()
+        session.setCursor(0)
+        sync.pullAll()
+        val restored = db.reportDao().get(reportId)
+        assertNotNull(restored)
+        assertEquals(official, restored!!.officialNumber)
+        assertEquals("EMITIDO", restored.status)
+        assertTrue(!restored.pendingSync)
+        assertEquals(1, db.reportJobDao().forReport(reportId).size)
+        assertEquals(1, db.reportVersionDao().observeForReport(reportId).first().size)
+    }
+
+    /** Keep-remote sobre Informe: la meta (número oficial + conflicto)
+     *  viaja fuera del payload y no debe perderse. */
+    @Test
+    fun reportConflict_keepRemote_preservesMeta() = runBlocking {
+        val reportId = seedReport()
+        repo.emitReport(reportId)
+        sync.syncNow()
+        val report = db.reportDao().get(reportId)!!
+        val official = report.officialNumber!!
+
+        api.push(
+            "e2e-other-device",
+            listOf(
+                buildJsonObject {
+                    put("operation_id", Ids.new())
+                    put("entity_type", EntityTypes.REPORT)
+                    put("entity_id", reportId)
+                    put("type", "upsert")
+                    put("base_server_version", report.serverVersion)
+                    // Remoto: solo cambia `archived` (contenido emitido intacto).
+                    put("payload", SyncPayloads.report(report.copy(archived = true)))
+                },
+            ),
+        )
+        // Edición local sobre base obsoleta: la corrección reabre el borrador.
+        assertTrue(repo.correctReport(reportId))
+        sync.syncNow()
+
+        val conflict = db.syncDao().observeConflicts().first().first { it.entityId == reportId }
+        sync.resolveKeepRemote(conflict.id)
+        var final = db.reportDao().get(reportId)!!
+        assertEquals("EMITIDO", final.status) // la remota quedó EMITIDO+archivado
+        assertEquals(official, final.officialNumber)
+
+        sync.pullAll()
+        final = db.reportDao().get(reportId)!!
         assertEquals(official, final.officialNumber)
     }
 }

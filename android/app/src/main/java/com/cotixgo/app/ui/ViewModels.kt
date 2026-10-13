@@ -18,6 +18,8 @@ import com.cotixgo.app.data.JobMaterialInput
 import com.cotixgo.app.data.ProfileEntity
 import com.cotixgo.app.data.QuoteEntity
 import com.cotixgo.app.data.QuoteInput
+import com.cotixgo.app.data.ReportEntity
+import com.cotixgo.app.data.ReportInput
 import com.cotixgo.app.data.RetentionConfigEntity
 import com.cotixgo.app.data.RetentionInput
 import com.cotixgo.app.data.ServiceEntity
@@ -94,6 +96,10 @@ class AppViewModel(
         if (u == null) flowOf(emptyList()) else repo.observeVersionConflictQuotes(u.id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val versionConflictReports: StateFlow<List<ReportEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeVersionConflictReports(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     // ---------- Trabajos (F4) ----------
 
     val jobs: StateFlow<List<JobEntity>> = user.flatMapLatest { u ->
@@ -131,6 +137,50 @@ class AppViewModel(
 
     fun linkQuoteToJob(jobId: String, quoteId: String) {
         viewModelScope.launch { repo.linkQuoteToJob(jobId, quoteId) }
+    }
+
+    // ---------- Informes de Trabajo (F5) ----------
+
+    val reports: StateFlow<List<ReportEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeReports(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun observeReport(id: String) = repo.observeReport(id)
+    fun observeReportJobs(reportId: String) = repo.observeReportJobs(reportId)
+    fun observeReportVersions(reportId: String) = repo.observeReportVersions(reportId)
+    fun observeReportsForJob(jobId: String) = repo.observeReportsForJob(jobId)
+
+    fun buildReportContent(jobIds: List<String>, onDone: (String) -> Unit) {
+        viewModelScope.launch { onDone(repo.buildReportContent(jobIds)) }
+    }
+
+    suspend fun getReportSnapshot(id: String) = repo.getReportSnapshot(id)
+
+    fun saveReport(input: ReportInput, existingId: String?, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.saveReport(input, existingId)) }
+    }
+
+    fun linkJobToReport(reportId: String, jobId: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.linkJobToReport(reportId, jobId)) }
+    }
+
+    fun emitReport(id: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.emitReport(id)) }
+    }
+
+    fun correctReport(id: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.correctReport(id)) }
+    }
+
+    fun setReportArchived(id: String, archived: Boolean) {
+        viewModelScope.launch { repo.setReportArchived(id, archived) }
+    }
+
+    fun resolveReportVersions(reportId: String, keepVersionRowId: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            onDone(sync.resolveReportVersions(reportId, keepVersionRowId))
+            syncNow()
+        }
     }
 
     fun syncNow() {

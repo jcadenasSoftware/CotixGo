@@ -518,5 +518,195 @@ $ops = [['operation_id' => $u('ef000054'), 'entity_type' => 'job_quote', 'entity
 check('job_quote_otro_cliente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
     && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
 
+// =====================  F5 — Informes de Trabajo  =====================
+
+// Trabajo del MISMO cliente+perfil para asociar (ya persistido arriba: $job1).
+// Segundo trabajo del OTRO cliente ($cliente2) para la agrupación inválida.
+$jobOtro = $u('f8000001');
+$ops = [['operation_id' => $u('f8000000'), 'entity_type' => 'job', 'entity_id' => $jobOtro,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => array_merge($jPayload($jobOtro, 'BORRADOR'), ['clientId' => $cliente2])]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('f8_job_otro_cliente_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+$rPayload = fn(string $id, string $status, array $over = []) => array_merge([
+    'id' => $id, 'userId' => $userId, 'clientId' => $u('30000001'), 'profileId' => $u('20000001'),
+    'provisionalNumber' => 'INF-PEND-' . strtoupper(substr($id, 0, 4)), 'status' => $status,
+    'title' => 'Informe sintético', 'destination' => 'CLIENTE', 'content' => 'contenido',
+    'currentVersion' => 0, 'emittedVersion' => 0, 'clientNameSnapshot' => 'Cliente Sintético',
+    'archived' => false, 'createdAt' => $now, 'updatedAt' => $now], $over);
+$rop = fn(string $opId, string $id, string $status, int $base, array $over = []) =>
+    [['operation_id' => $opId, 'entity_type' => 'report', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $base, 'payload' => $rPayload($id, $status, $over)]];
+
+// Informe BORRADOR creado sin número oficial.
+$rep1 = $u('f9000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000000'), $rep1, 'BORRADOR', 0)], $token);
+check('report_borrador_created', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === null, json_encode($r));
+
+// Vínculo Informe↔Trabajo válido (mismo cliente y perfil, informe BORRADOR).
+$ops = [['operation_id' => $u('f9000010'), 'entity_type' => 'report_job', 'entity_id' => $u('f9000011'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000011'), 'reportId' => $rep1, 'jobId' => $job1,
+            'position' => 1, 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('report_job_valido', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Vínculo fabricado a trabajo de OTRO cliente → VALIDATION_ERROR (validado
+// sobre datos persistidos del servidor, nunca declarados por el cliente).
+$ops = [['operation_id' => $u('f9000020'), 'entity_type' => 'report_job', 'entity_id' => $u('f9000021'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000021'), 'reportId' => $rep1, 'jobId' => $jobOtro,
+            'position' => 2, 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('report_job_otro_cliente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Emitir: BORRADOR→EMITIDO con ≥1 trabajo persistido → INF-AAAAMM-NNN.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000030'), $rep1, 'EMITIDO', 1,
+        ['currentVersion' => 1, 'emittedVersion' => 1])], $token);
+$inf1 = $r['results'][0]['official_number'] ?? null;
+check('report_emit_INF_assigned', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && is_string($inf1) && str_starts_with($inf1, 'INF-'), json_encode($r));
+
+// Snapshot v1 de la emisión.
+$ops = [['operation_id' => $u('f9000040'), 'entity_type' => 'report_version', 'entity_id' => $u('f9000041'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000041'), 'reportId' => $rep1, 'version' => 1,
+            'snapshotJson' => '{"r1":1}', 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('report_version_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Versión concurrente v1 con snapshot distinto → conservada + conflicto marcado.
+$ops = [['operation_id' => $u('f9000050'), 'entity_type' => 'report_version', 'entity_id' => $u('f9000051'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000051'), 'reportId' => $rep1, 'version' => 1,
+            'snapshotJson' => '{"r1":2}', 'previousVersionId' => $u('f9000041'), 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('report_version_concurrent', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['code'] ?? '') === 'VERSION_CONFLICT', json_encode($r));
+
+// Emitido inmutable: edición fabricada de contenido EMITIDO→EMITIDO → INVALID_TRANSITION.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000060'), $rep1, 'EMITIDO', 3,
+        ['currentVersion' => 1, 'emittedVersion' => 1, 'content' => 'edición fabricada'])], $token);
+check('report_emitido_inmutable_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Archivar sí se permite sobre emitido (único campo mutable).
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000070'), $rep1, 'EMITIDO', 3,
+        ['currentVersion' => 1, 'emittedVersion' => 1, 'archived' => true])], $token);
+check('report_emitido_archivar_ok', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Desarchivar para seguir el flujo.
+http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000080'), $rep1, 'EMITIDO', 4,
+        ['currentVersion' => 1, 'emittedVersion' => 1, 'archived' => false])], $token);
+
+// Corrección: EMITIDO→BORRADOR (reapertura aprobada) conserva el INF.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000090'), $rep1, 'BORRADOR', 5,
+        ['currentVersion' => 1, 'emittedVersion' => 1])], $token);
+check('report_correccion_reabre', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $inf1, json_encode($r));
+
+// Con conflicto de versiones abierto, re-emitir → CONFLICT_BLOCKED.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000100'), $rep1, 'EMITIDO', 6,
+        ['currentVersion' => 2, 'emittedVersion' => 2])], $token);
+check('report_emit_CONFLICT_BLOCKED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'CONFLICT_BLOCKED', json_encode($r));
+
+// Resolución del usuario: versión nueva enlazada → conflicto despejado.
+$ops = [['operation_id' => $u('f9000110'), 'entity_type' => 'report_version', 'entity_id' => $u('f9000111'),
+         'type' => 'resolve', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000111'), 'reportId' => $rep1, 'version' => 2,
+            'snapshotJson' => '{"r1":1,"resolved":true}', 'previousVersionId' => $u('f9000041'),
+            'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('report_resolve_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Re-emisión tras resolver: nueva versión, mismo número oficial INF.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000120'), $rep1, 'EMITIDO', 7,
+        ['currentVersion' => 2, 'emittedVersion' => 2])], $token);
+check('report_reemit_mismoINF', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $inf1, json_encode($r));
+
+// Vínculo a informe EMITIDO → inmutable, rechazado.
+$ops = [['operation_id' => $u('f9000130'), 'entity_type' => 'report_job', 'entity_id' => $u('f9000131'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000131'), 'reportId' => $rep1, 'jobId' => $job2,
+            'position' => 2, 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('report_job_emitido_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// ===== Operaciones fabricadas sobre Informes =====
+
+// EMITIDO en creación (sin trabajos persistidos) → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000140'), $u('f9000141'), 'EMITIDO', 0,
+        ['currentVersion' => 1, 'emittedVersion' => 1])], $token);
+check('report_emit_on_create_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Emitir un informe SIN vínculos persistidos → VALIDATION_ERROR.
+$rep2 = $u('f9000151');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000150'), $rep2, 'BORRADOR', 0)], $token);
+check('report2_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000160'), $rep2, 'EMITIDO', 1,
+        ['currentVersion' => 1, 'emittedVersion' => 1])], $token);
+check('report_emit_sin_trabajos_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Título vacío → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000170'), $u('f9000171'), 'BORRADOR', 0, ['title' => ' '])], $token);
+check('report_sin_titulo_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Destino fuera del enum → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $rop($u('f9000180'), $u('f9000181'), 'BORRADOR', 0, ['destination' => 'PUBLICO'])], $token);
+check('report_destino_invalido_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// report_job sobre informe de OTRA cuenta → FORBIDDEN_ENTITY.
+$ops = [['operation_id' => $u('f9000190'), 'entity_type' => 'report_job', 'entity_id' => $u('f9000191'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000191'), 'reportId' => $rep1, 'jobId' => $job1,
+            'position' => 3, 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
+check('report_job_ownership_FORBIDDEN', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY', json_encode($r));
+
+// report_version sobre informe de OTRA cuenta → FORBIDDEN_ENTITY.
+$ops = [['operation_id' => $u('f9000200'), 'entity_type' => 'report_version', 'entity_id' => $u('f9000201'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('f9000201'), 'reportId' => $rep1, 'version' => 9,
+            'snapshotJson' => '{}', 'createdAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
+check('report_version_ownership_FORBIDDEN', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY', json_encode($r));
+
+// Pull: las entidades F5 viajan por el canal normal con meta (INF, orden).
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$types = array_count_values(array_column($r['changes'] ?? [], 'entity_type'));
+check('pull_f5_entities', ($types['report'] ?? 0) >= 2 && ($types['report_job'] ?? 0) === 1
+    && ($types['report_version'] ?? 0) >= 3, json_encode($types));
+$repRow = array_values(array_filter($r['changes'] ?? [], fn($x) => $x['entity_id'] === $rep1))[0] ?? null;
+check('pull_report_inf', ($repRow['official_number'] ?? null) === $inf1, json_encode($repRow));
+$repVerRows = array_filter($r['changes'] ?? [], fn($x) =>
+    $x['entity_type'] === 'report_version' && ($x['payload']['reportId'] ?? '') === $rep1);
+check('pull_report_versions_server_order', count($repVerRows) >= 3
+    && !in_array(null, array_column($repVerRows, 'server_order'), true), json_encode($repVerRows));
+check('pull_report_conflict_cleared', ($repRow['has_version_conflict'] ?? true) === false, json_encode($repRow));
+
 echo "\n$pass passed, $fail failed\n";
-exit($fail === 0 ? 0 : 1);

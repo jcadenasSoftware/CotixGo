@@ -71,10 +71,65 @@ data class QuoteSnapshot(
     val savedAtEpochMs: Long,
 )
 
+// ---------- Informe de Trabajo (F5) ----------
+
+/**
+ * Snapshot inmutable del documento emitido del Informe: cabecera (Cliente,
+ * Perfil, título, destino, números), contenido tal como quedó al emitir y
+ * los Trabajos incluidos con su ejecución — solo actividades COMPLETADA se
+ * presentan como realizadas; materiales y observaciones son descriptivos,
+ * nunca movimientos de inventario.
+ */
+@Serializable
+data class ReportJobActivitySnapshot(
+    val description: String,
+    val finishedAt: Long? = null,
+    val notes: String,
+)
+
+@Serializable
+data class ReportJobMaterialSnapshot(
+    val description: String,
+    val origin: String,
+    val quantity: String,
+    val unit: String,
+    val notes: String,
+)
+
+@Serializable
+data class ReportJobSnapshot(
+    val id: String,
+    val number: String,
+    val status: String,
+    val notes: String,
+    val completedActivities: List<ReportJobActivitySnapshot>,
+    val materials: List<ReportJobMaterialSnapshot>,
+)
+
+@Serializable
+data class ReportSnapshot(
+    val version: Int,
+    val provisionalNumber: String,
+    val officialNumber: String? = null,
+    val client: ClientSnapshot,
+    val profile: ProfileSnapshot,
+    val title: String,
+    val destination: String,
+    val content: String,
+    val jobs: List<ReportJobSnapshot>,
+    val savedAtEpochMs: Long,
+)
+
 object SnapshotJson {
     val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     fun encode(snapshot: QuoteSnapshot): String = json.encodeToString(QuoteSnapshot.serializer(), snapshot)
 
     fun decodeQuote(raw: String): QuoteSnapshot = json.decodeFromString(QuoteSnapshot.serializer(), raw)
+
+    fun encodeReport(snapshot: ReportSnapshot): String =
+        json.encodeToString(ReportSnapshot.serializer(), snapshot)
+
+    fun decodeReport(raw: String): ReportSnapshot =
+        json.decodeFromString(ReportSnapshot.serializer(), raw)
 }

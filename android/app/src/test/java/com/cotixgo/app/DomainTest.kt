@@ -5,6 +5,8 @@ import com.cotixgo.app.core.ClientType
 import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.JobTransitions
+import com.cotixgo.app.core.ReportStatus
+import com.cotixgo.app.core.ReportTransitions
 import com.cotixgo.app.core.validateClient
 import com.cotixgo.app.core.validateOnboarding
 import org.junit.Assert.assertEquals
@@ -106,5 +108,25 @@ class DomainTest {
         assertNull(
             JobTransitions.canTransitionWith(JobStatus.BORRADOR, JobStatus.EN_PROCESO, ""),
         )
+    }
+
+    // ---------- Matriz de Informe aprobada (F5, docs/03 §6) ----------
+
+    @Test
+    fun `report transition matrix matches the approved F5 decision`() {
+        // BORRADOR → EMITIDO (emisión)
+        assertTrue(ReportTransitions.canTransition(ReportStatus.BORRADOR, ReportStatus.EMITIDO))
+        // EMITIDO → BORRADOR (corrección: reabre el borrador; la re-emisión
+        // crea una versión nueva enlazada)
+        assertTrue(ReportTransitions.canTransition(ReportStatus.EMITIDO, ReportStatus.BORRADOR))
+        // Mismo estado permitido (archivar/actualizar sin transición)
+        assertTrue(ReportTransitions.canTransition(ReportStatus.BORRADOR, ReportStatus.BORRADOR))
+        assertTrue(ReportTransitions.canTransition(ReportStatus.EMITIDO, ReportStatus.EMITIDO))
+    }
+
+    @Test
+    fun `report is editable only in BORRADOR`() {
+        assertTrue(ReportTransitions.isEditable(ReportStatus.BORRADOR))
+        assertFalse(ReportTransitions.isEditable(ReportStatus.EMITIDO))
     }
 }

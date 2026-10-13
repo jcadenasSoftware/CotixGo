@@ -149,3 +149,26 @@ object JobTransitions {
         return null
     }
 }
+
+// ---------- Informes de Trabajo (F5) ----------
+
+enum class ReportStatus { BORRADOR, EMITIDO }
+enum class ReportDestination { INTERNO, CLIENTE }
+
+/**
+ * Estados aprobados del Informe (docs/03 §6): BORRADOR editable y EMITIDO
+ * inmutable. Corregir un emitido reabre el borrador (EMITIDO→BORRADOR); al
+ * re-emitirse se crea una versión nueva enlazada a la anterior conservando
+ * el snapshot previo y el mismo número oficial.
+ */
+object ReportTransitions {
+    private val allowed: Map<ReportStatus, Set<ReportStatus>> = mapOf(
+        ReportStatus.BORRADOR to setOf(ReportStatus.EMITIDO),
+        ReportStatus.EMITIDO to setOf(ReportStatus.BORRADOR),
+    )
+
+    fun canTransition(from: ReportStatus, to: ReportStatus): Boolean =
+        from == to || (allowed[from] ?: emptySet()).contains(to)
+
+    fun isEditable(status: ReportStatus): Boolean = status == ReportStatus.BORRADOR
+}

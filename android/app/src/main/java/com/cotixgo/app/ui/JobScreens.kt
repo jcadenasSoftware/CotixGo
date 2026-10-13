@@ -285,6 +285,7 @@ fun JobDetailScreen(
     materials: List<JobMaterialEntity>,
     links: List<JobQuoteEntity>,
     linkedQuotes: List<QuoteEntity>,
+    linkedReports: List<com.cotixgo.app.data.ReportEntity>,
     transitionError: String?,
     onTransition: (JobStatus) -> Unit,
     onEdit: () -> Unit,
@@ -294,6 +295,8 @@ fun JobDetailScreen(
     onAddMaterial: (JobMaterialInput) -> Unit,
     onLinkQuote: (String) -> Unit,
     linkableQuotes: List<QuoteEntity>,
+    onNewReport: () -> Unit,
+    onOpenReport: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     if (job == null) {
@@ -524,6 +527,15 @@ fun JobDetailScreen(
                                 }
                             }
                         }
+                        // Informes (F5): paso opcional de "Documentar"; nunca
+                        // requisito para entregar el Trabajo.
+                        Text("Informes de trabajo:", style = MaterialTheme.typography.titleSmall)
+                        linkedReports.forEach { r ->
+                            TextButton(onClick = { onOpenReport(r.id) }) {
+                                Text("· ${r.officialNumber ?: r.provisionalNumber} (${r.status})")
+                            }
+                        }
+                        OutlinedButton(onClick = onNewReport) { Text("+ Crear informe con este trabajo") }
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             if (editable) OutlinedButton(onClick = onEdit) { Text("Editar") }
