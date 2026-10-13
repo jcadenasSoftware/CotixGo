@@ -1,6 +1,6 @@
 # CotixGo — Matriz de decisiones: estados y cálculos
 
-**Versión:** 1.6  
+**Versión:** 1.7  
 **Estado:** Respuestas del titular registradas. Las reglas confirmadas ya se trasladan al anexo de decisiones aprobadas; las aclaraciones abiertas se enumeran en la sección 8.
 
 Este documento conserva las respuestas del titular y las decisiones pendientes para cerrar los ciclos de vida y cálculos. El estado vigente está resumido en la sección 8 y formalizado en el anexo de reglas aprobadas.
@@ -78,7 +78,7 @@ Reglas aprobadas adicionales en la planificación de F6 (`03` §6):
 
 - La Cuenta empieza en `PENDIENTE`; se edita solo en `PENDIENTE` y sin pagos aplicados (con pagos aplicados, líneas, totales y snapshots no se editan); se cancela solo sin pagos aplicados.
 - Numeración `CC-PEND-XXXX` desde la creación; `CC-AAAAMM-NNN` asignado por el backend sobre el mismo `entity_id` en el primer registro aceptado por el servidor.
-- Asociaciones: varios Trabajos o varias Cotizaciones, sin mezclar tipos; mismo Cliente y Perfil; a lo sumo una Cuenta no cancelada por Trabajo/Cotización (cancelar libera). Elegibilidad por estado de la Cotización pendiente (`03` §4.9).
+- Asociaciones: varios Trabajos o varias Cotizaciones, sin mezclar tipos; mismo Cliente y Perfil; a lo sumo una Cuenta no cancelada por Trabajo/Cotización (cancelar libera). Elegibilidad aprobada: solo Cotizaciones `APROBADA`, validado con el estado persistido por el backend (`03` §6).
 - Pagos y asignaciones (`assign`/`unassign`/`reassign` con motivo) son eventos append-only e idempotentes con validación atómica de saldo en el servidor; no se editan ni se eliminan; los duplicados no se resuelven por sobrescritura ni por reloj local.
 - División de fases: F6 = Cuenta de Cobro + Métodos de Cobro + pagos esenciales; F7 = Consolidado + `payment_adjustments` + Reembolsos. Antes de F7 un error en un Pago solo se resuelve con las operaciones de asignación aprobadas, sin falsear el historial; F6 no es apta para datos reales antes de ese mecanismo.
 
@@ -169,3 +169,4 @@ Las respuestas del titular se conservan junto a las preguntas originales. Los pe
 | 1.4 | 12/10/2026 | Planificación de F5: §1 incluye los estados de Informe (`BORRADOR`/`EMITIDO`) en el bloque de aprobados; §8 consolida las reglas de F5 (agrupación mismo Cliente y Perfil validada con datos persistidos, solo `COMPLETADA` como ejecución, corrección por versión enlazada con snapshot conservado, numeración `INF`, política de conflictos extendida). | Registro de las decisiones de la ficha F5 aprobadas por el titular. | Aprobado. |
 | 1.5 | 13/10/2026 | Planificación de F6: §1 registra el ciclo de vida aprobado de la Cuenta de Cobro (inicio `PENDIENTE`, edición solo `PENDIENTE` sin pagos, `PARCIAL`/`PAGADA` automáticos, cancelación solo sin pagos); §4 añade las reglas F6 de numeración `CC-`, asociaciones de un solo tipo, pagos append-only e idempotentes con validación de saldo en servidor y división F6/F7; §8 consolida las reglas F6 y anota la elegibilidad de Cotización como pendiente bloqueante y Consolidado/`payment_adjustments`/Reembolsos como F7. | Registro de las decisiones de la ficha F6 aprobadas por el titular. | Aprobado. |
 | 1.6 | 13/10/2026 | Elegibilidad de Cotización para Cuenta de Cobro aprobada por el titular: solo `APROBADA` es elegible, validado con el estado persistido por el backend. §4 actualizado; pendiente §8.6 resuelto. | Aprobación de la decisión pendiente `03` §4.9 por el titular. | Aprobado. |
+| 1.7 | 13/10/2026 | Corrección de propagación de la decisión de elegibilidad ya aprobada (sin decisiones nuevas): la bala de asociaciones en el bloque de reglas F6 de §4 aún marcaba el estado elegible como pendiente; ahora registra solo `APROBADA` validada con el estado persistido por el backend. | Coherencia interna del documento tras la revisión del PR documental. | Aprobado. |
