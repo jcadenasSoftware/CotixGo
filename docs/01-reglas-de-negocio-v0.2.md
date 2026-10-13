@@ -343,11 +343,16 @@ La Cuenta de Cobro debe poder representar situaciones como:
 - parcialmente pagada;  
 - pagada;  
 - cancelada.  
-Los Métodos de Cobro pertenecen globalmente al Usuario/Titular. El usuario los crea y administra; CotixGo no incluye métodos predeterminados al instalarse. La interfaz puede orientar mediante textos de ayuda y ejemplos, pero esos ejemplos no se guardan como registros iniciales. Los métodos pueden usarse al registrar pagos recibidos y reembolsos.  
+Los Métodos de Cobro pertenecen globalmente al Usuario/Titular. El usuario los crea y administra; CotixGo no incluye métodos predeterminados al instalarse. La interfaz puede orientar mediante textos de ayuda y ejemplos, pero esos ejemplos no se guardan como registros iniciales. Los métodos pueden usarse al registrar pagos recibidos y reembolsos. Sus mínimos aprobados en F6 (`03` §6) son: `nombre` requerido, `detalle` opcional y `archivado`.  
 **17.2 Retenciones en V1**  
 Las retenciones de V1 se calculan sobre los conceptos de la operación clasificados como `SERVICIO`; los conceptos `MATERIAL` quedan fuera de la base de retención. Las líneas se clasifican como `SERVICIO`, `MATERIAL` u `OTRO`, y la base de cada retención se determina mediante su configuración `applies_to`; `OTRO` no está incluido ni excluido universalmente. Las tasas son configurables y no existe una tasa fija; el motor debe soportar múltiples retenciones y, cuando corresponda, cálculo inverso desde el neto solicitado bajo la misma base.  
 Ejemplo aprobado: materiales $800.000 + servicios $600.000 con retención del 6% sobre servicios → retención $36.000, bruto $1.400.000, neto $1.364.000.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OMQ2AABAAsSPBCUbfEm6YmFDBhAU2QtIq6DIzW7UHAMBfnGt1V8fXEwAAXrse/w8F7pbTa1oAAAAASUVORK5CYII=)  
+**17.3 Ciclo de vida, campos y numeración de la Cuenta (aprobado en la planificación de F6)**  
+La Cuenta empieza en `PENDIENTE`; se edita solo en `PENDIENTE` y sin pagos aplicados (con algún pago aplicado, sus líneas, totales y snapshots no se editan); `PARCIAL` y `PAGADA` se derivan automáticamente de los pagos y el saldo; se cancela solo si no tiene pagos aplicados (`03` §6).  
+Campos mínimos aprobados (`03` §6): Cliente y Perfil Profesional, moneda, líneas (concepto, tipo `SERVICIO`/`MATERIAL`/`OTRO`, cantidad, precio unitario, valores históricos), bruto/retenciones/neto/saldo, estado, número provisional/oficial, `issuedAt`, fecha de vencimiento opcional, condiciones opcionales, snapshots históricos de Cliente/Perfil/retenciones, `archivado` y marcas de tiempo.  
+Numeración (`03` §6): provisional `CC-PEND-XXXX` desde la creación; el backend asigna `CC-AAAAMM-NNN` sobre el mismo `entity_id` en el primer registro de la Cuenta aceptado por el servidor; la secuencia es global por Usuario/Titular + tipo + período.  
+El estado requerido de una Cotización para ser elegible como origen de una Cuenta queda pendiente y bloquea la creación desde Cotización hasta que el titular lo resuelva (`03` §4.9).  
 **18. Dashboard**  
 El Dashboard es una vista operacional.  
 Su objetivo principal es responder:  
@@ -708,10 +713,10 @@ No debe existir una relación rígida de:
 
 CotixGo debe permitir:
 
-- varias Cuentas de Cobro asociadas a un mismo Trabajo cuando corresponda;
-- una Cuenta de Cobro que incluya uno o varios Trabajos, cuando el negocio lo requiera.
+- una Cuenta de Cobro que incluya uno o varios Trabajos, cuando el negocio lo requiera;
+- una Cuenta de Cobro que incluya una o varias Cotizaciones, cuando el negocio lo requiera.
 
-Esto permite manejar trabajos cobrados por partes o agrupaciones de trabajos.
+Restricción aprobada en la planificación de F6 (`03` §6): una Cuenta no mezcla Trabajos y Cotizaciones en el mismo documento; todos los asociados deben ser del mismo Cliente y del mismo Perfil Profesional; cada Trabajo o Cotización pertenece a lo sumo a una Cuenta no cancelada (al cancelarse la Cuenta, el origen vuelve a ser elegible). Esto permite agrupaciones de trabajos o cotizaciones sin admitir doble facturación activa del mismo origen.
 
 **31.1 Consolidado de Cuentas de Cobro**
 
@@ -729,7 +734,13 @@ Un anticipo es un adelanto o pago parcial recibido; no existe un módulo separad
 
 Corregir o anular un Pago registrado es funcionalidad de V1. El ajuste conserva valor anterior, valor nuevo, motivo, usuario, dispositivo, operación y fecha; el registro original no se modifica silenciosamente ni se elimina. Un Pago anulado permanece en el historial y deja de contar en el cálculo del documento asociado. Esto no debe confundirse con un Reembolso, que es un nuevo movimiento de dinero sobre un Pago correcto.
 
----
+**31.5 División de fases y naturaleza de los Pagos (aprobado en la planificación de F6)**
+
+La división de fases aprobada (`03` §6): F6 cubre Cuenta de Cobro, Métodos de Cobro y pagos esenciales; F7 cubre el Consolidado de Cuentas, el mecanismo `payment_adjustments` (corrección/anulación) y los Reembolsos.
+
+En F6: pago contra una Cuenta individual (sin superar su saldo) o pago sin asignar vinculado al Cliente. Los Pagos y las operaciones de asignación son eventos financieros append-only e idempotentes: no se editan ni se eliminan; los duplicados no se resuelven por sobrescritura ni por reloj local; el servidor valida el saldo de forma atómica.
+
+Limitación registrada: antes de F7 un error en un Pago no se corrige ni anula; solo se resuelve con las operaciones de asignación ya aprobadas, sin falsear el historial. F6 no es apta para datos reales antes de que el mecanismo de corrección/anulación esté implementado y verificado.
 
 **32. Inventario como control interno, no como restricción operativa**
 
@@ -994,3 +1005,4 @@ Este documento no constituye todavía el modelo físico de base de datos, el con
 | v0.2 (enmienda 2) | 08/10/2026 | 17.2: base de retención determinada por `applies_to` configurable (`OTRO` sin comportamiento fijo) (D14-C); 31.3: mecánica de asignación aprobada con aplicación parcial — el excedente sobre el saldo permanece sin asignar dentro del mismo pago (D13-B). | Aprobación de las decisiones pendientes de la etapa V1.1. | Aprobado. |
 | v0.2 (enmienda 3) | 12/10/2026 | 29.2: estados de Trabajo formalizados como `BORRADOR`, `PROGRAMADO`, `EN PROCESO`, `ENTREGADO`, `CANCELADO` con la matriz de transiciones aprobada en la ficha F4 (`ENTREGADO`/`CANCELADO` terminales sin edición, sin "Pausar"); 28: tipo documental de Trabajo alineado a `TR` (ejemplo y lista de tipos). | Formalización de los estados y transiciones de Trabajo y del tipo documental `TR` aprobados por el titular en F4. | Aprobado. |
 | v0.2 (enmienda 4) | 12/10/2026 | 13 y 30: reglas de Informes de la ficha F5 — un Informe solo agrupa Trabajos del mismo Cliente y del mismo Perfil Profesional, y solo las actividades `COMPLETADA` se presentan como ejecución realizada. | Formalización de las reglas de Informes aprobadas por el titular en la planificación de F5 (`03` §6). | Aprobado. |
+| v0.2 (enmienda 5) | 13/10/2026 | 17: mínimos de Métodos de Cobro de la ficha F6; 17.3: ciclo de vida, campos mínimos, numeración `CC-` y elegibilidad de Cotización pendiente de la ficha F6; 31: restricción de asociaciones de un solo tipo con a lo sumo una Cuenta no cancelada por origen; 31.5: división F6/F7, Pagos y asignaciones como eventos append-only con validación de saldo en servidor y limitación de F6 para datos reales. | Formalización de las reglas de Cuenta de Cobro, Métodos de Cobro y Pagos aprobadas por el titular en la planificación de F6 (`03` §6). | Aprobado. |
