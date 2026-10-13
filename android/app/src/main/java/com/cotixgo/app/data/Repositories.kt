@@ -11,6 +11,8 @@ import com.cotixgo.app.core.JobActivityStatus
 import com.cotixgo.app.core.QuoteCalc
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.core.QuoteTransitions
+import com.cotixgo.app.core.ReportStatus
+import com.cotixgo.app.core.ReportTransitions
 import com.cotixgo.app.core.RetentionSpec
 import com.cotixgo.app.core.effectiveQuoteStatus
 import com.cotixgo.app.core.expiryEpochDay
@@ -705,6 +707,280 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         }
         return material.id
     }
+
+    // ---------- Informes de Trabajo (F5) ----------
+
+    fun observeReports(userId: String): Flow<List<ReportEntity>> = db.reportDao().observeForUser(userId)
+
+    fun observeVersionConflictReports(userId: String): Flow<List<ReportEntity>> =
+        db.reportDao().observeVersionConflicts(userId)
+
+    fun observeReport(id: String): Flow<ReportEntity?> = db.reportDao().observeOne(id)
+
+    fun observeReportsForJob(jobId: String): Flow<List<ReportEntity>> = db.reportDao().observeForJob(jobId)
+
+    fun observeReportJobs(reportId: String): Flow<List<ReportJobEntity>> =
+        db.reportJobDao().observeForReport(reportId)
+
+    fun observeReportVersions(reportId: String): Flow<List<ReportVersionEntity>> =
+        db.reportVersionDao().observeForReport(reportId)
+
+    suspend fun getReportSnapshot(reportId: String): ReportSnapshot? =
+        db.reportVersionDao().getLatest(reportId)?.let { SnapshotJson.decodeReport(it.snapshotJson) }
+
+    /** Número provisional único entre los Informes del usuario. */
+    private suspend fun uniqueReportProvisionalNumber(): String {
+        var candidate = newProvisionalNumber("INF")
+        while (db.reportDao().provisionalNumberExists(candidate)) {
+            candidate = newProvisionalNumber("INF")
+        }
+        return candidate
+    }
+
+    /**
+     * Crea o edita un Informe en BORRADOR. Requiere Cliente, Perfil y título;
+     * al crear exige al menos un Trabajo y todos deben compartir el Cliente
+     * y el Perfil del Informe (el servidor revalida con datos persistidos).
+     * El contenido inicial se construye desde los Trabajos (solo actividades
+     * COMPLETADA como ejecución) y queda editable mientras sea BORRADOR.
+     * Cambiar Cliente/Perfil con vínculos existentes queda bloqueado aquí,
+     * no solo en la UI (misma lección que el Cliente del Trabajo en F4).
+     */
+    suspend fun saveReport(input: ReportInput, existingId: String? = null): String? {
+        val user = requireUser()
+        if (input.title.isBlank()) return null
+        val client = db.clientDao().get(input.clientId) ?: return null
+        val profile = db.profileDao().get(input.profileId) ?: return null
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.reportDao().get(it) }
+        if (existing != null && !ReportTransitions.isEditable(ReportStatus.valueOf(existing.status))) {
+            return null // EMITIDO: solo corrección explícita
+        }
+        val links = existing?.let { db.reportJobDao().forReport(it.id) } ?: emptyList()
+        if (existing != null && (input.clientId != existing.clientId || input.profileId != existing.profileId)
+            && links.isNotEmpty()
+        ) {
+            return null
+        }
+        if (existing == null) {
+            if (input.jobIds.isEmpty()) return null
+            for (jobId in input.jobIds) {
+                val job = db.jobDao().get(jobId) ?: return null
+                if (job.clientId != client.id || job.profileId != profile.id) return null
+            }
+        }
+        val content = input.content.ifBlank {
+            buildReportContent(input.jobIds.ifEmpty { links.map { it.jobId } })
+        }
+        val reportId = existing?.id ?: Ids.new()
+        val report = ReportEntity(
+            id = reportId,
+            userId = existing?.userId ?: user.id,
+            clientId = client.id,
+            profileId = profile.id,
+            provisionalNumber = existing?.provisionalNumber ?: uniqueReportProvisionalNumber(),
+            status = existing?.status ?: ReportStatus.BORRADOR.name,
+            title = input.title.trim(),
+            destination = input.destination.name,
+            content = content.trim(),
+            currentVersion = existing?.currentVersion ?: 0,
+            emittedVersion = existing?.emittedVersion ?: 0,
+            clientNameSnapshot = client.name,
+            archived = existing?.archived ?: false,
+            officialNumber = existing?.officialNumber,
+            versionConflict = existing?.versionConflict ?: false,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        db.withTransaction {
+            db.reportDao().upsert(report)
+            sync?.enqueue(EntityTypes.REPORT, reportId, SyncPayloads.report(report), existing?.serverVersion ?: 0)
+            if (existing == null) {
+                input.jobIds.forEachIndexed { i, jobId ->
+                    val link = ReportJobEntity(
+                        id = Ids.new(), reportId = reportId, jobId = jobId,
+                        position = i + 1, createdAt = now,
+                    )
+                    db.reportJobDao().upsert(link)
+                    sync?.enqueue(EntityTypes.REPORT_JOB, link.id, SyncPayloads.reportJob(link), 0)
+                }
+            }
+        }
+        return reportId
+    }
+
+    /**
+     * Asocia un Trabajo adicional al borrador: mismo Cliente y Perfil del
+     * Informe (regla aprobada; el servidor lo revalida con persistidos) y
+     * añade su bloque generado al contenido editable.
+     */
+    suspend fun linkJobToReport(reportId: String, jobId: String): Boolean {
+        val report = db.reportDao().get(reportId) ?: return false
+        if (!ReportTransitions.isEditable(ReportStatus.valueOf(report.status))) return false
+        val job = db.jobDao().get(jobId) ?: return false
+        if (job.clientId != report.clientId || job.profileId != report.profileId) return false
+        val links = db.reportJobDao().forReport(reportId)
+        if (links.any { it.jobId == jobId }) return false
+        val link = ReportJobEntity(
+            id = Ids.new(), reportId = reportId, jobId = jobId,
+            position = (links.maxOfOrNull { it.position } ?: 0) + 1,
+            createdAt = nowEpochMillis(),
+        )
+        val updated = report.copy(
+            content = (report.content.trimEnd() + buildJobContentBlock(jobId)).trim(),
+            updatedAt = nowEpochMillis(),
+        )
+        db.withTransaction {
+            db.reportJobDao().upsert(link)
+            sync?.enqueue(EntityTypes.REPORT_JOB, link.id, SyncPayloads.reportJob(link), 0)
+            db.reportDao().upsert(updated)
+            sync?.enqueue(EntityTypes.REPORT, reportId, SyncPayloads.report(updated), report.serverVersion)
+        }
+        return true
+    }
+
+    /**
+     * Emitir congela el documento: crea la `report_version` con el snapshot
+     * inmutable (cabecera + contenido + Trabajos con solo actividades
+     * COMPLETADA) y pasa a EMITIDO. Exige al menos un Trabajo asociado.
+     * El número oficial INF lo asigna el backend al aceptar la emisión.
+     */
+    suspend fun emitReport(id: String): Boolean {
+        val report = db.reportDao().get(id) ?: return false
+        if (ReportStatus.valueOf(report.status) != ReportStatus.BORRADOR) return false
+        if (report.title.isBlank()) return false
+        val links = db.reportJobDao().forReport(id)
+        if (links.isEmpty()) return false
+        val latest = db.reportVersionDao().getLatest(id)
+        val version = (latest?.version ?: 0) + 1
+        val now = nowEpochMillis()
+        val client = db.clientDao().get(report.clientId) ?: return false
+        val profile = db.profileDao().get(report.profileId) ?: return false
+        val snapshot = ReportSnapshot(
+            version = version,
+            provisionalNumber = report.provisionalNumber,
+            officialNumber = report.officialNumber,
+            client = ClientSnapshot(client.id, client.name, client.type, client.phone, client.email, client.address, client.notes),
+            profile = ProfileSnapshot(profile.id, profile.businessName, profile.description, profile.commercialInfo, profile.logoRef),
+            title = report.title,
+            destination = report.destination,
+            content = report.content,
+            jobs = links.mapNotNull { l -> reportJobSnapshot(l.jobId) },
+            savedAtEpochMs = now,
+        )
+        val versionEntity = ReportVersionEntity(
+            id = Ids.new(), reportId = id, version = version,
+            snapshotJson = SnapshotJson.encodeReport(snapshot),
+            previousVersionId = latest?.id,
+            createdAt = now,
+        )
+        val emitted = report.copy(
+            status = ReportStatus.EMITIDO.name,
+            currentVersion = version,
+            emittedVersion = version,
+            updatedAt = now,
+            pendingSync = true,
+        )
+        db.withTransaction {
+            db.reportDao().upsert(emitted)
+            db.reportVersionDao().insert(versionEntity)
+            sync?.enqueue(EntityTypes.REPORT, id, SyncPayloads.report(emitted), report.serverVersion)
+            sync?.enqueue(EntityTypes.REPORT_VERSION, versionEntity.id,
+                SyncPayloads.reportVersion(versionEntity), 0)
+        }
+        return true
+    }
+
+    /**
+     * Corregir un Informe emitido reabre el borrador (EMITIDO→BORRADOR):
+     * la versión emitida y su snapshot quedan intactos; al re-emitirse se
+     * crea una versión nueva enlazada por `previousVersionId` y el número
+     * oficial se conserva.
+     */
+    suspend fun correctReport(id: String): Boolean {
+        val report = db.reportDao().get(id) ?: return false
+        if (ReportStatus.valueOf(report.status) != ReportStatus.EMITIDO) return false
+        val updated = report.copy(
+            status = ReportStatus.BORRADOR.name,
+            updatedAt = nowEpochMillis(),
+            pendingSync = true,
+        )
+        db.withTransaction {
+            db.reportDao().upsert(updated)
+            sync?.enqueue(EntityTypes.REPORT, id, SyncPayloads.report(updated), report.serverVersion)
+        }
+        return true
+    }
+
+    suspend fun setReportArchived(id: String, archived: Boolean) {
+        val report = db.reportDao().get(id) ?: return
+        val updated = report.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.reportDao().upsert(updated)
+            sync?.enqueue(EntityTypes.REPORT, updated.id, SyncPayloads.report(updated), report.serverVersion)
+        }
+    }
+
+    /** Snapshot del Trabajo para el documento: solo COMPLETADA como ejecutada. */
+    private suspend fun reportJobSnapshot(jobId: String): ReportJobSnapshot? {
+        val job = db.jobDao().get(jobId) ?: return null
+        return ReportJobSnapshot(
+            id = job.id,
+            number = job.officialNumber ?: job.provisionalNumber,
+            status = job.status,
+            notes = job.notes,
+            completedActivities = db.jobActivityDao().forJob(jobId)
+                .filter { it.status == JobActivityStatus.COMPLETADA.name }
+                .map { ReportJobActivitySnapshot(it.description, it.finishedAt, it.notes) },
+            materials = db.jobMaterialDao().observeForJob(jobId).first()
+                .map { ReportJobMaterialSnapshot(it.description, it.origin, it.quantity, it.unit, it.notes) },
+        )
+    }
+
+    /**
+     * Contenido inicial del borrador construido desde los Trabajos: por cada
+     * uno, su número, las actividades COMPLETADA (las PENDIENTE/EN_PROCESO
+     * nunca aparecen como ejecutadas), materiales descriptivos y
+     * observaciones. El usuario puede revisarlo y editarlo.
+     */
+    suspend fun buildReportContent(jobIds: List<String>): String {
+        val sb = StringBuilder()
+        jobIds.forEach { sb.append(buildJobContentBlock(it)) }
+        return sb.toString().trim()
+    }
+
+    private suspend fun buildJobContentBlock(jobId: String): String {
+        val job = db.jobDao().get(jobId) ?: return ""
+        val sb = StringBuilder()
+        sb.append("Trabajo ${job.officialNumber ?: job.provisionalNumber}")
+            .append(" (${job.status.replace('_', ' ')})").append('\n')
+        val done = db.jobActivityDao().forJob(jobId).filter { it.status == "COMPLETADA" }
+        if (done.isNotEmpty()) {
+            sb.append("Actividades completadas:").append('\n')
+            done.forEach { a ->
+                sb.append("- ${a.description}")
+                a.finishedAt?.let { sb.append(" (${java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneOffset.UTC).toLocalDate()})") }
+                if (a.notes.isNotBlank()) sb.append(" — ${a.notes}")
+                sb.append('\n')
+            }
+        }
+        val materials = db.jobMaterialDao().observeForJob(jobId).first()
+        if (materials.isNotEmpty()) {
+            sb.append("Materiales:").append('\n')
+            materials.forEach { m ->
+                sb.append("- ${m.description}")
+                if (m.quantity.isNotBlank()) sb.append(" (${m.quantity} ${m.unit})".trimEnd().let { " $it" })
+                if (m.origin == "CLIENTE") sb.append(" [del cliente]")
+                if (m.notes.isNotBlank()) sb.append(" — ${m.notes}")
+                sb.append('\n')
+            }
+        }
+        if (job.notes.isNotBlank()) sb.append("Observaciones: ${job.notes}").append('\n')
+        sb.append('\n')
+        return sb.toString()
+    }
 }
 
 // ---------- Entradas de dominio para F2 ----------
@@ -770,4 +1046,16 @@ data class JobMaterialInput(
     val quantity: String = "",
     val unit: String = "",
     val notes: String = "",
+)
+
+// ---------- Entradas de dominio para F5 ----------
+
+data class ReportInput(
+    val clientId: String,
+    val profileId: String,
+    val title: String,
+    val destination: com.cotixgo.app.core.ReportDestination =
+        com.cotixgo.app.core.ReportDestination.CLIENTE,
+    val content: String = "",
+    val jobIds: List<String> = emptyList(),
 )

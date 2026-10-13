@@ -42,6 +42,11 @@ object Routes {
     const val JOB_NEW = "jobs/new?client={clientId}&quote={quoteId}"
     const val JOB_EDIT = "jobs/{id}/edit"
     const val JOB_DETAIL = "jobs/{id}"
+    const val REPORTS = "reports"
+    const val REPORT_NEW = "reports/new?job={jobId}"
+    const val REPORT_EDIT = "reports/{id}/edit"
+    const val REPORT_DETAIL = "reports/{id}"
+    const val REPORT_VERSION = "reports/{id}/version/{v}"
     const val SETTINGS = "settings"
     const val SERVICES = "services"
     const val RETENTIONS = "retentions"
@@ -49,7 +54,9 @@ object Routes {
     const val ACCOUNT = "account"
     const val CONFLICTS = "conflicts"
     const val RESOLVE_VERSIONS = "conflicts/quote/{id}"
+    const val RESOLVE_REPORT_VERSIONS = "conflicts/report/{id}"
     fun resolveVersions(id: String) = "conflicts/quote/$id"
+    fun resolveReportVersions(id: String) = "conflicts/report/$id"
     fun clientEdit(id: String) = "clients/$id/edit"
     fun clientDetail(id: String) = "clients/$id"
     fun quoteEdit(id: String) = "quotes/$id/edit"
@@ -64,6 +71,11 @@ object Routes {
     }
     fun jobEdit(id: String) = "jobs/$id/edit"
     fun jobDetail(id: String) = "jobs/$id"
+    fun reportNew(jobId: String? = null) =
+        "reports/new" + (jobId?.let { "?job=$it" } ?: "")
+    fun reportEdit(id: String) = "reports/$id/edit"
+    fun reportDetail(id: String) = "reports/$id"
+    fun reportVersion(id: String, v: Int) = "reports/$id/version/$v"
 }
 
 @Composable
@@ -92,9 +104,11 @@ private fun CotixGoNavHost(
     val retentions by vm.retentions.collectAsStateWithLifecycle()
     val services by vm.services.collectAsStateWithLifecycle()
     val jobs by vm.jobs.collectAsStateWithLifecycle()
+    val reports by vm.reports.collectAsStateWithLifecycle()
     val currentRoute = backStack?.destination?.route
     val showBar = currentRoute == Routes.DASHBOARD || currentRoute == Routes.CLIENTS ||
-        currentRoute == Routes.QUOTES || currentRoute == Routes.JOBS
+        currentRoute == Routes.QUOTES || currentRoute == Routes.JOBS ||
+        currentRoute == Routes.REPORTS
 
     Scaffold(
         bottomBar = {
@@ -143,6 +157,17 @@ private fun CotixGoNavHost(
                         },
                         icon = { Text("⚒") },
                         label = { Text("Trabajos") },
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == Routes.REPORTS,
+                        onClick = {
+                            nav.navigate(Routes.REPORTS) {
+                                popUpTo(Routes.DASHBOARD)
+                                launchSingleTop = true
+                            }
+                        },
+                        icon = { Text("▣") },
+                        label = { Text("Informes") },
                     )
                 }
             }
@@ -402,6 +427,7 @@ private fun CotixGoNavHost(
                 val activities by vm.observeJobActivities(id).collectAsStateWithLifecycle(emptyList())
                 val materials by vm.observeJobMaterials(id).collectAsStateWithLifecycle(emptyList())
                 val links by vm.observeJobQuotes(id).collectAsStateWithLifecycle(emptyList())
+                val linkedReports by vm.observeReportsForJob(id).collectAsStateWithLifecycle(emptyList())
                 var transitionError by androidx.compose.runtime.remember {
                     androidx.compose.runtime.mutableStateOf<String?>(null)
                 }
@@ -411,6 +437,7 @@ private fun CotixGoNavHost(
                     materials = materials,
                     links = links,
                     linkedQuotes = quotes,
+                    linkedReports = linkedReports,
                     transitionError = transitionError,
                     onTransition = { target ->
                         vm.setJobStatus(id, target) { transitionError = it }
@@ -426,6 +453,110 @@ private fun CotixGoNavHost(
                             q.clientId == job?.clientId &&
                             links.none { it.quoteId == q.id }
                     },
+                    onNewReport = { nav.navigate(Routes.reportNew(jobId = id)) },
+                    onOpenReport = { nav.navigate(Routes.reportDetail(it)) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.REPORTS) {
+                ReportsListScreen(
+                    reports = reports,
+                    onOpen = { nav.navigate(Routes.reportDetail(it)) },
+                    onNew = { nav.navigate(Routes.reportNew()) },
+                )
+            }
+            composable(
+                Routes.REPORT_NEW,
+                arguments = listOf(
+                    navArgument("jobId") {
+                        type = NavType.StringType; nullable = true; defaultValue = null
+                    },
+                ),
+            ) { entry ->
+                val preJob = entry.arguments?.getString("jobId")
+                ReportFormScreen(
+                    initial = null,
+                    clients = clients,
+                    profile = profiles.firstOrNull(),
+                    jobs = jobs,
+                    linkedJobs = emptyList(),
+                    linkableJobs = emptyList(),
+                    preselectedJobId = preJob,
+                    onBuildContent = { ids, cb -> vm.buildReportContent(ids, cb) },
+                    onSave = { input ->
+                        vm.saveReport(input, null) { newId ->
+                            if (newId != null) nav.navigate(Routes.reportDetail(newId)) {
+                                popUpTo(Routes.REPORTS)
+                            } else nav.popBackStack()
+                        }
+                    },
+                    onLinkJob = {},
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.REPORT_EDIT,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val report by vm.observeReport(id).collectAsStateWithLifecycle(null)
+                val reportLinks by vm.observeReportJobs(id).collectAsStateWithLifecycle(emptyList())
+                ReportFormScreen(
+                    initial = report,
+                    clients = clients,
+                    profile = profiles.firstOrNull { it.id == report?.profileId } ?: profiles.firstOrNull(),
+                    jobs = jobs,
+                    linkedJobs = reportLinks.mapNotNull { l -> jobs.firstOrNull { it.id == l.jobId } },
+                    linkableJobs = jobs.filter { j ->
+                        j.clientId == report?.clientId && j.profileId == report?.profileId &&
+                            !j.archived && reportLinks.none { it.jobId == j.id }
+                    },
+                    onBuildContent = { ids, cb -> vm.buildReportContent(ids, cb) },
+                    onSave = { input ->
+                        vm.saveReport(input, id) { nav.popBackStack() }
+                    },
+                    onLinkJob = { jid -> vm.linkJobToReport(id, jid) {} },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.REPORT_DETAIL,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val report by vm.observeReport(id).collectAsStateWithLifecycle(null)
+                val reportLinks by vm.observeReportJobs(id).collectAsStateWithLifecycle(emptyList())
+                val versions by vm.observeReportVersions(id).collectAsStateWithLifecycle(emptyList())
+                var emitFailed by androidx.compose.runtime.remember {
+                    androidx.compose.runtime.mutableStateOf(false)
+                }
+                ReportDetailScreen(
+                    report = report,
+                    linkedJobs = reportLinks.mapNotNull { l -> jobs.firstOrNull { it.id == l.jobId } },
+                    versions = versions,
+                    emitFailed = emitFailed,
+                    onEmit = { vm.emitReport(id) { emitFailed = !it } },
+                    onCorrect = { vm.correctReport(id) {} },
+                    onEdit = { nav.navigate(Routes.reportEdit(id)) },
+                    onArchive = { archived -> vm.setReportArchived(id, archived) },
+                    onOpenVersion = { v -> nav.navigate(Routes.reportVersion(id, v)) },
+                    onResolveVersions = { nav.navigate(Routes.resolveReportVersions(id)) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.REPORT_VERSION,
+                arguments = listOf(
+                    navArgument("id") { type = NavType.StringType },
+                    navArgument("v") { type = NavType.IntType },
+                ),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val v = entry.arguments?.getInt("v") ?: return@composable
+                val versions by vm.observeReportVersions(id).collectAsStateWithLifecycle(emptyList())
+                ReportVersionScreen(
+                    snapshot = versions.firstOrNull { it.version == v }
+                        ?.let { com.cotixgo.app.data.SnapshotJson.decodeReport(it.snapshotJson) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -468,14 +599,17 @@ private fun CotixGoNavHost(
                 val conflicts by vm.conflicts.collectAsStateWithLifecycle()
                 val pausedList by vm.paused.collectAsStateWithLifecycle()
                 val vcQuotes by vm.versionConflictQuotes.collectAsStateWithLifecycle()
+                val vcReports by vm.versionConflictReports.collectAsStateWithLifecycle()
                 ConflictsScreen(
                     conflicts = conflicts,
                     paused = pausedList,
                     versionConflictQuotes = vcQuotes.map { it.id to (it.officialNumber ?: it.provisionalNumber) },
+                    versionConflictReports = vcReports.map { it.id to (it.officialNumber ?: it.provisionalNumber) },
                     onKeepLocal = { vm.resolveKeepLocal(it) },
                     onKeepRemote = { vm.resolveKeepRemote(it) },
                     onRetry = { vm.retryPaused(it) },
                     onResolveVersions = { nav.navigate(Routes.resolveVersions(it)) },
+                    onResolveReportVersions = { nav.navigate(Routes.resolveReportVersions(it)) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -490,6 +624,20 @@ private fun CotixGoNavHost(
                     quoteNumber = quote?.officialNumber ?: quote?.provisionalNumber ?: "",
                     versions = versions,
                     onPick = { v -> vm.resolveQuoteVersions(id, v) { if (it) nav.popBackStack() } },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.RESOLVE_REPORT_VERSIONS,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val versions by vm.observeReportVersions(id).collectAsStateWithLifecycle(emptyList())
+                val report by vm.observeReport(id).collectAsStateWithLifecycle(null)
+                ResolveReportVersionsScreen(
+                    reportNumber = report?.officialNumber ?: report?.provisionalNumber ?: "",
+                    versions = versions,
+                    onPick = { v -> vm.resolveReportVersions(id, v) { if (it) nav.popBackStack() } },
                     onBack = { nav.popBackStack() },
                 )
             }

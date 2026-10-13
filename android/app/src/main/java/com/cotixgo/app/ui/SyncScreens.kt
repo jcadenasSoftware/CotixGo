@@ -193,10 +193,12 @@ fun ConflictsScreen(
     conflicts: List<SyncConflictEntity>,
     paused: List<SyncOperationEntity>,
     versionConflictQuotes: List<Pair<String, String>>, // (quoteId, número)
+    versionConflictReports: List<Pair<String, String>>, // (reportId, número)
     onKeepLocal: (Long) -> Unit,
     onKeepRemote: (Long) -> Unit,
     onRetry: (String) -> Unit,
     onResolveVersions: (quoteId: String) -> Unit,
+    onResolveReportVersions: (reportId: String) -> Unit,
     onBack: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("Sincronización: atención requerida") }) }) { padding ->
@@ -211,6 +213,16 @@ fun ConflictsScreen(
                         Text("Versiones concurrentes conservadas. Elige la versión a conservar; se creará una versión nueva de resolución.",
                             color = MaterialTheme.colorScheme.secondary)
                         Button(onClick = { onResolveVersions(quoteId) }) { Text("Resolver versiones") }
+                    }
+                }
+            }
+            items(versionConflictReports) { (reportId, number) ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Informe $number", style = MaterialTheme.typography.titleMedium)
+                        Text("Versiones concurrentes conservadas. Elige la versión a conservar; se creará una versión nueva de resolución.",
+                            color = MaterialTheme.colorScheme.secondary)
+                        Button(onClick = { onResolveReportVersions(reportId) }) { Text("Resolver versiones") }
                     }
                 }
             }
@@ -245,7 +257,8 @@ fun ConflictsScreen(
                 }
             }
             item {
-                if (conflicts.isEmpty() && paused.isEmpty() && versionConflictQuotes.isEmpty()) {
+                if (conflicts.isEmpty() && paused.isEmpty() && versionConflictQuotes.isEmpty()
+                    && versionConflictReports.isEmpty()) {
                     Text("Sin elementos pendientes de atención.")
                 }
                 TextButton(onClick = onBack) { Text("Volver") }

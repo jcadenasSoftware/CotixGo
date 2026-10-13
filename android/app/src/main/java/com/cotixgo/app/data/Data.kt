@@ -267,6 +267,78 @@ data class JobMaterialEntity(
     val serverVersion: Int = 0,
 )
 
+// ---------- Informes de Trabajo (F5) ----------
+
+/**
+ * Informe local: paso opcional de "Documentar" (interno o para el Cliente).
+ * Numeración provisional `INF-PEND-XXXX` desde la creación; el oficial
+ * `INF-AAAAMM-NNN` lo asigna el backend en la primera aceptación de EMITIDO
+ * y se conserva estable a través de correcciones/versiones.
+ * `content` es el borrador editable construido desde los Trabajos asociados
+ * (solo actividades COMPLETADA se presentan como ejecución realizada).
+ */
+@Entity(
+    tableName = "reports",
+    indices = [Index("userId"), Index("clientId"), Index("profileId"), Index(value = ["provisionalNumber"], unique = true)],
+)
+data class ReportEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val clientId: String,
+    val profileId: String,
+    val provisionalNumber: String,
+    val status: String,
+    val title: String,
+    val destination: String,
+    val content: String = "",
+    val currentVersion: Int = 0,
+    val emittedVersion: Int = 0,
+    val clientNameSnapshot: String = "",
+    val archived: Boolean = false,
+    val officialNumber: String? = null,
+    val versionConflict: Boolean = false,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Vínculo Informe ↔ Trabajo (N:N). Los Trabajos asociados comparten el
+ * Cliente y el Perfil Profesional del Informe (regla aprobada F5); cada
+ * Trabajo conserva su identidad y trazabilidad.
+ */
+@Entity(tableName = "report_jobs", indices = [Index("reportId"), Index("jobId")])
+data class ReportJobEntity(
+    @PrimaryKey val id: String,
+    val reportId: String,
+    val jobId: String,
+    val position: Int,
+    val createdAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Snapshot inmutable de cada versión EMITIDA del Informe (análogo a
+ * `quote_version`): suficiente para reproducir el documento histórico.
+ * `previousVersionId` enlaza cada corrección con la versión emitida previa;
+ * serverOrder expone la secuencia autoritativa del servidor.
+ */
+@Entity(
+    tableName = "report_versions",
+    indices = [Index("reportId"), Index(value = ["reportId", "version"])],
+)
+data class ReportVersionEntity(
+    @PrimaryKey val id: String,
+    val reportId: String,
+    val version: Int,
+    val snapshotJson: String,
+    val previousVersionId: String? = null,
+    val serverOrder: Int? = null,
+    val createdAt: Long,
+)
+
 @Dao
 interface JobDao {
     @Query("SELECT * FROM jobs WHERE userId = :userId ORDER BY createdAt DESC")
@@ -346,6 +418,72 @@ interface JobMaterialDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(material: JobMaterialEntity)
+}
+
+@Dao
+interface ReportDao {
+    @Query("SELECT * FROM reports WHERE userId = :userId ORDER BY createdAt DESC")
+    fun observeForUser(userId: String): Flow<List<ReportEntity>>
+
+    @Query("SELECT * FROM reports WHERE userId = :userId AND versionConflict = 1")
+    fun observeVersionConflicts(userId: String): Flow<List<ReportEntity>>
+
+    @Query("SELECT r.* FROM reports r INNER JOIN report_jobs rj ON rj.reportId = r.id WHERE rj.jobId = :jobId ORDER BY r.createdAt DESC")
+    fun observeForJob(jobId: String): Flow<List<ReportEntity>>
+
+    @Query("SELECT * FROM reports WHERE id = :id")
+    fun observeOne(id: String): Flow<ReportEntity?>
+
+    @Query("SELECT * FROM reports WHERE id = :id")
+    suspend fun get(id: String): ReportEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM reports WHERE provisionalNumber = :number)")
+    suspend fun provisionalNumberExists(number: String): Boolean
+
+    @Query("UPDATE reports SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Query("UPDATE reports SET officialNumber = :num, versionConflict = :conflict, updatedAt = :now WHERE id = :id")
+    suspend fun updateSyncFields(id: String, num: String?, conflict: Boolean, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(report: ReportEntity)
+}
+
+@Dao
+interface ReportJobDao {
+    @Query("SELECT * FROM report_jobs WHERE reportId = :reportId ORDER BY position, createdAt")
+    fun observeForReport(reportId: String): Flow<List<ReportJobEntity>>
+
+    @Query("SELECT * FROM report_jobs WHERE reportId = :reportId ORDER BY position, createdAt")
+    suspend fun forReport(reportId: String): List<ReportJobEntity>
+
+    @Query("SELECT * FROM report_jobs WHERE jobId = :jobId")
+    suspend fun forJob(jobId: String): List<ReportJobEntity>
+
+    @Query("SELECT * FROM report_jobs WHERE id = :id")
+    suspend fun get(id: String): ReportJobEntity?
+
+    @Query("UPDATE report_jobs SET pendingSync = 0, serverVersion = :v WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(link: ReportJobEntity)
+}
+
+@Dao
+interface ReportVersionDao {
+    @Query("SELECT * FROM report_versions WHERE reportId = :reportId ORDER BY version")
+    fun observeForReport(reportId: String): Flow<List<ReportVersionEntity>>
+
+    @Query("SELECT * FROM report_versions WHERE reportId = :reportId ORDER BY version DESC LIMIT 1")
+    suspend fun getLatest(reportId: String): ReportVersionEntity?
+
+    @Query("SELECT * FROM report_versions WHERE id = :id")
+    suspend fun get(id: String): ReportVersionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(version: ReportVersionEntity)
 }
 
 // ---------- Cola durable de sincronización (F3) ----------
@@ -556,10 +694,11 @@ interface QuoteVersionDao {
         QuoteEntity::class, QuoteVersionEntity::class,
         JobEntity::class, JobQuoteEntity::class,
         JobActivityEntity::class, JobMaterialEntity::class,
+        ReportEntity::class, ReportJobEntity::class, ReportVersionEntity::class,
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -574,6 +713,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun jobQuoteDao(): JobQuoteDao
     abstract fun jobActivityDao(): JobActivityDao
     abstract fun jobMaterialDao(): JobMaterialDao
+    abstract fun reportDao(): ReportDao
+    abstract fun reportJobDao(): ReportJobDao
+    abstract fun reportVersionDao(): ReportVersionDao
     abstract fun syncDao(): SyncDao
 
     companion object {
@@ -753,13 +895,61 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migración v5→v6 (F5): Informes — `reports` con numeración
+         * provisional/oficial INF, destino INTERNO/CLIENTE, contenido
+         * editable en BORRADOR y flag de conflicto de versiones; el vínculo
+         * N:N `report_jobs` con Trabajos y los snapshots inmutables
+         * `report_versions` enlazados por referencia.
+         */
+        // Interna (no privada): la prueba de migración la ejerce directamente.
+        internal val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `reports` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `clientId` TEXT NOT NULL, `profileId` TEXT NOT NULL,
+                        `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL,
+                        `title` TEXT NOT NULL, `destination` TEXT NOT NULL,
+                        `content` TEXT NOT NULL, `currentVersion` INTEGER NOT NULL,
+                        `emittedVersion` INTEGER NOT NULL, `clientNameSnapshot` TEXT NOT NULL,
+                        `archived` INTEGER NOT NULL, `officialNumber` TEXT,
+                        `versionConflict` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_reports_userId` ON `reports` (`userId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_reports_clientId` ON `reports` (`clientId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_reports_profileId` ON `reports` (`profileId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_reports_provisionalNumber` ON `reports` (`provisionalNumber`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `report_jobs` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `reportId` TEXT NOT NULL,
+                        `jobId` TEXT NOT NULL, `position` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_report_jobs_reportId` ON `report_jobs` (`reportId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_report_jobs_jobId` ON `report_jobs` (`jobId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `report_versions` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `reportId` TEXT NOT NULL,
+                        `version` INTEGER NOT NULL, `snapshotJson` TEXT NOT NULL,
+                        `previousVersionId` TEXT, `serverOrder` INTEGER,
+                        `createdAt` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_report_versions_reportId` ON `report_versions` (`reportId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_report_versions_reportId_version` ON `report_versions` (`reportId`, `version`)")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "cotixgo.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build().also { instance = it }
             }
     }

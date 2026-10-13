@@ -38,6 +38,9 @@ object EntityTypes {
     const val JOB_QUOTE = "job_quote"
     const val JOB_ACTIVITY = "job_activity"
     const val JOB_MATERIAL = "job_material"
+    const val REPORT = "report"
+    const val REPORT_JOB = "report_job"
+    const val REPORT_VERSION = "report_version"
 }
 
 /**
@@ -165,6 +168,24 @@ object SyncPayloads {
         put("id", e.id); put("jobId", e.jobId); put("description", e.description)
         put("origin", e.origin); put("quantity", e.quantity); put("unit", e.unit)
         put("notes", e.notes); put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun report(e: ReportEntity) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("clientId", e.clientId)
+        put("profileId", e.profileId); put("provisionalNumber", e.provisionalNumber)
+        put("status", e.status); put("title", e.title); put("destination", e.destination)
+        put("content", e.content); put("currentVersion", e.currentVersion)
+        put("emittedVersion", e.emittedVersion)
+        put("clientNameSnapshot", e.clientNameSnapshot); put("archived", e.archived)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun reportJob(e: ReportJobEntity) = buildJsonObject {
+        put("id", e.id); put("reportId", e.reportId); put("jobId", e.jobId)
+        put("position", e.position); put("createdAt", e.createdAt)
+    }
+    fun reportVersion(e: ReportVersionEntity) = buildJsonObject {
+        put("id", e.id); put("reportId", e.reportId); put("version", e.version)
+        put("snapshotJson", e.snapshotJson); put("previousVersionId", e.previousVersionId)
+        put("createdAt", e.createdAt)
     }
 }
 
@@ -329,6 +350,29 @@ class SyncRepository(
                 EntityTypes.JOB_QUOTE -> db.jobQuoteDao().markSynced(op.entityId, sv)
                 EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().markSynced(op.entityId, sv, now)
                 EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().markSynced(op.entityId, sv, now)
+                EntityTypes.REPORT -> {
+                    db.reportDao().markSynced(op.entityId, sv, now)
+                    if (official != null || versionConflict) {
+                        db.reportDao().updateSyncFields(
+                            op.entityId,
+                            official ?: db.reportDao().get(op.entityId)?.officialNumber,
+                            versionConflict || db.reportDao().get(op.entityId)?.versionConflict == true,
+                            now,
+                        )
+                    }
+                }
+                EntityTypes.REPORT_JOB -> db.reportJobDao().markSynced(op.entityId, sv)
+                EntityTypes.REPORT_VERSION -> {
+                    // Sin pendingSync propio: la cola es su trazabilidad.
+                    val p = json.parseToJsonElement(op.payloadJson).jsonObject
+                    p.str("reportId")?.let { rid ->
+                        if (versionConflict) {
+                            db.reportDao().updateSyncFields(rid, db.reportDao().get(rid)?.officialNumber, true, now)
+                        } else if (op.opType == "resolve") {
+                            db.reportDao().updateSyncFields(rid, db.reportDao().get(rid)?.officialNumber, false, now)
+                        }
+                    }
+                }
             }
         }
     }
@@ -401,11 +445,27 @@ class SyncRepository(
             return
         }
 
+        if (type == EntityTypes.REPORT_VERSION) {
+            val reportId = payload.str("reportId") ?: return
+            if (db.reportVersionDao().get(id) == null) {
+                db.reportVersionDao().insert(
+                    ReportVersionEntity(
+                        id = id, reportId = reportId, version = payload.intOr("version"),
+                        snapshotJson = payload.str("snapshotJson") ?: "",
+                        previousVersionId = payload.str("previousVersionId"),
+                        serverOrder = c.intOr("server_order").takeIf { it > 0 },
+                        createdAt = payload.longOr("createdAt") ?: now,
+                    ),
+                )
+            }
+            return
+        }
+
         val openOps = db.syncDao().openOpsForEntity(type, id)
         val local = getLocal(type, id)
         if (local == null) {
             upsertFromPayload(type, id, payload, sv)
-            applyQuoteMeta(type, id, c)
+            applyDocMeta(type, id, c)
             return
         }
         val (hasPendingWrites, localSv) = local
@@ -424,7 +484,7 @@ class SyncRepository(
         }
         if (sv <= localSv) return // cambio ya cubierto por el estado local
         upsertFromPayload(type, id, payload, sv)
-        applyQuoteMeta(type, id, c)
+        applyDocMeta(type, id, c)
     }
 
     /** Payload remoto + metadatos del servidor (official_number y
@@ -437,7 +497,7 @@ class SyncRepository(
             put("has_version_conflict", c.boolOr("has_version_conflict"))
         }
 
-    private suspend fun applyQuoteMeta(type: String, id: String, c: JsonObject) {
+    private suspend fun applyDocMeta(type: String, id: String, c: JsonObject) {
         if (type == EntityTypes.QUOTE) {
             db.quoteDao().updateSyncFields(
                 id, c.str("official_number"),
@@ -447,6 +507,12 @@ class SyncRepository(
         if (type == EntityTypes.JOB) {
             // official_number viaja como columna meta (no dentro del payload).
             db.jobDao().updateOfficial(id, c.str("official_number"), nowEpochMillis())
+        }
+        if (type == EntityTypes.REPORT) {
+            db.reportDao().updateSyncFields(
+                id, c.str("official_number"),
+                c.boolOr("has_version_conflict"), nowEpochMillis(),
+            )
         }
     }
 
@@ -462,6 +528,8 @@ class SyncRepository(
         EntityTypes.JOB_QUOTE -> db.jobQuoteDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.REPORT -> db.reportDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.REPORT_JOB -> db.reportJobDao().get(id)?.let { it.pendingSync to it.serverVersion }
         else -> null
     }
 
@@ -635,6 +703,36 @@ class SyncRepository(
                     serverVersion = sv,
                 ),
             )
+            EntityTypes.REPORT -> db.reportDao().upsert(
+                ReportEntity(
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
+                    provisionalNumber = p.str("provisionalNumber") ?: "",
+                    status = p.str("status") ?: "BORRADOR",
+                    title = p.str("title") ?: "",
+                    destination = p.str("destination") ?: "INTERNO",
+                    content = p.str("content") ?: "",
+                    currentVersion = p.longOr("currentVersion")?.toInt() ?: 0,
+                    emittedVersion = p.longOr("emittedVersion")?.toInt() ?: 0,
+                    clientNameSnapshot = p.str("clientNameSnapshot") ?: "",
+                    archived = p.boolOr("archived"),
+                    officialNumber = p.str("officialNumber"),
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.REPORT_JOB -> db.reportJobDao().upsert(
+                ReportJobEntity(
+                    id = p.str("id") ?: id,
+                    reportId = p.str("reportId") ?: "", jobId = p.str("jobId") ?: "",
+                    position = p.longOr("position")?.toInt() ?: 0,
+                    createdAt = p.longOr("createdAt") ?: now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
         }
     }
 
@@ -659,6 +757,7 @@ class SyncRepository(
                 db.openHelper.writableDatabase.execSQL("UPDATE retention_configs SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE quotes SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE jobs SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE reports SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 // Regenerar operaciones pendientes con identidad canónica:
                 // reescribe userId en el payload y, para la entidad user,
                 // también entityId y payload.id hacia el id canónico.
@@ -717,6 +816,7 @@ class SyncRepository(
         for (t in listOf(
             "clients", "services", "retention_configs", "quotes", "professional_profiles",
             "users", "jobs", "job_quotes", "job_activities", "job_materials",
+            "reports", "report_jobs",
         )) {
             db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $t WHERE pendingSync = 1").use { c ->
                 if (c.moveToFirst()) n += c.getInt(0)
@@ -739,6 +839,7 @@ class SyncRepository(
     suspend fun wipeLocalData() {
         db.withTransaction {
             for (t in listOf(
+                "report_jobs", "report_versions", "reports",
                 "job_quotes", "job_activities", "job_materials", "jobs",
                 "quote_versions", "quotes", "services", "retention_configs",
                 "clients", "professional_profiles", "users",
@@ -799,6 +900,9 @@ class SyncRepository(
                 EntityTypes.QUOTE -> db.quoteDao().updateSyncFields(
                     conflict.entityId, remote.str("official_number"),
                     remote.boolOr("has_version_conflict"), nowEpochMillis())
+                EntityTypes.REPORT -> db.reportDao().updateSyncFields(
+                    conflict.entityId, remote.str("official_number"),
+                    remote.boolOr("has_version_conflict"), nowEpochMillis())
             }
             db.syncDao().resolveConflict(conflictId)
         }
@@ -840,6 +944,43 @@ class SyncRepository(
             enqueue(
                 EntityTypes.QUOTE_VERSION, versionEntity.id,
                 SyncPayloads.quoteVersion(versionEntity),
+                baseServerVersion = 0,
+                opType = "resolve",
+            )
+        }
+        return true
+    }
+
+    /**
+     * Resolución de conflicto de versiones de Informe (misma regla que
+     * Cotización): crea una versión NUEVA con el contenido elegido
+     * enlazada por `previousVersionId`; snapshots previos intactos y
+     * nunca una sobreescritura silenciosa.
+     */
+    suspend fun resolveReportVersions(reportId: String, keepVersionRowId: String): Boolean {
+        val report = db.reportDao().get(reportId) ?: return false
+        val kept = db.reportVersionDao().get(keepVersionRowId) ?: return false
+        if (kept.reportId != reportId) return false
+        val latest = db.reportVersionDao().getLatest(reportId) ?: return false
+        val newVersion = latest.version + 1
+        val now = nowEpochMillis()
+        db.withTransaction {
+            val versionEntity = ReportVersionEntity(
+                id = Ids.new(), reportId = reportId, version = newVersion,
+                snapshotJson = kept.snapshotJson,
+                previousVersionId = latest.id, createdAt = now,
+            )
+            db.reportVersionDao().insert(versionEntity)
+            db.reportDao().upsert(
+                report.copy(
+                    currentVersion = newVersion,
+                    emittedVersion = if (report.emittedVersion > 0) newVersion else 0,
+                    updatedAt = now,
+                ),
+            )
+            enqueue(
+                EntityTypes.REPORT_VERSION, versionEntity.id,
+                SyncPayloads.reportVersion(versionEntity),
                 baseServerVersion = 0,
                 opType = "resolve",
             )

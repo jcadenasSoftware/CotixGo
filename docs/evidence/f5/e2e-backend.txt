@@ -1,0 +1,36 @@
+Evidencia F5 — Informes de Trabajo — E2E backend PHP/MariaDB local
+====================================================================
+Fecha: 12/10/2026
+Entorno: php -S localhost:8080 (dev.ini) + MariaDB 127.0.0.1:3306 cotixgo_dev
+Datos: 100% sintéticos
+Comando: php -c dev.ini tests/e2e.php
+Resultado: 90 passed, 0 failed (dos ejecuciones consecutivas, mismo resultado)
+
+Casos F5 ejecutados (sección "=== F5: Informes ===" de tests/e2e.php):
+
+  PASS f8_job_otro_cliente_created        Job de preparación con cliente distinto
+  PASS report_borrador_created            Informe BORRADOR con INF-PEND-0001
+  PASS report_job_valido                  Vínculo a Trabajo del mismo Cliente+Perfil
+  PASS report_job_otro_cliente_REJECTED   Vínculo a Trabajo de otro Cliente → REJECTED VALIDATION_ERROR
+  PASS report_emit_INF_assigned           Emisión: número oficial INF-AAAAMM-001 asignado
+  PASS report_version_created             Versión 1 creada al emitir (snapshot inmutable)
+  PASS report_version_concurrent          Versión concurrente registrada en conflicto
+  PASS report_emitido_inmutable_REJECTED  Edición de contenido sobre EMITIDO → REJECTED INVALID_TRANSITION
+  PASS report_emitido_archivar_ok         EMITIDO→EMITIDO aceptado solo para archivar (snapshot intacto)
+  PASS report_correccion_reabre           Corrección: EMITIDO→BORRADOR, INF oficial conservado
+  PASS report_emit_CONFLICT_BLOCKED       Emisión bloqueada con conflicto de versión pendiente
+  PASS report_resolve_applied             Resolución: crea versión enlazada + desbloquea (CONFLICT_RESOLVED)
+  PASS report_reemit_version2             Re-emisión tras corrección: versión 2 con previousVersionId=1, mismo INF
+  PASS report_version_chain               Cadena de versiones trazable (2→1)
+  PASS report2_created                    Segundo informe para validaciones
+  PASS report_emit_sin_trabajos_REJECTED  Emisión sin Trabajos vinculados → REJECTED VALIDATION_ERROR
+  PASS report_sin_titulo_REJECTED         Emisión sin título → REJECTED VALIDATION_ERROR
+  PASS report_destino_invalido_REJECTED   destination fuera de INTERNO/CLIENTE → REJECTED VALIDATION_ERROR
+  PASS report_job_ownership_FORBIDDEN     Vínculo a Trabajo de otra cuenta → REJECTED FORBIDDEN
+  PASS report_version_ownership_FORBIDDEN report_version de informe ajeno → REJECTED FORBIDDEN
+  PASS pull_f5_entities                   Pull incremental devuelve report/report_job/report_version
+  PASS pull_report_inf                    official_number INF viaja en meta del pull
+  PASS pull_report_versions_server_order  Versiones concurrentes ordenadas por server_order
+  PASS pull_report_conflict_cleared       Conflicto resuelto no reaparece en pull
+
+Los 66 casos F3/F4 previos se mantienen en verde (regresión completa).

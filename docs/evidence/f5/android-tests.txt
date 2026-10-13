@@ -1,0 +1,55 @@
+Evidencia F5 — Informes de Trabajo — Pruebas Android
+====================================================
+Fecha: 12/10/2026
+JDK: 21 (JAVA_HOME=C:\Program Files\Java\jdk-21)
+Dispositivo: emulador Pixel_8 (AVD) API 36
+Datos: 100% sintéticos
+
+1) Unitarias JVM — ./gradlew :app:testDebugUnitTest
+   23 tests, 0 failures:
+     ApiErrorParseTest 4/4, CalcVectorTest 4/4,
+     DomainTest 10/10 (incluye matriz de transiciones report
+     BORRADOR↔EMITIDO e inmutabilidad de editables),
+     QuoteDomainTest 5/5
+
+2) Instrumentadas — ./gradlew :app:connectedDebugAndroidTest
+   Finished 59 tests on Pixel_8(AVD) - 16 … (0 failed) — BUILD SUCCESSFUL
+
+   Cobertura F5:
+   - MigrationTest.migrate5To6: base real v5 con datos previos
+     (cliente+perfil+cotización con líneas+trabajo), esquema v6
+     verificado vía SupportSQLiteOpenHelper.
+   - ReportRepositoryTest (nueva, 9 tests): creación INF-PEND,
+     agrupación por Cliente+Perfil, rechazo de Trabajo de otro
+     Cliente/Perfil, contenido inicial solo con actividades
+     COMPLETADA (pendiente/en proceso fuera), emisión con snapshot
+     (cliente/perfil/trabajos/actividades/materiales congelados),
+     inmutabilidad del emitido, corrección→borrador→re-emisión
+     como versión 2 enlazada, archivar/desarchivar sin perder
+     historial.
+   - SyncE2eTest (29 tests, +5 nuevos F5):
+       report_flow_INF_assigned — emisión offline→push→pull devuelve INF oficial
+       report_emitOnCreate_serverRejects — servidor rechaza creación directa
+         en EMITIDO fabricada (VALIDATION_ERROR)
+       report_job_otherClient_serverRejects — vínculo fabricado a Trabajo de
+         otro Cliente rechazado en servidor
+       report_conflict_keepLocal — conflicto de versión en pull, resolución
+         local crea versión nueva
+       report_conflict_keepRemote_preservesMeta — keep remote conserva
+         INF oficial + metadatos del informe remoto
+   - Regresión: JobRepositoryTest, QuoteRepositoryTest, MigrationTest
+     (v4→v5 y v5→v6), SyncE2eTest completo.
+
+   Nota: en una primera corrida de esta rama, report_emitOnCreate_serverRejects
+   falló con DEPENDENCY (el push fabricado se ejecutó antes de sincronizar
+   Cliente/Perfil). Corregido el orden del test (syncNow previo) y verificado
+   en la corrida completa anterior: 59/59.
+
+3) Builds — ./gradlew :app:assembleDebug :app:assembleRelease — BUILD SUCCESSFUL
+     app-debug.apk, app-release-unsigned.apk
+
+4) Backend — php -l en sync.php / domain.php / tests/e2e.php: sin errores.
+   E2E backend: ver e2e-backend.txt (90/90).
+
+Pendiente del titular: Gradle Sync dentro de Android Studio con JDK 21
+(no verificable desde CLI).

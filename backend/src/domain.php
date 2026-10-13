@@ -42,6 +42,34 @@ const JOB_ACTIVITY_STATUSES = ['PENDIENTE', 'EN_PROCESO', 'COMPLETADA'];
 const JOB_MATERIAL_ORIGINS = ['CLIENTE', 'PROFESIONAL'];
 
 /**
+ * F5 — estados de Informe (docs/03 §6). `EMITIDO` es inmutable: corregirlo
+ * reabre el borrador (EMITIDO→BORRADOR) y la re-emisión crea una versión
+ * nueva enlazada por `previousVersionId`; la versión emitida previa y su
+ * snapshot quedan intactos.
+ */
+const REPORT_STATUSES = ['BORRADOR', 'EMITIDO'];
+
+/** F5 — destino del Informe: uso interno o presentable al Cliente. */
+const REPORT_DESTINATIONS = ['INTERNO', 'CLIENTE'];
+
+/** Transiciones aprobadas: emisión y corrección (reapertura del borrador). */
+const REPORT_TRANSITIONS = [
+    'BORRADOR' => ['EMITIDO'],
+    'EMITIDO'  => ['BORRADOR'],
+];
+
+/** Estados que disparan la asignación del número oficial `INF-AAAAMM-NNN`. */
+const REPORT_NUMBERED_STATUSES = ['EMITIDO'];
+
+function validReportTransition(string $from, string $to): bool
+{
+    if ($from === $to) {
+        return true; // actualización de datos sin cambio de estado
+    }
+    return in_array($to, REPORT_TRANSITIONS[$from] ?? [], true);
+}
+
+/**
  * Transiciones permitidas del servidor (validadas contra el estado persistido).
  * `VENCIDA` es la materialización del vencimiento calculado por el dispositivo
  * (fecha local > último día válido); se acepta únicamente desde los estados
