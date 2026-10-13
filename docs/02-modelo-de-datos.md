@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v1.0
+## Documento de diseño v1.1
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -367,6 +367,8 @@ La funcionalidad completa de mantenimiento queda fuera del alcance actual.
 Las categorías de Materiales y de Herramientas son listas distintas creadas libremente por el Usuario/Titular. No existen categorías predeterminadas. El tipo Material/Herramienta define el comportamiento; la categoría solo organiza.
 
 `CollectionMethod` representa un Método de Cobro global del Usuario/Titular. El usuario crea y administra sus métodos; al instalar CotixGo no se crean registros predeterminados. Puede utilizarse al registrar pagos recibidos y reembolsos. Los ejemplos y ayudas de la interfaz no se convierten en datos iniciales.
+
+Campos mínimos aprobados en F6 (`03` §6): `nombre` requerido, `detalle` opcional y `archivado`.
 
 ---
 
@@ -1340,7 +1342,7 @@ Estas son vistas, enums, configuraciones o comportamientos, salvo que una regla 
 
 Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
-1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6);
+1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6; Cuenta de Cobro: reglas de ciclo de vida aprobadas para F6 en `03` §6);
 2. transiciones/estados restantes de Compras, archivos y sincronización;
 3. relación de versiones de Informe — resuelta para F5: relación `Report`–`ReportVersion` con snapshot inmutable por versión emitida; una corrección crea una versión nueva enlazada por campo de referencia y la versión anterior se conserva (`03` §6); la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
@@ -1432,3 +1434,4 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.8 | 12/10/2026 | F5 (planificación aprobada): §20 `Report` registra los campos mínimos aprobados (`clientId`, `profileId`, título, contenido/observaciones, estado `BORRADOR`/`EMITIDO`, `INF-PEND-XXXX`/`INF-AAAAMM-NNN`, destino `INTERNO`/`CLIENTE`, archivado), la regla de mismo Cliente y Perfil Profesional para los Trabajos asociados con validación API sobre datos persistidos, la presentación de solo actividades `COMPLETADA` como ejecutadas y las exclusiones de F5; §21 `ReportJob` y sección "Informes" alineados; pendientes §36.3 (versiones de Informe), §36.6 (número oficial INF) y §36.10 (conflictos extendidos a F5) resueltos para F5. | Aprobación de las decisiones de la ficha F5 por el titular. | Cambio aprobado; el documento sigue en borrador. |
 | v0.9 | 12/10/2026 | F5 implementada en local: pendiente §36.10 actualizado — la política de conflictos quedó implementada en local para `report`, `report_job` y `report_version` (`05` §5.3); sigue pendiente solo para fases posteriores. Sin cambios en el modelo conceptual. | Registro del estado de implementación local de F5; pendiente revisión vía PR. | Cambio aprobado; el documento sigue en borrador. |
 | v1.0 | 13/10/2026 | F6 (planificación aprobada): `CollectionAccount` §22 registra campos mínimos, ciclo de vida (edición solo `PENDIENTE` sin pagos; `PARCIAL`/`PAGADA` automáticos; cancelación solo sin pagos), numeración `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro aceptado por el backend y asociaciones de un solo tipo (Trabajos o Cotizaciones, sin mezclar) del mismo Cliente+Perfil con a lo sumo una Cuenta no cancelada por origen. Nuevas entidades conceptuales `CollectionAccountItem` (líneas con `SERVICIO`/`MATERIAL`/`OTRO` y motor de cálculo compartido) y `CollectionAccountQuote` (resuelve la brecha previa del modelo); §23 ajusta la cardinalidad de `CollectionAccountJob`. `Payment` §24 registra el alcance F6 (append-only, validación atómica de saldo en servidor) y la asignación a F7 de Consolidado/ajustes/Reembolso; `ConsolidatedCollection`, Reembolso y `PaymentAdjustment` marcados como F7. Pendientes §36.6 y §36.10 actualizados; §38 anota la elegibilidad de Cotización pendiente. La implementación de F6 no está autorizada. | Aprobación de las decisiones de la ficha F6 por el titular. | Cambio aprobado; el documento sigue en borrador. |
+| v1.1 | 13/10/2026 | Corrección de propagación de las decisiones F6 ya aprobadas (sin decisiones nuevas): `CollectionMethod` registra sus mínimos aprobados (`nombre` requerido, `detalle` opcional, `archivado`) y §36.1 anota que las reglas de ciclo de vida de la Cuenta de Cobro quedaron aprobadas para F6 en `03` §6. | Coherencia del modelo con el anexo canónico tras la revisión del PR documental. | Cambio aprobado; el documento sigue en borrador. |
