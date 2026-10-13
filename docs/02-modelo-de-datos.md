@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v1.1
+## Documento de diseño v1.2
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -830,7 +830,7 @@ Una Cuenta de Cobro puede incluir uno o varios trabajos **o** una o varias cotiz
 
 Por tanto, no se debe asumir `collection_account.job_id` como única relación.
 
-Deben existir las asociaciones conceptuales `CollectionAccountJob` y `CollectionAccountQuote`. El estado requerido de una Cotización elegible sigue pendiente y bloquea la creación desde Cotización (`03` §4.9).
+Deben existir las asociaciones conceptuales `CollectionAccountJob` y `CollectionAccountQuote`. En F6 solo son elegibles Cotizaciones en estado `APROBADA`, validado con el estado persistido por el backend (`03` §6).
 
 ---
 
@@ -891,7 +891,7 @@ Entidad asociativa entre Cuenta de Cobro y Cotización, aprobada en F6 (`03` §6
 - orden
 - fechas
 
-Restricción aprobada en F6 (`03` §6): una misma cotización pertenece a lo sumo a una Cuenta no cancelada; cancelar la Cuenta libera la asociación. Las Cuentas que asocian cotizaciones no mezclan trabajos en el mismo documento. El estado requerido de la Cotización elegible está pendiente (`03` §4.9).
+Restricción aprobada en F6 (`03` §6): una misma cotización pertenece a lo sumo a una Cuenta no cancelada; cancelar la Cuenta libera la asociación. Las Cuentas que asocian cotizaciones no mezclan trabajos en el mismo documento. Elegibilidad aprobada: solo Cotizaciones en estado `APROBADA`, validado con el estado persistido por el backend.
 
 ---
 
@@ -1416,7 +1416,7 @@ Este anexo complementa el borrador v0.1 y prevalece cuando corrige una propuesta
 - El catálogo de servicios se administra por Perfil Profesional.
 - La corrección y anulación de Pagos forman parte de V1 mediante el mecanismo documentado `PaymentAdjustment`.
 
-Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; confirmación final del diseño de `PaymentAdjustment`; elegibilidad por estado de la Cotización como origen de Cuenta (`03` §4.9); validaciones residuales de transiciones; precisión de cantidades. Las entidades `ConsolidatedCollection`, `PaymentAdjustment` y `Refund` están asignadas a F7 (`03` §6). Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
+Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; confirmación final del diseño de `PaymentAdjustment`; validaciones residuales de transiciones; precisión de cantidades. Las entidades `ConsolidatedCollection`, `PaymentAdjustment` y `Refund` están asignadas a F7 (`03` §6). Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
 
 ---
 
@@ -1435,3 +1435,4 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.9 | 12/10/2026 | F5 implementada en local: pendiente §36.10 actualizado — la política de conflictos quedó implementada en local para `report`, `report_job` y `report_version` (`05` §5.3); sigue pendiente solo para fases posteriores. Sin cambios en el modelo conceptual. | Registro del estado de implementación local de F5; pendiente revisión vía PR. | Cambio aprobado; el documento sigue en borrador. |
 | v1.0 | 13/10/2026 | F6 (planificación aprobada): `CollectionAccount` §22 registra campos mínimos, ciclo de vida (edición solo `PENDIENTE` sin pagos; `PARCIAL`/`PAGADA` automáticos; cancelación solo sin pagos), numeración `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro aceptado por el backend y asociaciones de un solo tipo (Trabajos o Cotizaciones, sin mezclar) del mismo Cliente+Perfil con a lo sumo una Cuenta no cancelada por origen. Nuevas entidades conceptuales `CollectionAccountItem` (líneas con `SERVICIO`/`MATERIAL`/`OTRO` y motor de cálculo compartido) y `CollectionAccountQuote` (resuelve la brecha previa del modelo); §23 ajusta la cardinalidad de `CollectionAccountJob`. `Payment` §24 registra el alcance F6 (append-only, validación atómica de saldo en servidor) y la asignación a F7 de Consolidado/ajustes/Reembolso; `ConsolidatedCollection`, Reembolso y `PaymentAdjustment` marcados como F7. Pendientes §36.6 y §36.10 actualizados; §38 anota la elegibilidad de Cotización pendiente. La implementación de F6 no está autorizada. | Aprobación de las decisiones de la ficha F6 por el titular. | Cambio aprobado; el documento sigue en borrador. |
 | v1.1 | 13/10/2026 | Corrección de propagación de las decisiones F6 ya aprobadas (sin decisiones nuevas): `CollectionMethod` registra sus mínimos aprobados (`nombre` requerido, `detalle` opcional, `archivado`) y §36.1 anota que las reglas de ciclo de vida de la Cuenta de Cobro quedaron aprobadas para F6 en `03` §6. | Coherencia del modelo con el anexo canónico tras la revisión del PR documental. | Cambio aprobado; el documento sigue en borrador. |
+| v1.2 | 13/10/2026 | Elegibilidad de Cotización para Cuenta de Cobro aprobada por el titular: solo Cotizaciones `APROBADA` son elegibles como origen, validado con el estado persistido por el backend. §22 y la sección de `CollectionAccountQuote` actualizados; §38 retira el pendiente correspondiente. | Aprobación de la decisión pendiente `03` §4.9 por el titular. | Cambio aprobado; el documento sigue en borrador. |
