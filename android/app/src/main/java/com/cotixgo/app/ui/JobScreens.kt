@@ -40,6 +40,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -151,22 +152,29 @@ fun JobFormScreen(
     linkableQuotes: List<QuoteEntity>,
     preselectedClientId: String? = null,
     preselectedQuoteId: String? = null,
-    onSave: (JobInput) -> Unit,
+    // onSave confirma el resultado del repositorio: solo se navega tras
+    // un guardado exitoso; un fallo deja el formulario abierto con error.
+    onSave: (JobInput, onDone: (String?) -> Unit) -> Unit,
+    onSaved: (String) -> Unit,
     onBack: () -> Unit,
 ) {
-    var clientId by remember { mutableStateOf(initial?.clientId ?: preselectedClientId ?: "") }
-    var startDate by remember {
+    // El Trabajo a editar llega por Flow: clavear en initial?.id puebla los
+    // campos al cargar y conserva lo que el usuario ya escribió ante
+    // emisiones posteriores del mismo Trabajo.
+    var clientId by remember(initial?.id) { mutableStateOf(initial?.clientId ?: preselectedClientId ?: "") }
+    var startDate by remember(initial?.id) {
         mutableStateOf(initial?.startDateEpochDay?.let { LocalDate.ofEpochDay(it).toString() } ?: "")
     }
-    var estimatedDate by remember {
+    var estimatedDate by remember(initial?.id) {
         mutableStateOf(initial?.estimatedDateEpochDay?.let { LocalDate.ofEpochDay(it).toString() } ?: "")
     }
-    var address by remember { mutableStateOf(initial?.executionAddress ?: "") }
-    var notes by remember { mutableStateOf(initial?.notes ?: "") }
+    var address by remember(initial?.id) { mutableStateOf(initial?.executionAddress ?: "") }
+    var notes by remember(initial?.id) { mutableStateOf(initial?.notes ?: "") }
     var selectedQuotes by remember {
         mutableStateOf(setOfNotNull(preselectedQuoteId))
     }
     var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
     var clientMenu by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -181,7 +189,7 @@ fun JobFormScreen(
                     OutlinedButton(
                         onClick = { clientMenu = true },
                         enabled = initial == null, // el Cliente fija los vínculos; no se recambia
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().testTag("jobClient"),
                     ) {
                         Text(clients.firstOrNull { it.id == clientId }?.name ?: "Cliente *")
                     }
@@ -205,7 +213,7 @@ fun JobFormScreen(
                 OutlinedTextField(
                     value = startDate, onValueChange = { startDate = it },
                     label = { Text("Fecha de inicio (AAAA-MM-DD)") },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("jobStartDate"), singleLine = true,
                 )
             }
             item {
@@ -219,14 +227,14 @@ fun JobFormScreen(
                 OutlinedTextField(
                     value = address, onValueChange = { address = it },
                     label = { Text("Dirección de ejecución (obligatoria al programar)") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("jobAddress"),
                 )
             }
             item {
                 OutlinedTextField(
                     value = notes, onValueChange = { notes = it },
                     label = { Text("Observaciones") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("jobNotes"),
                 )
             }
             if (initial == null && linkableQuotes.isNotEmpty()) {
@@ -248,26 +256,39 @@ fun JobFormScreen(
             item {
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = {
-                        when {
-                            clientId.isBlank() -> error = "Selecciona un cliente."
-                            startDate.isNotBlank() && epochDayOrNull(startDate) == null ->
-                                error = "La fecha de inicio no es válida (AAAA-MM-DD)."
-                            estimatedDate.isNotBlank() && epochDayOrNull(estimatedDate) == null ->
-                                error = "La fecha estimada no es válida (AAAA-MM-DD)."
-                            else -> onSave(
-                                JobInput(
-                                    clientId = clientId,
-                                    profileId = profile?.id ?: "",
-                                    startDateEpochDay = epochDayOrNull(startDate),
-                                    estimatedDateEpochDay = epochDayOrNull(estimatedDate),
-                                    executionAddress = address,
-                                    notes = notes,
-                                    quoteIds = selectedQuotes.toList(),
-                                ),
-                            )
-                        }
-                    }) { Text("Guardar") }
+                    Button(
+                        enabled = !saving,
+                        onClick = {
+                            when {
+                                clientId.isBlank() -> error = "Selecciona un cliente."
+                                startDate.isNotBlank() && epochDayOrNull(startDate) == null ->
+                                    error = "La fecha de inicio no es válida (AAAA-MM-DD)."
+                                estimatedDate.isNotBlank() && epochDayOrNull(estimatedDate) == null ->
+                                    error = "La fecha estimada no es válida (AAAA-MM-DD)."
+                                else -> {
+                                    saving = true
+                                    onSave(
+                                        JobInput(
+                                            clientId = clientId,
+                                            profileId = profile?.id ?: "",
+                                            startDateEpochDay = epochDayOrNull(startDate),
+                                            estimatedDateEpochDay = epochDayOrNull(estimatedDate),
+                                            executionAddress = address,
+                                            notes = notes,
+                                            quoteIds = selectedQuotes.toList(),
+                                        ),
+                                    ) { savedId ->
+                                        saving = false
+                                        if (savedId != null) {
+                                            onSaved(savedId)
+                                        } else {
+                                            error = "No se pudo guardar el trabajo. Revisa los datos e inténtalo de nuevo."
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    ) { Text("Guardar") }
                     TextButton(onClick = onBack) { Text("Cancelar") }
                 }
             }
