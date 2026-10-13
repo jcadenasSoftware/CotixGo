@@ -81,6 +81,29 @@ const PAYMENT_ASSIGNMENT_ACTIONS = ['assign', 'unassign', 'reassign'];
 const PAYMENT_ASSIGNMENT_STATUSES = ['UNASSIGNED', 'PARTIAL_ASSIGNED', 'ASSIGNED'];
 
 /**
+ * F7 — Consolidado de Cuentas de Cobro (docs/03 §6): mismo ciclo de vida
+ * que la Cuenta individual (nace PENDIENTE, PARCIAL/PAGADA derivadas por
+ * el servidor, CANCELADA terminal solo sin pagos aplicados).
+ */
+const CONSOLIDATED_STATUSES = ['PENDIENTE', 'PARCIAL', 'PAGADA', 'CANCELADA'];
+
+/** Estados del Consolidado que admiten asignación de pagos. */
+const CONSOLIDATED_RECEIVABLE = ['PENDIENTE', 'PARCIAL'];
+
+/**
+ * F7 — tipos de ajuste de Pago (`payment_adjustment`, docs/03 §6):
+ * eventos append-only, auditados, con motivo obligatorio.
+ */
+const PAYMENT_ADJUSTMENT_KINDS = ['CORRECTION', 'ANNULMENT'];
+
+/**
+ * F7 — destino de una asignación: Cuenta individual o Consolidado.
+ * Nombre del campo elegido en la implementación (`docs/02` §24 deja la
+ * representación física al contrato de API).
+ */
+const PAYMENT_TARGET_TYPES = ['account', 'consolidated'];
+
+/**
  * Dinero en centavos: los importes viajan como cadenas decimales de dos
  * cifras (BigDecimal/HALF_UP del lado Android); el servidor los compara y
  * suma en enteros para evitar flotantes.

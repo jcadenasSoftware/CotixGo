@@ -225,3 +225,48 @@ object CollectionAccountTransitions {
 /** Validación mínima de Método de Cobro: `name` obligatorio, `detail` opcional. */
 fun validateCollectionMethod(name: String): String? =
     if (name.isBlank()) "El nombre del método de cobro es obligatorio." else null
+
+// ---------- Consolidados, Ajustes y Reembolsos (F7) ----------
+
+/**
+ * Tipo de ajuste de Pago aprobado (docs/03 §6): corrección del importe
+ * efectivo o anulación terminal de una sola vez. Eventos append-only.
+ */
+enum class PaymentAdjustmentKind { CORRECTION, ANNULMENT }
+
+/**
+ * Destino de una asignación (docs/03 §6): Cuenta individual o
+ * Consolidado. En wire viaja minúsculo (`account`/`consolidated`).
+ */
+enum class PaymentTargetKind { ACCOUNT, CONSOLIDATED }
+
+/**
+ * El Consolidado comparte el ciclo de vida de la Cuenta (mismos cuatro
+ * estados). Miembros editables y cancelación solo en PENDIENTE sin pagos
+ * aplicados; PARCIAL/PAGADA los deriva el servidor.
+ */
+object ConsolidatedTransitions {
+    fun isEditable(status: CollectionAccountStatus, applied: java.math.BigDecimal): Boolean =
+        status == CollectionAccountStatus.PENDIENTE && applied.signum() <= 0
+
+    fun canCancel(status: CollectionAccountStatus, applied: java.math.BigDecimal): Boolean =
+        status == CollectionAccountStatus.PENDIENTE && applied.signum() <= 0
+
+    fun canReceivePayments(status: CollectionAccountStatus): Boolean =
+        status == CollectionAccountStatus.PENDIENTE || status == CollectionAccountStatus.PARCIAL
+}
+
+/**
+ * Reserva compartida de asignaciones y Reembolsos (docs/03 §6):
+ * `disponible = efectivo − aplicadoVigente − reembolsadoAcumulado`.
+ * Invariante permanente: `aplicado + reembolsado ≤ efectivo`.
+ */
+fun availableForRefundOrAssign(
+    effective: java.math.BigDecimal,
+    applied: java.math.BigDecimal,
+    refunded: java.math.BigDecimal,
+): java.math.BigDecimal =
+    effective.subtract(applied).subtract(refunded).max(java.math.BigDecimal.ZERO)
+
+/** ¿El Pago admite asignaciones, correcciones o Reembolsos? (no anulado). */
+fun paymentIsLive(annulled: Boolean): Boolean = !annulled

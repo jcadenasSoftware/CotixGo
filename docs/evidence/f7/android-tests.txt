@@ -1,0 +1,42 @@
+Evidencia F7 — pruebas Android (JVM unitarias + instrumentadas en emulador) y builds
+===================================================================================
+Fecha: 13/10/2026
+Entorno: JDK 21 (C:\Program Files\Java\jdk-21), Gradle wrapper 8.11.1, AGP 8.9.1
+Emulador: Pixel_8 (AVD), Android 16
+Datos: 100% sintéticos
+
+Comandos ejecutados:
+  gradlew compileDebugKotlin compileDebugAndroidTestKotlin testDebugUnitTest
+  gradlew connectedDebugAndroidTest
+  gradlew assembleDebug assembleRelease
+
+Resultados reales:
+  - testDebugUnitTest:        34 tests, 0 fallos (DomainTest con matriz de
+                              ConsolidatedTransitions, reserva compartida
+                              efectivo−aplicado−reembolsado y paymentIsLive;
+                              más regresión ApiErrorParseTest, CalcVectorTest,
+                              QuoteDomainTest).
+  - connectedDebugAndroidTest: 76 tests, 0 fallos — suite completa:
+      * ConsolidatedRepositoryTest (F7, nuevo): elegibilidad/composición/
+        membresía única activa, congelamiento de Cuenta miembro, pago a
+        Consolidado sin reparto entre Cuentas, corrección al alza→UNASSIGNED
+        y a la baja con liberación LIFO y piso de reembolsados, reserva
+        compartida de Reembolso (dinero aplicado no reembolsable hasta
+        liberación auditada), anulación terminal una sola vez con rechazo
+        posterior y encolado durable de los eventos append-only.
+      * MigrationTest: incluye migrate7To8_preservesRowsAndCreatesF7Tables —
+        base v7 real con datos (usuario, cliente, cuenta, pago con
+        asignación, operación de cola pendiente) migrada a v8 conservando
+        filas y cola; pagos F6 ganan effectiveAmount=amount /
+        refundedAmount=0.00 / annulled=0 / assignedTargetType='ACCOUNT';
+        eventos de asignación reconstruidos con targetType='ACCOUNT';
+        tablas F7 creadas con índice único provisional CONS-PEND.
+      * Regresión: CollectionRepositoryTest, JobRepositoryTest,
+        JobFormScreenTest, QuoteRepositoryTest, ReportRepositoryTest,
+        SyncE2eTest — todas verdes.
+  - assembleDebug:    BUILD SUCCESSFUL (app-debug.apk)
+  - assembleRelease:  BUILD SUCCESSFUL (app-release.apk, minificado)
+
+Gradle Sync dentro de Android Studio: no verificable desde CLI — queda
+pendiente de comprobación manual del titular (JDK 21 como Gradle JDK, ver
+android/README.md). Una compilación CLI no equivale al Sync del IDE.

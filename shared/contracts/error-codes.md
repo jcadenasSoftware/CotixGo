@@ -1,6 +1,6 @@
-# CotixGo — Convención de errores de API (v0.2)
+# CotixGo — Convención de errores de API (v0.3)
 
-Convención compartida entre backend PHP y clientes (Android/web). v0.2 añade los códigos usados por el contrato de sincronización de F3.
+Convención compartida entre backend PHP y clientes (Android/web). v0.2 añade los códigos usados por el contrato de sincronización de F3; v0.3 documenta `IMMUTABLE_FINANCIAL` (F6/F7).
 
 ## Envelope de error
 
@@ -48,7 +48,8 @@ Dentro de `results[]`, cada operación devuelve `status` (`APPLIED` | `REJECTED`
 | `STALE_BASE_VERSION` | `base_server_version` no coincide con la versión vigente del servidor. |
 | `VERSION_CONFLICT` | Versión de Cotización concurrente conservada; el documento queda marcado para resolución. |
 | `CONFLICT_BLOCKED` | Transición hacia `EMITIDA`/`APROBADA` bloqueada mientras el documento tiene un conflicto de versiones sin resolver. |
-| `VALIDATION_ERROR` | Payload incompleto o inválido para la entidad. |
+| `IMMUTABLE_FINANCIAL` | Reintento con `entity_id` ya persistido pero campos estables distintos: los eventos financieros (Pago, asignación, ajuste, Reembolso) son append-only y no admiten edición. |
+| `VALIDATION_ERROR` | Payload incompleto o inválido para la entidad. También cubre las reglas F7 (elegibilidad de Cuenta para Consolidado, doble vínculo, remanente de Reembolso, piso de corrección). |
 
 ## Reglas
 

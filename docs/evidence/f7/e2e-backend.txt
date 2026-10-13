@@ -1,0 +1,72 @@
+Evidencia F7 — Consolidado de Cuentas, payment_adjustments y Reembolsos — E2E backend PHP/MariaDB local
+==========================================================================================================
+Fecha: 13/10/2026
+Entorno: php -S 127.0.0.1:8080 -t backend/public -c backend/dev.ini + MariaDB 127.0.0.1:3306 cotixgo_dev
+Datos: 100% sintéticos
+Comando: php -c backend/dev.ini backend/tests/e2e.php http://127.0.0.1:8080
+Resultado: 180 passed, 0 failed
+
+Casos F7 ejecutados (sección final de backend/tests/e2e.php):
+
+  PASS f7_member_accounts_created
+  PASS f7_cons_una_cuenta_REJECTED
+  PASS f7_cons_cancelada_REJECTED
+  PASS f7_cons_otro_cliente_REJECTED
+  PASS f7_cons_moneda_REJECTED
+  PASS f7_cons_pagada_on_create_REJECTED
+  PASS f7_cons_created_CONS_number
+  PASS f7_cons_number_idempotent
+  PASS f7_cons_doble_vinculo_REJECTED
+  PASS f7_cons_stale_base_CONFLICT
+  PASS f7_payment2_created
+  PASS f7_member_direct_assign_REJECTED
+  PASS f7_member_edit_REJECTED
+  PASS f7_cons_assign_applied
+  PASS f7_cons_pagada_derivada
+  PASS f7_cons_sin_distribucion
+  PASS f7_payment_parcial_unassigned
+  PASS f7_cons_pagada_edit_REJECTED
+  PASS f7_cons_pagada_cancel_REJECTED
+  PASS f7_refund_aplicado_REJECTED
+  PASS f7_refund_applied
+  PASS f7_refund_dedupe_APPLIED
+  PASS f7_refund_append_only_REJECTED
+  PASS f7_cons_unassign_applied
+  PASS f7_refund_reserva_compartida
+  PASS f7_cons_vuelve_pendiente
+  PASS f7_payment3_created
+  PASS f7_pay3_assign_applied
+  PASS f7_correction_free_only
+  PASS f7_correction_free_saldos
+  PASS f7_correction_lifo_applied
+  PASS f7_correction_lifo_saldos
+  PASS f7_correction_evento_trazable
+  PASS f7_correction_up_applied
+  PASS f7_correction_up_unassigned
+  PASS f7_correction_igual_REJECTED
+  PASS f7_pay3_unassign
+  PASS f7_pay3_refund_applied
+  PASS f7_correction_bajo_reembolsado_REJECTED
+  PASS f7_pay4_assigned
+  PASS f7_annulment_applied
+  PASS f7_annulment_efecto
+  PASS f7_annulled_assign_REJECTED
+  PASS f7_annulled_correction_REJECTED
+  PASS f7_annulled_refund_REJECTED
+  PASS f7_annulment_segunda_REJECTED
+  PASS f7_annulment_replay_idempotent
+  PASS f7_ccn_created
+  PASS f7_cons2_created
+  PASS f7_cons_edit_membership
+  PASS f7_freed_account_assignable
+  PASS f7_cons_cancel_libera
+  PASS f7_cons_reuse_after_cancel
+  PASS f7_audit_events_registrados
+
+  (Los 180 casos incluyen la regresión completa F3–F6 más los casos F7
+  de arriba: elegibilidad y composición del Consolidado, numeración CONS-
+  idempotente, doble vínculo, conflicto por versión base, congelamiento
+  de Cuenta miembro, asignación a Consolidado con excedente UNASSIGNED,
+  corrección al alza/a la baja LIFO con piso de reembolsados, anulación
+  terminal con replay memorizado, reserva compartida de Reembolsos,
+  liberación de membresías al cancelar y auditoría de eventos.)

@@ -2,15 +2,17 @@
 
 API REST en PHP sobre MySQL, desplegada en Hostinger, conforme a `docs/05-arquitectura-y-tecnologias.md`.
 
-## Estado actual (F3, desarrollo local)
+## Estado actual (F7, desarrollo local)
 
 PHP puro sin framework ni Composer (elección técnica registrada en `docs/05` §5.1):
 
 - `public/` — docroot público; `index.php` enruta `GET /health`, `POST /auth/register`, `POST /auth/login`, `POST /auth/recover`, `POST /sync/push`, `GET /sync/pull`.
-- `src/` — `bootstrap.php` (PDO, JSON, auth por token bearer), `domain.php` (transiciones de Cotización y numeración oficial), `auth.php`, `sync.php`.
+- `src/` — `bootstrap.php` (PDO, JSON, auth por token bearer), `domain.php` (transiciones y derivaciones: Cotización, Trabajo, Informe, Cuenta de Cobro, Consolidado, Pagos/ajustes/Reembolsos; numeración oficial `COT`/`TR`/`INF`/`CC`/`CONS`), `auth.php`, `sync.php` (push/pull con idempotencia, conflictos y validaciones financieras atómicas).
 - `migrations/` — scripts versionados `NNN_*.sql` aplicados por `tools/migrate.php` (tabla de control `schema_migrations`).
 - `tests/e2e.php` — verificación end-to-end del API con datos sintéticos.
 - `dev.ini` — config PHP de desarrollo (habilita `pdo_mysql`).
+
+Entidades sincronizadas (almacenamiento genérico `entities`): `user`, `profile`, `client`, `service`, `retention_config`, `quote`, `quote_version`, `job`, `job_quote`, `job_activity`, `job_material`, `report`, `report_job`, `report_version`, `collection_account`, `collection_method`, `payment`, `payment_assignment`, `consolidated_collection`, `payment_adjustment`, `payment_refund`. Contrato en `shared/contracts/openapi.yaml`.
 
 ## Desarrollo local
 

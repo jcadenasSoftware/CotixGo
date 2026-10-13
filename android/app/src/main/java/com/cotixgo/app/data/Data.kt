@@ -589,13 +589,23 @@ data class CollectionMethodEntity(
 
 /**
  * Pago recibido (append-only, docs/03 §6): se registra contra una Cuenta
- * individual o sin asignar vinculado al Cliente. El dinero aplicado vive
- * en eventos `payment_assignments`; `appliedAmount`, `unassignedAmount`,
- * `assignedAccountId` y `assignmentStatus` son derivados mantenidos en la
- * misma transacción que cada evento (local y servidor). Nunca existe
- * dinero aplicado a dos documentos a la vez.
+ * individual, un Consolidado o sin asignar vinculado al Cliente. El dinero
+ * aplicado vive en eventos `payment_assignments`; `appliedAmount`,
+ * `unassignedAmount`, destino vigente (`assignedTargetType` +
+ * `assignedAccountId`/`assignedConsolidatedId`) y `assignmentStatus` son
+ * derivados mantenidos en la misma transacción que cada evento (local y
+ * servidor). Nunca existe dinero aplicado a dos documentos a la vez.
+ *
+ * F7: `effectiveAmount` es el importe vigente (corrige `amount` solo vía
+ * eventos `payment_adjustments`); `refundedAmount` acumula Reembolsos y
+ * `annulled` marca la anulación terminal. Invariante compartida:
+ * aplicado + reembolsado ≤ efectivo; disponible = efectivo − aplicado −
+ * reembolsado.
  */
-@Entity(tableName = "payments", indices = [Index("userId"), Index("clientId"), Index("assignedAccountId")])
+@Entity(
+    tableName = "payments",
+    indices = [Index("userId"), Index("clientId"), Index("assignedAccountId"), Index("assignedConsolidatedId")],
+)
 data class PaymentEntity(
     @PrimaryKey val id: String,
     val userId: String,
@@ -607,7 +617,13 @@ data class PaymentEntity(
     val notes: String = "",
     val appliedAmount: String = "0.00",
     val unassignedAmount: String = "0.00",
+    val effectiveAmount: String = "0.00",
+    val refundedAmount: String = "0.00",
+    val annulled: Boolean = false,
     val assignedAccountId: String? = null,
+    val assignedConsolidatedId: String? = null,
+    /** ACCOUNT | CONSOLIDATED (enum wire `account`/`consolidated`). */
+    val assignedTargetType: String? = null,
     val assignmentStatus: String = "UNASSIGNED",
     val createdAt: Long,
     val updatedAt: Long,
@@ -617,23 +633,133 @@ data class PaymentEntity(
 
 /**
  * Evento auditado de asignación (append-only): `assign` aplica un monto
- * del Pago a una Cuenta (el servidor recorta al saldo pendiente y el
+ * del Pago a un destino (el servidor recorta al saldo pendiente y el
  * excedente queda UNASSIGNED en el mismo Pago), `unassign` retira la
- * aplicación vigente y `reassign` la mueve a otra Cuenta del mismo
+ * aplicación vigente y `reassign` la mueve a otro destino del mismo
  * Cliente. Todo evento exige `reason`; `amount` registra lo aplicado
  * (en assign/reassign) o lo liberado (en unassign) efectivamente, y
  * `releasedAmount` lo liberado por una reasignación.
+ *
+ * F7: `targetType` (ACCOUNT | CONSOLIDATED) discrimina el destino —
+ * `accountId` o `consolidatedId` según corresponda; `fromAccountId` /
+ * `fromConsolidatedId` registran el origen de una reasignación.
  */
-@Entity(tableName = "payment_assignments", indices = [Index("paymentId"), Index("accountId"), Index("userId")])
+@Entity(
+    tableName = "payment_assignments",
+    indices = [Index("paymentId"), Index("accountId"), Index("consolidatedId"), Index("userId")],
+)
 data class PaymentAssignmentEntity(
     @PrimaryKey val id: String,
     val userId: String,
     val paymentId: String,
     val action: String,
-    val accountId: String,
+    /** ACCOUNT | CONSOLIDATED — discrimina qué id de destino aplica. */
+    val targetType: String = "ACCOUNT",
+    val accountId: String? = null,
+    val consolidatedId: String? = null,
     val fromAccountId: String? = null,
+    val fromConsolidatedId: String? = null,
     val amount: String,
     val releasedAmount: String? = null,
+    val reason: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * F7 — Consolidado de Cuentas de Cobro (docs/03 §6): documento que agrupa
+ * ≥2 Cuentas no canceladas con saldo pendiente del mismo Cliente y moneda
+ * (los Perfiles pueden diferir). Nace PENDIENTE con numeración provisional
+ * `CONS-PEND-XXXX` y recibe la oficial `CONS-AAAAMM-NNN` en la primera
+ * aceptación del servidor; PARCIAL/PAGADA son derivadas; CANCELADA solo
+ * sin pagos aplicados y libera a las Cuentas.
+ *
+ * La membresía vive en `consolidated_collection_accounts` (N:M histórico:
+ * una Cuenta puede tener varias membresías, a lo sumo una en un
+ * Consolidado no cancelado). `totalAmount`/`appliedAmount`/`balance` son
+ * derivados que el servidor recalcula siempre.
+ */
+@Entity(
+    tableName = "consolidated_collections",
+    indices = [Index("userId"), Index("clientId"), Index(value = ["provisionalNumber"], unique = true)],
+)
+data class ConsolidatedCollectionEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val clientId: String,
+    val provisionalNumber: String,
+    /** PENDIENTE | PARCIAL | PAGADA | CANCELADA */
+    val status: String = "PENDIENTE",
+    val currency: String,
+    val totalAmount: String = "0.00",
+    val appliedAmount: String = "0.00",
+    val balance: String = "0.00",
+    val clientNameSnapshot: String = "",
+    val archived: Boolean = false,
+    val officialNumber: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/** Membresía Consolidado ↔ Cuenta (N:M con historial; ≤1 activa por Cuenta). */
+@Entity(
+    tableName = "consolidated_collection_accounts",
+    indices = [Index("consolidatedId"), Index("accountId")],
+)
+data class ConsolidatedCollectionAccountEntity(
+    @PrimaryKey val id: String,
+    val consolidatedId: String,
+    val accountId: String,
+    val position: Int,
+    val createdAt: Long,
+)
+
+/**
+ * F7 — Ajuste de Pago (append-only, auditado): `CORRECTION` fija un nuevo
+ * importe efectivo (`newEffectiveAmount` solicitado por el usuario);
+ * `ANNULMENT` es terminal y una sola vez. El servidor conserva el efectivo
+ * antes/después, lo liberado y su origen (`releasedFromType/Id`); esos
+ * campos se aplican desde el estado autoritativo al sincronizar.
+ */
+@Entity(tableName = "payment_adjustments", indices = [Index("paymentId"), Index("userId")])
+data class PaymentAdjustmentEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val paymentId: String,
+    /** CORRECTION | ANNULMENT */
+    val kind: String,
+    val reason: String,
+    val newEffectiveAmount: String? = null,
+    val effectiveBefore: String = "",
+    val effectiveAfter: String = "",
+    val releasedAmount: String = "0.00",
+    /** ACCOUNT | CONSOLIDATED | null cuando no hubo liberación. */
+    val releasedFromType: String? = null,
+    val releasedFromId: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * F7 — Reembolso (append-only, irreversible): movimiento nuevo vinculado
+ * al Pago origen; nunca edita ni elimina el Pago. Solo hasta el remanente
+ * disponible (efectivo − aplicado − reembolsado); el dinero aplicado debe
+ * liberarse antes con una operación auditada. Sin reversión aprobada.
+ */
+@Entity(tableName = "payment_refunds", indices = [Index("paymentId"), Index("userId")])
+data class PaymentRefundEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val paymentId: String,
+    val amount: String,
+    val refundedAtEpochDay: Long,
+    val collectionMethodId: String? = null,
     val reason: String,
     val createdAt: Long,
     val updatedAt: Long,
@@ -783,6 +909,113 @@ interface PaymentAssignmentDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(event: PaymentAssignmentEntity)
+}
+
+@Dao
+interface ConsolidatedCollectionDao {
+    @Query("SELECT * FROM consolidated_collections WHERE userId = :userId ORDER BY createdAt DESC")
+    fun observeForUser(userId: String): Flow<List<ConsolidatedCollectionEntity>>
+
+    @Query("SELECT * FROM consolidated_collections WHERE clientId = :clientId ORDER BY createdAt DESC")
+    fun observeForClient(clientId: String): Flow<List<ConsolidatedCollectionEntity>>
+
+    @Query("SELECT * FROM consolidated_collections WHERE id = :id")
+    fun observeOne(id: String): Flow<ConsolidatedCollectionEntity?>
+
+    @Query("SELECT * FROM consolidated_collections WHERE id = :id")
+    suspend fun get(id: String): ConsolidatedCollectionEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM consolidated_collections WHERE provisionalNumber = :number)")
+    suspend fun provisionalNumberExists(number: String): Boolean
+
+    @Query("UPDATE consolidated_collections SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Query("UPDATE consolidated_collections SET officialNumber = :num, updatedAt = :now WHERE id = :id")
+    suspend fun updateOfficial(id: String, num: String?, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(consolidated: ConsolidatedCollectionEntity)
+}
+
+@Dao
+interface ConsolidatedCollectionAccountDao {
+    @Query("SELECT * FROM consolidated_collection_accounts WHERE consolidatedId = :consolidatedId ORDER BY position, createdAt")
+    fun observeForConsolidated(consolidatedId: String): Flow<List<ConsolidatedCollectionAccountEntity>>
+
+    @Query("SELECT * FROM consolidated_collection_accounts WHERE consolidatedId = :consolidatedId ORDER BY position, createdAt")
+    suspend fun forConsolidated(consolidatedId: String): List<ConsolidatedCollectionAccountEntity>
+
+    /** Membresías de la Cuenta en cualquier Consolidado (historial N:M). */
+    @Query(
+        """SELECT l.* FROM consolidated_collection_accounts l
+           JOIN consolidated_collections c ON c.id = l.consolidatedId
+           WHERE l.accountId = :accountId""",
+    )
+    fun observeForAccount(accountId: String): Flow<List<ConsolidatedCollectionAccountEntity>>
+
+    /** ¿La Cuenta pertenece a un Consolidado no cancelado? (anti doble vínculo). */
+    @Query(
+        """SELECT c.* FROM consolidated_collections c
+           JOIN consolidated_collection_accounts l ON l.consolidatedId = c.id
+           WHERE l.accountId = :accountId AND c.status != 'CANCELADA'
+           LIMIT 1""",
+    )
+    suspend fun activeConsolidatedForAccount(accountId: String): ConsolidatedCollectionEntity?
+
+    /** Todas las membresías en Consolidados no cancelados (para UI/validación). */
+    @Query(
+        """SELECT l.* FROM consolidated_collection_accounts l
+           JOIN consolidated_collections c ON c.id = l.consolidatedId
+           WHERE c.status != 'CANCELADA'""",
+    )
+    fun observeActiveMemberships(): Flow<List<ConsolidatedCollectionAccountEntity>>
+
+    /** Pagos con aplicación vigente sobre el Consolidado. */
+    @Query("SELECT * FROM payments WHERE assignedConsolidatedId = :consolidatedId ORDER BY createdAt DESC")
+    fun observePaymentsForConsolidated(consolidatedId: String): Flow<List<PaymentEntity>>
+
+    @Query("DELETE FROM consolidated_collection_accounts WHERE consolidatedId = :consolidatedId")
+    suspend fun deleteForConsolidated(consolidatedId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(links: List<ConsolidatedCollectionAccountEntity>)
+}
+
+@Dao
+interface PaymentAdjustmentDao {
+    @Query("SELECT * FROM payment_adjustments WHERE paymentId = :paymentId ORDER BY createdAt, id")
+    fun observeForPayment(paymentId: String): Flow<List<PaymentAdjustmentEntity>>
+
+    @Query("SELECT * FROM payment_adjustments WHERE paymentId = :paymentId ORDER BY createdAt, id")
+    suspend fun forPayment(paymentId: String): List<PaymentAdjustmentEntity>
+
+    @Query("SELECT * FROM payment_adjustments WHERE id = :id")
+    suspend fun get(id: String): PaymentAdjustmentEntity?
+
+    @Query("UPDATE payment_adjustments SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(event: PaymentAdjustmentEntity)
+}
+
+@Dao
+interface PaymentRefundDao {
+    @Query("SELECT * FROM payment_refunds WHERE paymentId = :paymentId ORDER BY createdAt, id")
+    fun observeForPayment(paymentId: String): Flow<List<PaymentRefundEntity>>
+
+    @Query("SELECT * FROM payment_refunds WHERE paymentId = :paymentId ORDER BY createdAt, id")
+    suspend fun forPayment(paymentId: String): List<PaymentRefundEntity>
+
+    @Query("SELECT * FROM payment_refunds WHERE id = :id")
+    suspend fun get(id: String): PaymentRefundEntity?
+
+    @Query("UPDATE payment_refunds SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(event: PaymentRefundEntity)
 }
 
 // ---------- Cola durable de sincronización (F3) ----------
@@ -997,10 +1230,12 @@ interface QuoteVersionDao {
         CollectionAccountEntity::class, CollectionAccountItemEntity::class,
         CollectionAccountJobEntity::class, CollectionAccountQuoteEntity::class,
         CollectionMethodEntity::class, PaymentEntity::class, PaymentAssignmentEntity::class,
+        ConsolidatedCollectionEntity::class, ConsolidatedCollectionAccountEntity::class,
+        PaymentAdjustmentEntity::class, PaymentRefundEntity::class,
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1025,6 +1260,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun collectionMethodDao(): CollectionMethodDao
     abstract fun paymentDao(): PaymentDao
     abstract fun paymentAssignmentDao(): PaymentAssignmentDao
+    abstract fun consolidatedCollectionDao(): ConsolidatedCollectionDao
+    abstract fun consolidatedCollectionAccountDao(): ConsolidatedCollectionAccountDao
+    abstract fun paymentAdjustmentDao(): PaymentAdjustmentDao
+    abstract fun paymentRefundDao(): PaymentRefundDao
     abstract fun syncDao(): SyncDao
 
     companion object {
@@ -1344,14 +1583,128 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migración v7→v8 (F7): Consolidados de Cuentas de Cobro con su
+         * membresía N:M histórica, eventos append-only de ajuste
+         * (`payment_adjustments`: CORRECTION/ANNULMENT) y de Reembolso
+         * (`payment_refunds`). Los Pagos ganan el importe efectivo
+         * (`effectiveAmount` = `amount` en datos previos), el acumulado
+         * reembolsado, la anulación terminal y el destino genérico
+         * (`assignedTargetType` + `assignedConsolidatedId`); los eventos de
+         * asignación se reconstruyen con `targetType` y los ids de
+         * Consolidado (`accountId` pasa a ser opcional). Datos y cola de
+         * sincronización se conservan intactos.
+         */
+        // Interna (no privada): la prueba de migración la ejerce directamente.
+        internal val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Pagos: invariante efectivo/aplicado/reembolsado y destino
+                // genérico. Datos F6 previos: efectivo = amount recibido.
+                db.execSQL("ALTER TABLE payments ADD COLUMN effectiveAmount TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE payments ADD COLUMN refundedAmount TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL("ALTER TABLE payments ADD COLUMN annulled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE payments ADD COLUMN assignedConsolidatedId TEXT")
+                db.execSQL("ALTER TABLE payments ADD COLUMN assignedTargetType TEXT")
+                db.execSQL("UPDATE payments SET effectiveAmount = amount WHERE effectiveAmount = ''")
+                db.execSQL(
+                    "UPDATE payments SET assignedTargetType = 'ACCOUNT' WHERE assignedAccountId IS NOT NULL",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payments_assignedConsolidatedId` ON `payments` (`assignedConsolidatedId`)")
+
+                // Eventos de asignación: la columna `accountId` pasa a ser
+                // opcional y se añade el discriminador de destino — exige
+                // reconstruir la tabla preservando todas las filas.
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `payment_assignments_new` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `paymentId` TEXT NOT NULL, `action` TEXT NOT NULL,
+                        `targetType` TEXT NOT NULL DEFAULT 'ACCOUNT',
+                        `accountId` TEXT, `consolidatedId` TEXT,
+                        `fromAccountId` TEXT, `fromConsolidatedId` TEXT,
+                        `amount` TEXT NOT NULL, `releasedAmount` TEXT,
+                        `reason` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL(
+                    """INSERT INTO payment_assignments_new
+                        (id, userId, paymentId, action, targetType, accountId, consolidatedId,
+                         fromAccountId, fromConsolidatedId, amount, releasedAmount, reason,
+                         createdAt, updatedAt, pendingSync, serverVersion)
+                       SELECT id, userId, paymentId, action, 'ACCOUNT', accountId, NULL,
+                              fromAccountId, NULL, amount, releasedAmount, reason,
+                              createdAt, updatedAt, pendingSync, serverVersion
+                       FROM payment_assignments""",
+                )
+                db.execSQL("DROP TABLE payment_assignments")
+                db.execSQL("ALTER TABLE payment_assignments_new RENAME TO payment_assignments")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_assignments_paymentId` ON `payment_assignments` (`paymentId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_assignments_accountId` ON `payment_assignments` (`accountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_assignments_consolidatedId` ON `payment_assignments` (`consolidatedId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_assignments_userId` ON `payment_assignments` (`userId`)")
+
+                // Consolidado documental + membresía N:M.
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `consolidated_collections` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `clientId` TEXT NOT NULL, `provisionalNumber` TEXT NOT NULL,
+                        `status` TEXT NOT NULL, `currency` TEXT NOT NULL,
+                        `totalAmount` TEXT NOT NULL, `appliedAmount` TEXT NOT NULL,
+                        `balance` TEXT NOT NULL, `clientNameSnapshot` TEXT NOT NULL,
+                        `archived` INTEGER NOT NULL, `officialNumber` TEXT,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_consolidated_collections_userId` ON `consolidated_collections` (`userId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_consolidated_collections_clientId` ON `consolidated_collections` (`clientId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_consolidated_collections_provisionalNumber` ON `consolidated_collections` (`provisionalNumber`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `consolidated_collection_accounts` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `consolidatedId` TEXT NOT NULL,
+                        `accountId` TEXT NOT NULL, `position` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_consolidated_collection_accounts_consolidatedId` ON `consolidated_collection_accounts` (`consolidatedId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_consolidated_collection_accounts_accountId` ON `consolidated_collection_accounts` (`accountId`)")
+
+                // Eventos append-only F7: ajustes y reembolsos.
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `payment_adjustments` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `paymentId` TEXT NOT NULL, `kind` TEXT NOT NULL,
+                        `reason` TEXT NOT NULL, `newEffectiveAmount` TEXT,
+                        `effectiveBefore` TEXT NOT NULL, `effectiveAfter` TEXT NOT NULL,
+                        `releasedAmount` TEXT NOT NULL,
+                        `releasedFromType` TEXT, `releasedFromId` TEXT,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_adjustments_paymentId` ON `payment_adjustments` (`paymentId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_adjustments_userId` ON `payment_adjustments` (`userId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `payment_refunds` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `paymentId` TEXT NOT NULL, `amount` TEXT NOT NULL,
+                        `refundedAtEpochDay` INTEGER NOT NULL, `collectionMethodId` TEXT,
+                        `reason` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_refunds_paymentId` ON `payment_refunds` (`paymentId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_refunds_userId` ON `payment_refunds` (`userId`)")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "cotixgo.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
-                    .build().also { instance = it }
+                ).addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+                ).build().also { instance = it }
             }
     }
 }

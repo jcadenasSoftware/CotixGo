@@ -34,8 +34,12 @@
       "values": ["DISPONIBLE", "EN_USO", "MANTENIMIENTO", "DANADA", "FUERA_DE_SERVICIO"]
     },
     "payment_assignment_state": {
-      "description": "Estado de asignación de un Pago: sin documento asociado (UNASSIGNED) o aplicado a una Cuenta de Cobro / Consolidado (ASSIGNED).",
-      "values": ["UNASSIGNED", "ASSIGNED"]
+      "description": "Estado de asignación de un Pago: sin destino (UNASSIGNED), parcialmente aplicado (PARTIAL_ASSIGNED) o aplicado por completo a una Cuenta de Cobro / Consolidado (ASSIGNED).",
+      "values": ["UNASSIGNED", "PARTIAL_ASSIGNED", "ASSIGNED"]
+    },
+    "payment_target_type": {
+      "description": "Destino de una asignación de Pago (F7): Cuenta de Cobro individual o Consolidado de Cuentas de Cobro.",
+      "values": ["account", "consolidated"]
     },
     "document_number_state": {
       "description": "Estado del número documental: provisional local (TIPO-PEND-XXXX) u oficial asignado por el backend (TIPO-AAAAMM-NNN).",
