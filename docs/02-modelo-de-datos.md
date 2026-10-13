@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v0.9
+## Documento de diseño v1.1
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -149,13 +149,17 @@ El modelo conceptual inicial comprende:
 ### Documentación
 16. `Report`
 17. `ReportJob`
+18. `ReportVersion`
 
 ### Cobro
-18. `CollectionAccount`
-19. `Payment`
-20. `ConsolidatedCollection`
-21. `Refund`
-22. `PaymentAdjustment`
+19. `CollectionAccount`
+20. `CollectionAccountItem`
+21. `CollectionAccountJob`
+22. `CollectionAccountQuote`
+23. `Payment`
+24. `ConsolidatedCollection`
+25. `Refund`
+26. `PaymentAdjustment`
 
 ### Soporte de sincronización y trazabilidad
 23. `SyncOperation`
@@ -363,6 +367,8 @@ La funcionalidad completa de mantenimiento queda fuera del alcance actual.
 Las categorías de Materiales y de Herramientas son listas distintas creadas libremente por el Usuario/Titular. No existen categorías predeterminadas. El tipo Material/Herramienta define el comportamiento; la categoría solo organiza.
 
 `CollectionMethod` representa un Método de Cobro global del Usuario/Titular. El usuario crea y administra sus métodos; al instalar CotixGo no se crean registros predeterminados. Puede utilizarse al registrar pagos recibidos y reembolsos. Los ejemplos y ayudas de la interfaz no se convierten en datos iniciales.
+
+Campos mínimos aprobados en F6 (`03` §6): `nombre` requerido, `detalle` opcional y `archivado`.
 
 ---
 
@@ -792,29 +798,39 @@ El nombre técnico puede ser `CollectionAccount`, pero la interfaz utilizará si
 - `user_id`
 - `client_id`
 - `professional_profile_id`
-- número documental
-- fecha de emisión
-- fecha de vencimiento
+- moneda (ISO 4217, dos decimales; la Cuenta conserva la moneda de su creación)
+- líneas (`CollectionAccountItem`)
+- bruto / retenciones / neto / saldo pendiente
+- número documental provisional `CC-PEND-XXXX` y oficial `CC-AAAAMM-NNN` sobre el mismo `entity_id` (asignado en el primer registro aceptado por el backend; secuencia global por Usuario/Titular + tipo + período) — aprobado en F6 (`03` §6)
+- fecha de emisión (`issuedAt`)
+- fecha de vencimiento (opcional)
 - estado
-- subtotal
-- total
-- saldo pendiente
-- condiciones
+- condiciones (opcional)
 - snapshot del cliente
 - snapshot del perfil profesional
+- snapshot de las retenciones aplicadas
 - contenido histórico
+- `archivado`
 - fecha de confirmación
 - fechas
 
+Campos mínimos aprobados en F6 (`03` §6): `clientId`, `profileId`, moneda, líneas, bruto/retenciones/neto/saldo, estado, número provisional/oficial, `issuedAt`, vencimiento opcional, condiciones opcionales, snapshots de Cliente/Perfil/retenciones, `archivado` y marcas de tiempo.
+
+### Ciclo de vida (aprobado en F6, `03` §6)
+
+- La Cuenta empieza en `PENDIENTE` y se edita solo en ese estado y sin pagos aplicados; con algún pago aplicado, sus líneas, totales y snapshots no se editan.
+- `PARCIAL` y `PAGADA` se derivan automáticamente de los pagos aplicados y el saldo.
+- Se cancela solo si no tiene pagos aplicados.
+
 Puede crearse directamente para un Cliente sin Cotización, Trabajo o Informe. Los Métodos de Cobro se pueden seleccionar al registrar pagos recibidos o reembolsos; no existen métodos predeterminados y los ejemplos de interfaz no crean registros.
 
-### Relación con trabajos
+### Relación con trabajos y cotizaciones (aprobado en F6, `03` §6)
 
-Una Cuenta de Cobro puede incluir uno o varios trabajos.
+Una Cuenta de Cobro puede incluir uno o varios trabajos **o** una o varias cotizaciones, pero nunca mezclar ambos tipos en la misma Cuenta. Todos los asociados deben pertenecer al mismo Cliente y al mismo Perfil Profesional que la Cuenta. Cada Trabajo o Cotización solo puede pertenecer a una Cuenta no cancelada; al cancelarse la Cuenta deja de bloquear esa asociación.
 
 Por tanto, no se debe asumir `collection_account.job_id` como única relación.
 
-Debe existir una asociación conceptual `CollectionAccountJob`.
+Deben existir las asociaciones conceptuales `CollectionAccountJob` y `CollectionAccountQuote`. El estado requerido de una Cotización elegible sigue pendiente y bloquea la creación desde Cotización (`03` §4.9).
 
 ---
 
@@ -835,8 +851,47 @@ Entidad asociativa entre Cuenta de Cobro y Trabajo.
 Permite:
 
 - una Cuenta de Cobro para un trabajo;
-- una Cuenta de Cobro para varios trabajos;
-- varias Cuentas de Cobro relacionadas con el mismo trabajo.
+- una Cuenta de Cobro para varios trabajos.
+
+Restricción aprobada en F6 (`03` §6): un mismo trabajo pertenece a lo sumo a una Cuenta no cancelada; cancelar la Cuenta libera la asociación. Las Cuentas que asocian trabajos no mezclan cotizaciones en el mismo documento.
+
+---
+
+## CollectionAccountItem
+
+Entidad conceptual de línea de la Cuenta de Cobro, aprobada en F6 (`03` §6). Comparte con `QuoteItem` el motor de cálculo de V1 (bruto/neto, retenciones `applies_to`, redondeo por línea).
+
+### Datos conceptuales
+
+- `id`
+- `collection_account_id`
+- concepto / descripción
+- tipo: `SERVICIO` | `MATERIAL` | `OTRO`
+- cantidad
+- precio unitario
+- valores históricos (importe de línea y base de retención calculados al emitir)
+- orden
+- fechas
+
+Las líneas y los totales de la Cuenta no se editan una vez aplicado un pago; los valores calculados se conservan como históricos.
+
+---
+
+## CollectionAccountQuote
+
+Entidad asociativa entre Cuenta de Cobro y Cotización, aprobada en F6 (`03` §6). Resuelve la brecha previa del modelo (solo existía la asociación con Trabajos).
+
+### Datos conceptuales
+
+- `id`
+- `collection_account_id`
+- `quote_id`
+- monto o participación cuando corresponda
+- descripción
+- orden
+- fechas
+
+Restricción aprobada en F6 (`03` §6): una misma cotización pertenece a lo sumo a una Cuenta no cancelada; cancelar la Cuenta libera la asociación. Las Cuentas que asocian cotizaciones no mezclan trabajos en el mismo documento. El estado requerido de la Cotización elegible está pendiente (`03` §4.9).
 
 ---
 
@@ -860,15 +915,21 @@ Representa el evento real de recepción de dinero.
 
 ### Regla crítica
 
-Un Pago puede existir sin documento asociado: cuando el dinero se recibe antes de que exista la Cuenta de Cobro, el Pago queda registrado como no asignado, vinculado al Cliente, y no afecta saldos de documentos hasta su asociación posterior. La asociación posterior se realiza mediante operaciones propias y auditadas (`assign`/`unassign`/`reassign`). Si el importe del pago supera el saldo pendiente del destino, se aplica únicamente lo necesario para cubrirlo y el excedente permanece sin asignar, perteneciendo al mismo Pago; nunca existe dinero aplicado simultáneamente a dos documentos.
+Un Pago puede existir sin documento asociado: cuando el dinero se recibe antes de que exista la Cuenta de Cobro, el Pago queda registrado como no asignado, vinculado al Cliente, y no afecta saldos de documentos hasta su asociación posterior. La asociación posterior se realiza mediante operaciones propias y auditadas (`assign`/`unassign`/`reassign`, con motivo y validación de saldo en el servidor). Si el importe del pago supera el saldo pendiente del destino, se aplica únicamente lo necesario para cubrirlo y el excedente permanece sin asignar, perteneciendo al mismo Pago; nunca existe dinero aplicado simultáneamente a dos documentos.
 
 Normalmente un Pago corresponde a una Cuenta de Cobro individual. Si se consolida el cobro de varias Cuentas del mismo Cliente, el Pago se registra contra el documento global y reduce su saldo residual conjunto; no se reparte entre las Cuentas originales.
+
+### Alcance aprobado por fase (`03` §6)
+
+- En F6: pago contra una Cuenta individual (sin superar su saldo) y pago sin asignar vinculado al Cliente. Los pagos y las asignaciones son eventos append-only e idempotentes: no se editan ni se eliminan; los duplicados no se resuelven por sobrescritura ni por reloj local.
+- En F7: pago contra Consolidado, corrección/anulación mediante `PaymentAdjustment` y Reembolsos.
+- Limitación registrada de F6: un error en un Pago solo se resuelve con las operaciones de asignación ya aprobadas; F6 no es apta para datos reales antes de F7.
 
 ---
 
 # 25. ConsolidatedCollection
 
-Representa conceptualmente un documento global para cobrar el saldo conjunto de dos o más Cuentas de Cobro del mismo Cliente. Su especificación visual y técnica sigue pendiente.
+Representa conceptualmente un documento global para cobrar el saldo conjunto de dos o más Cuentas de Cobro del mismo Cliente. Su especificación visual y técnica sigue pendiente (`03` §4.2). Asignado a F7 por la división de fases aprobada (`03` §6); no forma parte de F6.
 
 ### Datos conceptuales
 
@@ -889,7 +950,7 @@ El Consolidado conserva intactas las Cuentas originales y utiliza sus valores hi
 
 ## Reembolso
 
-Representa un Reembolso como un nuevo movimiento de dinero asociado al Pago que devuelve, sin modificar ni eliminar el registro original.
+Representa un Reembolso como un nuevo movimiento de dinero asociado al Pago que devuelve, sin modificar ni eliminar el registro original. Asignado a F7 por la división de fases aprobada (`03` §6); no forma parte de F6. Su trazabilidad detallada sigue pendiente.
 
 ### Datos conceptuales
 
@@ -905,7 +966,7 @@ El Reembolso puede ser parcial o total. V1 no agrega un estado `REEMBOLSADA`. El
 
 ## PaymentAdjustment
 
-Representa la corrección o anulación de un `Payment` ya registrado. Es el mecanismo propuesto para la capacidad aprobada de V1 de corregir/anular pagos sin destruir el historial.
+Representa la corrección o anulación de un `Payment` ya registrado. Es el mecanismo propuesto para la capacidad aprobada de V1 de corregir/anular pagos sin destruir el historial. Asignado a F7 por la división de fases aprobada (`03` §6); su diseño detallado sigue pendiente de confirmación (`03` §4.5).
 
 ### Datos conceptuales
 
@@ -952,7 +1013,9 @@ USER
  │    │    └── ReportJob ─── Job
  │    │
  │    └── CollectionAccount
- │         └── CollectionAccountJob ─── Job
+ │         ├── CollectionAccountItem
+ │         ├── CollectionAccountJob ─── Job
+ │         └── CollectionAccountQuote ─── Quote
  │
  ├── Service
  ├── Material ─── InventoryCategory
@@ -991,9 +1054,10 @@ Client 1 ─── N CollectionAccount
 ```text
 Quote 1 ─── N QuoteItem
 Quote N ─── N Job
+Quote N ─── N CollectionAccount   (a lo sumo una Cuenta no cancelada por Cotización)
 ```
 
-La segunda relación se realiza mediante `JobQuote`.
+La segunda relación se realiza mediante `JobQuote` y la tercera mediante `CollectionAccountQuote` (F6, `03` §6).
 
 ## Trabajo
 
@@ -1003,17 +1067,20 @@ Job 1 ─── N JobMaterial
 Job 1 ─── N Attachment
 
 Job N ─── N Report
-Job N ─── N CollectionAccount
+Job N ─── N CollectionAccount   (a lo sumo una Cuenta no cancelada por Trabajo)
 ```
+
+Las relaciones de Trabajo con Informe y con Cuenta se realizan mediante `ReportJob` y `CollectionAccountJob` (F6, `03` §6). Una Cuenta no mezcla Trabajos y Cotizaciones en el mismo documento.
 
 ## Cobro
 
 ```text
+CollectionAccount 1 ─── N CollectionAccountItem
 Payment ─── CollectionAccount (individual)
-Payment ─── ConsolidatedCollection ─── N CollectionAccount
+Payment ─── ConsolidatedCollection ─── N CollectionAccount   (F7)
 Payment ─── (sin asignación) ─── Client   (pago recibido antes del documento)
-Payment 1 ─── N PaymentAdjustment
-Refund ─── Payment (referencia al original)
+Payment 1 ─── N PaymentAdjustment   (F7)
+Refund ─── Payment (referencia al original)   (F7)
 ```
 
 ## Inventario
@@ -1275,16 +1342,16 @@ Estas son vistas, enums, configuraciones o comportamientos, salvo que una regla 
 
 Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
-1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6);
+1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6; Cuenta de Cobro: reglas de ciclo de vida aprobadas para F6 en `03` §6);
 2. transiciones/estados restantes de Compras, archivos y sincronización;
 3. relación de versiones de Informe — resuelta para F5: relación `Report`–`ReportVersion` con snapshot inmutable por versión emitida; una corrección crea una versión nueva enlazada por campo de referencia y la versión anterior se conserva (`03` §6); la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
 5. instante exacto de vencimiento de Cotización — resuelto para F2 y aclarado en F3: `fecha_vencimiento` es el último día válido y pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior, solo desde los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA` (`03` §6);
-6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); resuelto para Informe en la planificación de F5: al aceptar el backend por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (`03` §6); otros tipos de documento siguen pendientes;
+6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); resuelto para Informe en la planificación de F5: al aceptar el backend por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (`03` §6); resuelto para Cuenta de Cobro en la planificación de F6: `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro de la Cuenta aceptado por el backend sobre el mismo `entity_id` (`03` §6); otros tipos de documento siguen pendientes;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
 9. timestamps y control de versiones;
-10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (`03` §6) — la resolución del usuario crea una versión nueva del Informe — e implementada en local para ellas (`05` §5.3); pendiente solo para entidades de fases posteriores;
+10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (`03` §6) — la resolución del usuario crea una versión nueva del Informe — e implementada en local para ellas (`05` §5.3); extendida por decisión a las entidades documentales de F6 (`collection_account`, `collection_method`) en la ficha F6 (`03` §6), con los eventos financieros (`payment`, asignaciones) aprobados como append-only con validación atómica de saldo en el servidor; pendiente para las entidades de F7 (Consolidado, `payment_adjustments`, Reembolsos) y posteriores;
 11. estructura exacta de `SyncOperation`;
 12. estructura exacta de `AuditEvent`;
 13. campos finales de cada entidad;
@@ -1349,7 +1416,7 @@ Este anexo complementa el borrador v0.1 y prevalece cuando corrige una propuesta
 - El catálogo de servicios se administra por Perfil Profesional.
 - La corrección y anulación de Pagos forman parte de V1 mediante el mecanismo documentado `PaymentAdjustment`.
 
-Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; confirmación final del diseño de `PaymentAdjustment`; validaciones residuales de transiciones; precisión de cantidades. Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
+Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; confirmación final del diseño de `PaymentAdjustment`; elegibilidad por estado de la Cotización como origen de Cuenta (`03` §4.9); validaciones residuales de transiciones; precisión de cantidades. Las entidades `ConsolidatedCollection`, `PaymentAdjustment` y `Refund` están asignadas a F7 (`03` §6). Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
 
 ---
 
@@ -1366,3 +1433,5 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v0.7 | 12/10/2026 | F4 implementada en local: pendiente §36.10 actualizado — la política de conflictos quedó implementada en local para `Job`, `JobQuote`, `JobActivity` y `JobMaterial` (`05` §5.2); sigue pendiente solo para fases posteriores. Sin cambios en el modelo conceptual. | Registro del estado de implementación local de F4; pendiente revisión vía PR. | Cambio aprobado; el documento sigue en borrador. |
 | v0.8 | 12/10/2026 | F5 (planificación aprobada): §20 `Report` registra los campos mínimos aprobados (`clientId`, `profileId`, título, contenido/observaciones, estado `BORRADOR`/`EMITIDO`, `INF-PEND-XXXX`/`INF-AAAAMM-NNN`, destino `INTERNO`/`CLIENTE`, archivado), la regla de mismo Cliente y Perfil Profesional para los Trabajos asociados con validación API sobre datos persistidos, la presentación de solo actividades `COMPLETADA` como ejecutadas y las exclusiones de F5; §21 `ReportJob` y sección "Informes" alineados; pendientes §36.3 (versiones de Informe), §36.6 (número oficial INF) y §36.10 (conflictos extendidos a F5) resueltos para F5. | Aprobación de las decisiones de la ficha F5 por el titular. | Cambio aprobado; el documento sigue en borrador. |
 | v0.9 | 12/10/2026 | F5 implementada en local: pendiente §36.10 actualizado — la política de conflictos quedó implementada en local para `report`, `report_job` y `report_version` (`05` §5.3); sigue pendiente solo para fases posteriores. Sin cambios en el modelo conceptual. | Registro del estado de implementación local de F5; pendiente revisión vía PR. | Cambio aprobado; el documento sigue en borrador. |
+| v1.0 | 13/10/2026 | F6 (planificación aprobada): `CollectionAccount` §22 registra campos mínimos, ciclo de vida (edición solo `PENDIENTE` sin pagos; `PARCIAL`/`PAGADA` automáticos; cancelación solo sin pagos), numeración `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro aceptado por el backend y asociaciones de un solo tipo (Trabajos o Cotizaciones, sin mezclar) del mismo Cliente+Perfil con a lo sumo una Cuenta no cancelada por origen. Nuevas entidades conceptuales `CollectionAccountItem` (líneas con `SERVICIO`/`MATERIAL`/`OTRO` y motor de cálculo compartido) y `CollectionAccountQuote` (resuelve la brecha previa del modelo); §23 ajusta la cardinalidad de `CollectionAccountJob`. `Payment` §24 registra el alcance F6 (append-only, validación atómica de saldo en servidor) y la asignación a F7 de Consolidado/ajustes/Reembolso; `ConsolidatedCollection`, Reembolso y `PaymentAdjustment` marcados como F7. Pendientes §36.6 y §36.10 actualizados; §38 anota la elegibilidad de Cotización pendiente. La implementación de F6 no está autorizada. | Aprobación de las decisiones de la ficha F6 por el titular. | Cambio aprobado; el documento sigue en borrador. |
+| v1.1 | 13/10/2026 | Corrección de propagación de las decisiones F6 ya aprobadas (sin decisiones nuevas): `CollectionMethod` registra sus mínimos aprobados (`nombre` requerido, `detalle` opcional, `archivado`) y §36.1 anota que las reglas de ciclo de vida de la Cuenta de Cobro quedaron aprobadas para F6 en `03` §6. | Coherencia del modelo con el anexo canónico tras la revisión del PR documental. | Cambio aprobado; el documento sigue en borrador. |
