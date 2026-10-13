@@ -909,6 +909,31 @@ check('f6_cc_pagada_inmutable_REJECTED', ($r['results'][0]['status'] ?? '') === 
 check('f6_cc_pagada_no_cancelable', ($r['results'][0]['status'] ?? '') === 'REJECTED'
     && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
 
+// Inmutabilidad de líneas (revisión PR #13): operación fabricada con el
+// mismo NÚMERO de líneas pero contenido alterado (descripción y precio de
+// la primera) → la comparación estructural debe rechazarla.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000072'), $cc1, 'PAGADA', 2,
+        ['appliedAmount' => '114.00', 'balance' => '0.00',
+         'items' => [
+            ['id' => $u('c2i00001'), 'position' => 1, 'conceptType' => 'SERVICIO',
+                'description' => 'Servicio alterado', 'quantity' => '2', 'unit' => 'u',
+                'unitPrice' => '55.00', 'lineTotal' => '100.00'],
+            ['id' => $u('c2i00002'), 'position' => 2, 'conceptType' => 'MATERIAL',
+                'description' => 'Material', 'quantity' => '1', 'unit' => '',
+                'unitPrice' => '20.00', 'lineTotal' => '20.00'],
+         ]])], $token);
+check('f6_cc_pagada_linea_alterada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Archivado permitido sobre una Cuenta con pagos aplicados: mismo
+// contenido persistido, solo `archived` cambia → APPLIED.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000074'), $cc1, 'PAGADA', 2,
+        ['appliedAmount' => '114.00', 'balance' => '0.00', 'archived' => true])], $token);
+check('f6_cc_pagada_archivado_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+
 // Segunda Cuenta ($cc3) sin origen para reasignarle 36.
 $cc3 = $u('c2000091');
 [$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,

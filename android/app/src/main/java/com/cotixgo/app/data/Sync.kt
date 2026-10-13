@@ -968,6 +968,10 @@ class SyncRepository(
                 db.openHelper.writableDatabase.execSQL("UPDATE quotes SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE jobs SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE reports SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE collection_accounts SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE collection_methods SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE payments SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE payment_assignments SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 // Regenerar operaciones pendientes con identidad canónica:
                 // reescribe userId en el payload y, para la entidad user,
                 // también entityId y payload.id hacia el id canónico.

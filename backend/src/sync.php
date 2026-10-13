@@ -827,8 +827,10 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
                     (int) $current['server_version'], serverState($current));
             }
         }
+        // items se compara estructuralmente (contenido completo de cada
+        // línea); jobIds/quoteIds son listas de texto y se normalizan.
         $norm = fn($v) => array_values(array_map('strval', (array) ($v ?? [])));
-        if ($norm($prevData['items'] ?? []) != $norm($payload['items'] ?? [])
+        if (($prevData['items'] ?? []) != ($payload['items'] ?? [])
             || $norm($prevData['jobIds'] ?? []) != $norm($payload['jobIds'] ?? [])
             || $norm($prevData['quoteIds'] ?? []) != $norm($payload['quoteIds'] ?? [])) {
             return result($opId, 'REJECTED', 'INVALID_TRANSITION',

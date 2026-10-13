@@ -14,7 +14,8 @@ Datos: 100% sintéticos
    (UNASSIGNED/PARTIAL_ASSIGNED/ASSIGNED).
 
 2) Instrumentadas — ./gradlew :app:connectedDebugAndroidTest
-   Finished 70 tests on Pixel_8(AVD) - 16 … (0 failed) — BUILD SUCCESSFUL
+   Finished 71 tests on Pixel_8(AVD) - 16 … (0 failed) — BUILD SUCCESSFUL
+   (tras la corrección post-revisión del PR #13)
 
    Cobertura F6:
    - MigrationTest.migrate6To7: base real v6 con datos previos
@@ -26,7 +27,7 @@ Datos: 100% sintéticos
      collection_methods, payments, payment_assignments) con sus
      índices, y la inserción/consulta de filas F6 sobre la base
      migrada.
-   - CollectionRepositoryTest (nueva, 5 tests): creación PENDIENTE con
+   - CollectionRepositoryTest (nueva, 6 tests): creación PENDIENTE con
      CC-PEND-XXXX, totales del motor F2 y encolado durable en la misma
      transacción; asociaciones sin mezcla Trabajo/Cotización, mismo
      Cliente+Perfil, solo Cotización APROBADA, doble vínculo bloqueado
@@ -36,7 +37,11 @@ Datos: 100% sintéticos
      assign/reassign/unassign con motivo y eventos append-only
      auditados (3 eventos, releasedAmount/amount conservados);
      validaciones de pago (importe, Cliente, Método, Cuenta de otro
-     Cliente) y Métodos de Cobro (nombre requerido, archivable).
+     Cliente) y Métodos de Cobro (nombre requerido, archivable);
+     bindAccount (post-revisión PR #13): datos F6 creados bajo el usuario
+     local anónimo quedan reasignados a la identidad canónica — Cuentas,
+     Métodos y Pagos visibles por observeForUser, relaciones conservadas
+     y cola reescrita con el userId canónico.
    - Regresión completa F1–F5 en verde (MigrationTest, Quote/Job/
      Report repositories, SyncE2eTest, JobFormScreenTest).
 

@@ -44,6 +44,7 @@ import java.time.LocalDate
 class CollectionRepositoryTest {
 
     private lateinit var db: AppDatabase
+    private lateinit var sync: SyncRepository
     private lateinit var repo: AppRepository
 
     @Before
@@ -55,7 +56,8 @@ class CollectionRepositoryTest {
         val session = com.cotixgo.app.data.Session(ctx, db).apply {
             apiBaseUrl = "http://127.0.0.1:1"
         }
-        repo = AppRepository(db, SyncRepository(db, session))
+        sync = SyncRepository(db, session)
+        repo = AppRepository(db, sync)
     }
 
     @After
@@ -358,5 +360,63 @@ class CollectionRepositoryTest {
                 paidAtEpochDay = LocalDate.now().toEpochDay(), collectionMethodId = mid),
         )
         assertNotNull(pid)
+    }
+
+    /**
+     * Regresión de la revisión PR #13: `bindAccount` debe reasignar el
+     * userId de TODAS las tablas F6 al pasar del usuario local anónimo a la
+     * identidad canónica. Crea datos F6 sintéticos antes de vincular,
+     * ejecuta la vinculación y exige que Cuentas, Métodos y Pagos sigan
+     * visibles por `observeForUser(canonical)` conservando sus relaciones
+     * (líneas, vínculos y evento de asignación) y que la cola encolada
+     * quede reescrita con la identidad canónica.
+     */
+    @Test
+    fun bindAccount_reasignaDatosF6AlUsuarioCanonico() = runTest {
+        val (anonUserId, profileId, clientId) = seed()
+        val jobId = repo.saveJob(
+            JobInput(clientId = clientId, profileId = profileId,
+                startDateEpochDay = LocalDate.now().toEpochDay()),
+        )!!
+        val accountId = repo.saveCollectionAccount(
+            accountInput(clientId, profileId).copy(jobIds = listOf(jobId)),
+        )!!
+        val methodId = repo.saveCollectionMethod(CollectionMethodInput(name = "Nequi"))!!
+        val paymentId = repo.savePayment(
+            PaymentInput(clientId = clientId, amount = "40.00",
+                paidAtEpochDay = LocalDate.now().toEpochDay(),
+                collectionMethodId = methodId, accountId = accountId,
+                initialAssignReason = "Aplicación inicial"),
+        )!!
+
+        // Vinculación: el usuario local anónimo queda sustituido.
+        val canonical = "canonical-user-id"
+        sync.bindAccount(canonical, "sintetico@example.test", "tok")
+
+        // Las entidades F6 siguen visibles para el usuario canónico.
+        val accounts = repo.observeCollectionAccounts(canonical).first()
+        assertEquals(listOf(accountId), accounts.map { it.id })
+        val methods = repo.observeCollectionMethods(canonical).first()
+        assertEquals(listOf(methodId), methods.map { it.id })
+        val payments = repo.observePayments(canonical).first()
+        assertEquals(listOf(paymentId), payments.map { it.id })
+        assertEquals(accountId, payments[0].assignedAccountId)
+
+        // Relaciones conservadas: líneas, vínculo con el Trabajo y el
+        // evento de asignación auditado — ya bajo el titular canónico.
+        assertEquals(2, db.collectionAccountItemDao().forAccount(accountId).size)
+        assertEquals(listOf(jobId), db.collectionAccountJobDao().forAccount(accountId).map { it.jobId })
+        val assignments = db.paymentAssignmentDao().forPayment(paymentId)
+        assertEquals(1, assignments.size)
+        assertEquals(canonical, assignments[0].userId)
+
+        // La cola durable se regeneró con la identidad canónica en el
+        // payload: ninguna operación conserva el userId anónimo.
+        val pending = db.syncDao().pendingOps()
+        assertTrue(pending.isNotEmpty())
+        assertFalse(pending.any { it.payloadJson.contains(anonUserId) })
+        assertTrue(pending.any { it.entityType == "collection_account" && it.entityId == accountId })
+        assertTrue(pending.any { it.entityType == "payment" && it.entityId == paymentId })
+        assertTrue(pending.any { it.entityType == "payment_assignment" })
     }
 }
