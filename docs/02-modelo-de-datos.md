@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v1.2
+## Documento de diseño v1.5
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -908,7 +908,7 @@ Representa el evento real de recepción de dinero.
 - monto total
 - Método de Cobro del Usuario/Titular
 - Cuenta de Cobro individual o Consolidado asociado cuando corresponda (opcional)
-- estado de asignación (`UNASSIGNED`/`ASSIGNED`)
+- estado de asignación (`UNASSIGNED`/`PARTIAL_ASSIGNED`/`ASSIGNED` — implementado así en F6; alineación documental)
 - referencia
 - observaciones
 - fechas
@@ -922,35 +922,48 @@ Normalmente un Pago corresponde a una Cuenta de Cobro individual. Si se consolid
 ### Alcance aprobado por fase (`03` §6)
 
 - En F6: pago contra una Cuenta individual (sin superar su saldo) y pago sin asignar vinculado al Cliente. Los pagos y las asignaciones son eventos append-only e idempotentes: no se editan ni se eliminan; los duplicados no se resuelven por sobrescritura ni por reloj local.
-- En F7: pago contra Consolidado, corrección/anulación mediante `PaymentAdjustment` y Reembolsos.
+- En F7 (reglas aprobadas en la ficha F7, `03` §6): pago contra Consolidado con el mismo mecanismo de asignación auditada, corrección/anulación mediante `PaymentAdjustment` y Reembolsos. Conceptualmente el Pago se dirige a una Cuenta individual, a un Consolidado o permanece sin asignación; el nombre del campo y su representación física quedan para el contrato de API y la implementación.
+- Reserva de fondos aprobada (ficha F7): asignaciones y Reembolsos consumen la misma parte libre del Pago; una asignación nueva se valida contra `montoEfectivo − aplicadoVigente − reembolsadoAcumulado`. Invariante: `aplicadoVigente + reembolsadoAcumulado ≤ montoEfectivo`.
 - Limitación registrada de F6: un error en un Pago solo se resuelve con las operaciones de asignación ya aprobadas; F6 no es apta para datos reales antes de F7.
 
 ---
 
 # 25. ConsolidatedCollection
 
-Representa conceptualmente un documento global para cobrar el saldo conjunto de dos o más Cuentas de Cobro del mismo Cliente. Su especificación visual y técnica sigue pendiente (`03` §4.2). Asignado a F7 por la división de fases aprobada (`03` §6); no forma parte de F6.
+Representa conceptualmente un documento global para cobrar el saldo conjunto de dos o más Cuentas de Cobro del mismo Cliente. Especificación aprobada en la ficha F7 (`03` §6); asignado a F7 por la división de fases aprobada; no forma parte de F6.
 
 ### Datos conceptuales
 
 - `id`
+- `user_id`
 - `client_id`
 - lista de Cuentas de Cobro incluidas
 - total conjunto
 - saldo residual global
+- moneda
 - fecha
-- estado
+- estado (`PENDIENTE`/`PARCIAL`/`PAGADA`/`CANCELADA`)
+- número provisional `CONS-PEND-XXXX` y oficial `CONS-AAAAMM-NNN`
+- `archivado`
 - fechas
 
 ### Reglas
 
 El Consolidado conserva intactas las Cuentas originales y utiliza sus valores históricos. Los Pagos se registran contra el Consolidado y reducen su saldo conjunto; no se registran directamente sobre varias Cuentas originales.
 
+Reglas aprobadas en la ficha F7 (`03` §6):
+
+- Elegibilidad y composición: incluye Cuentas no `CANCELADA` con saldo pendiente mayor que cero, del mismo Cliente y de la misma moneda; se permite combinar Perfiles porque cada Cuenta conserva su propio snapshot.
+- Ciclo de vida: `PENDIENTE` al crear; `PARCIAL` y `PAGADA` los deriva el servidor desde las asignaciones; `CANCELADA` solo sin pagos aplicados y al cancelarse libera sus Cuentas; la composición de miembros solo se edita en `PENDIENTE` sin pagos aplicados.
+- Doble cobro: una Cuenta dentro de un Consolidado no cancelado no admite asignación directa ni pertenencia a otro Consolidado no cancelado; cancelar el Consolidado libera sus Cuentas.
+- Numeración: `CONS-PEND-XXXX` → `CONS-AAAAMM-NNN` sobre el mismo `entity_id` en la primera aceptación del servidor, idempotente.
+- Las asignaciones reutilizan `assign`/`unassign`/`reassign` con motivo, auditoría y validación atómica de saldo, incluido el excedente `UNASSIGNED`.
+
 ---
 
 ## Reembolso
 
-Representa un Reembolso como un nuevo movimiento de dinero asociado al Pago que devuelve, sin modificar ni eliminar el registro original. Asignado a F7 por la división de fases aprobada (`03` §6); no forma parte de F6. Su trazabilidad detallada sigue pendiente.
+Representa un Reembolso como un nuevo movimiento de dinero asociado al Pago que devuelve, sin modificar ni eliminar el registro original. Asignado a F7 por la división de fases aprobada (`03` §6); no forma parte de F6. Trazabilidad y alcance aprobados en la ficha F7 (`03` §6).
 
 ### Datos conceptuales
 
@@ -962,11 +975,17 @@ Representa un Reembolso como un nuevo movimiento de dinero asociado al Pago que 
 
 El Reembolso puede ser parcial o total. V1 no agrega un estado `REEMBOLSADA`. El Pago conserva sus propios fecha, valor, método y observaciones.
 
+Reglas aprobadas en la ficha F7 (`03` §6):
+
+- Un Reembolso solo puede cubrirse con el remanente disponible del Pago: `disponible = montoEfectivo − aplicadoVigente − reembolsadoAcumulado`. Asignaciones y Reembolsos consumen la misma reserva.
+- Para reembolsar fondos ya aplicados a un documento, primero se liberan mediante una operación auditada (`unassign`/`reassign`) y después se registra el Reembolso.
+- El Reembolso es irreversible (no existe capacidad aprobada de revertirlo) y por ello actúa como piso del monto efectivo en correcciones y anulaciones.
+
 ---
 
 ## PaymentAdjustment
 
-Representa la corrección o anulación de un `Payment` ya registrado. Es el mecanismo propuesto para la capacidad aprobada de V1 de corregir/anular pagos sin destruir el historial. Asignado a F7 por la división de fases aprobada (`03` §6); su diseño detallado sigue pendiente de confirmación (`03` §4.5).
+Representa la corrección o anulación de un `Payment` ya registrado. Es el mecanismo aprobado para la capacidad de V1 de corregir/anular pagos sin destruir el historial. Asignado a F7 por la división de fases aprobada (`03` §6); diseño confirmado en la ficha F7 (`03` §6).
 
 ### Datos conceptuales
 
@@ -983,10 +1002,16 @@ Representa la corrección o anulación de un `Payment` ya registrado. Es el meca
 
 ### Reglas
 
-- Toda corrección o anulación se registra como un nuevo evento; el registro original del Pago no se modifica silenciosamente ni se elimina.
-- Una `CORRECTION` conserva valor anterior y nuevo; el monto efectivo del Pago pasa a ser el nuevo valor y el saldo del documento asociado se recalcula.
-- Una `ANNULMENT` excluye el Pago del cálculo del documento asociado; el Pago permanece en el historial (anular no elimina).
+- Toda corrección o anulación se registra como un nuevo evento append-only, idempotente y auditado; el registro original del Pago no se modifica silenciosamente ni se elimina.
+- `CORRECTION` conserva valor anterior y nuevo; el monto efectivo del Pago pasa a ser el nuevo valor y el saldo del documento asociado se recalcula (reglas de la ficha F7):
+  - Al alza: el incremento queda `UNASSIGNED` hasta una asignación explícita; nunca se distribuye automáticamente.
+  - A la baja: consume primero la parte libre (`efectivo − aplicado − reembolsado`) y luego libera las asignaciones más recientes (LIFO), atómicamente.
+  - Se rechaza si el nuevo monto efectivo queda por debajo del total reembolsado (un Reembolso no se puede revertir).
+- `ANNULMENT` excluye el Pago del cálculo del documento asociado; el Pago permanece en el historial (anular no elimina). Reglas de la ficha F7:
+  - Es terminal y solo puede registrarse una vez por Pago; libera atómicamente sus asignaciones vigentes y fija el monto efectivo en el total reembolsado (0 sin Reembolsos).
+  - Tras aceptarse, se rechazan nuevas asignaciones, reasignaciones, correcciones y reembolsos sobre ese Pago; el reintento de la misma operación devuelve el resultado memorizado y una segunda anulación distinta se rechaza.
 - Un Reembolso es un caso distinto: es un nuevo movimiento de dinero sobre un Pago correcto y no utiliza `PaymentAdjustment`.
+- Invariante vigente: `aplicadoVigente + reembolsadoAcumulado ≤ montoEfectivo`.
 
 ---
 
@@ -1344,14 +1369,14 @@ Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
 1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6; Cuenta de Cobro: reglas de ciclo de vida aprobadas para F6 en `03` §6);
 2. transiciones/estados restantes de Compras, archivos y sincronización;
-3. relación de versiones de Informe — resuelta para F5: relación `Report`–`ReportVersion` con snapshot inmutable por versión emitida; una corrección crea una versión nueva enlazada por campo de referencia y la versión anterior se conserva (`03` §6); la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` documentado (pendiente de confirmación final su diseño detallado);
+3. relación de versiones de Informe — resuelta para F5: relación `Report`–`ReportVersion` con snapshot inmutable por versión emitida; una corrección crea una versión nueva enlazada por campo de referencia y la versión anterior se conserva (`03` §6); la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` y su diseño detallado quedó confirmado en la ficha F7 (`03` §6): `CORRECTION` con absorción LIFO y piso de reembolsados, `ANNULMENT` terminal con piso de reembolsados e invariante `aplicado + reembolsado ≤ efectivo`;
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
 5. instante exacto de vencimiento de Cotización — resuelto para F2 y aclarado en F3: `fecha_vencimiento` es el último día válido y pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior, solo desde los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA` (`03` §6);
-6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); resuelto para Informe en la planificación de F5: al aceptar el backend por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (`03` §6); resuelto para Cuenta de Cobro en la planificación de F6: `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro de la Cuenta aceptado por el backend sobre el mismo `entity_id` (`03` §6); otros tipos de documento siguen pendientes;
+6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); resuelto para Informe en la planificación de F5: al aceptar el backend por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (`03` §6); resuelto para Cuenta de Cobro en la planificación de F6: `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro de la Cuenta aceptado por el backend sobre el mismo `entity_id` (`03` §6); resuelto para Consolidado en la ficha F7: `CONS-PEND-XXXX` → `CONS-AAAAMM-NNN` en la primera aceptación del servidor sobre el mismo `entity_id`, idempotente (`03` §6); otros tipos de documento siguen pendientes;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
 9. timestamps y control de versiones;
-10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (`03` §6) — la resolución del usuario crea una versión nueva del Informe — e implementada en local para ellas (`05` §5.3); extendida por decisión a las entidades documentales de F6 (`collection_account`, `collection_method`) en la ficha F6 (`03` §6), con los eventos financieros (`payment`, asignaciones) aprobados como append-only con validación atómica de saldo en el servidor; pendiente para las entidades de F7 (Consolidado, `payment_adjustments`, Reembolsos) y posteriores;
+10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (`03` §6) — la resolución del usuario crea una versión nueva del Informe — e implementada en local para ellas (`05` §5.3); extendida por decisión a las entidades documentales de F6 (`collection_account`, `collection_method`) en la ficha F6 (`03` §6), con los eventos financieros (`payment`, asignaciones) aprobados como append-only con validación atómica de saldo en el servidor; extendida por decisión a las entidades de F7 en la ficha F7 (`03` §6): `consolidated_collection` como entidad documental y `payment_adjustment`/`refund` como eventos financieros append-only — su implementación y la extensión a fases posteriores siguen pendientes;
 11. estructura exacta de `SyncOperation`;
 12. estructura exacta de `AuditEvent`;
 13. campos finales de cada entidad;
@@ -1359,7 +1384,7 @@ Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 15. almacenamiento físico y política de retención de fotografías/archivos;
 16. campos y reglas de relación pendientes entre perfil profesional y documentos, sin afectar la propiedad global del inventario y Métodos de Cobro;
 17. reglas de permisos futuras si se incorpora colaboración multiusuario;
-18. relación y trazabilidad del Reembolso con el Pago original; sus reglas funcionales básicas están definidas, pero no implica modificar el Pago.
+18. relación y trazabilidad del Reembolso con el Pago original — resuelta en la ficha F7 (`03` §6): el Reembolso referencia `payment_id`, es irreversible, solo puede cubrirse con el remanente `efectivo − aplicado − reembolsado` compartido con las asignaciones, y no implica modificar el Pago.
 
 Estos puntos no deben inventarse en la implementación: deberán resolverse en los documentos correspondientes.
 
@@ -1416,7 +1441,7 @@ Este anexo complementa el borrador v0.1 y prevalece cuando corrige una propuesta
 - El catálogo de servicios se administra por Perfil Profesional.
 - La corrección y anulación de Pagos forman parte de V1 mediante el mecanismo documentado `PaymentAdjustment`.
 
-Pendientes del modelo: diseño técnico del documento global consolidado y relación/trazabilidad de reembolsos; confirmación final del diseño de `PaymentAdjustment`; validaciones residuales de transiciones; precisión de cantidades. Las entidades `ConsolidatedCollection`, `PaymentAdjustment` y `Refund` están asignadas a F7 (`03` §6). Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
+Pendientes del modelo: diseño técnico físico del documento global consolidado (la especificación de producto quedó aprobada en la ficha F7, `03` §6); relación física/trazabilidad de reembolsos (reglas aprobadas en la ficha F7); diseño físico de `PaymentAdjustment` (semántica confirmada en la ficha F7); validaciones residuales de transiciones; precisión de cantidades. Las entidades `ConsolidatedCollection`, `PaymentAdjustment` y `Refund` están asignadas a F7 (`03` §6) y su implementación no está autorizada. Las unidades se registran explícitamente y no se convierten automáticamente. Los pendientes no deben resolverse por inferencia. Archivar solo oculta y desarchivar vuelve a mostrar; ningún dato generado se elimina y ninguna de estas acciones modifica efectos o relaciones.
 
 ---
 
@@ -1437,3 +1462,5 @@ Pendientes del modelo: diseño técnico del documento global consolidado y relac
 | v1.1 | 13/10/2026 | Corrección de propagación de las decisiones F6 ya aprobadas (sin decisiones nuevas): `CollectionMethod` registra sus mínimos aprobados (`nombre` requerido, `detalle` opcional, `archivado`) y §36.1 anota que las reglas de ciclo de vida de la Cuenta de Cobro quedaron aprobadas para F6 en `03` §6. | Coherencia del modelo con el anexo canónico tras la revisión del PR documental. | Cambio aprobado; el documento sigue en borrador. |
 | v1.2 | 13/10/2026 | Elegibilidad de Cotización para Cuenta de Cobro aprobada por el titular: solo Cotizaciones `APROBADA` son elegibles como origen, validado con el estado persistido por el backend. §22 y la sección de `CollectionAccountQuote` actualizados; §38 retira el pendiente correspondiente. | Aprobación de la decisión pendiente `03` §4.9 por el titular. | Cambio aprobado; el documento sigue en borrador. |
 | v1.3 | 13/10/2026 | F6 implementada en local con datos sintéticos tras la autorización de etapa del titular: las entidades conceptuales `CollectionAccount`, `CollectionAccountItem`, `CollectionAccountJob`, `CollectionAccountQuote`, `CollectionMethod`, `Payment` y los eventos de asignación quedaron materializados como siete tablas Room (v7) y como tipos del almacenamiento genérico `entities` del servidor, sobre el protocolo de sincronización F3 (detalle técnico en `05` §5.4; evidencia en `evidence/f6/`). Sin cambios en el modelo conceptual aprobado. | Registro del estado de implementación local de F6; pendiente revisión vía PR. | Cambio aprobado; el documento sigue en borrador. |
+| v1.4 | 13/10/2026 | F7 (planificación aprobada): `ConsolidatedCollection` §25 registra la especificación aprobada (elegibilidad no `CANCELADA` con saldo > 0, mismo Cliente y moneda, Perfil libre; ciclo `PENDIENTE`/`PARCIAL`/`PAGADA`/`CANCELADA` derivado con liberación al cancelar; anti-doble-vínculo; numeración `CONS-PEND-XXXX` → `CONS-AAAAMM-NNN` idempotente; asignaciones `assign`/`unassign`/`reassign` con validación atómica); `PaymentAdjustment` registra la semántica confirmada (`CORRECTION` alza `UNASSIGNED`/baja LIFO/piso de reembolsados; `ANNULMENT` terminal con piso y rechazo de operaciones posteriores); Reembolso registra la fórmula de disponible `efectivo − aplicado − reembolsado`, reserva compartida con asignaciones e irreversibilidad; `Payment` §24 registra `targetType` y la reserva de fondos. Alineación documental: el enum de estado del Pago incluye `PARTIAL_ASSIGNED` (ya implementado en F6). Pendientes §36.3, §36.6, §36.10 y §36.18 resueltos/anotados para F7. La implementación de F7 no está autorizada. | Aprobación de las decisiones de la ficha F7 por el titular. | Cambio aprobado; el documento sigue en borrador. |
+| v1.5 | 13/10/2026 | Corrección de la revisión del PR documental #14 (sin decisiones nuevas): §24 retira el nombre de campo `targetType`, que se había registrado como si fuera parte del contrato; queda la regla conceptual aprobada — el Pago se dirige a una Cuenta individual, a un Consolidado o permanece sin asignación — y el nombre del campo y su representación física quedan para el contrato de API y la implementación. | Coherencia con la regla de no resolver por inferencia los detalles de contrato. | Cambio aprobado; el documento sigue en borrador. |

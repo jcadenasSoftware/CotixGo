@@ -722,9 +722,13 @@ Restricción aprobada en la planificación de F6 (`03` §6): una Cuenta no mezcl
 
 Normalmente se registra un Pago contra una Cuenta de Cobro. Para agrupar varias Cuentas del mismo Cliente, se utiliza un **Consolidado de Cuentas de Cobro**: conserva intactas las Cuentas originales, toma sus valores históricos, agrupa sus saldos y permite registrar pagos contra el saldo consolidado. No existe un mecanismo paralelo para registrar un Pago directamente sobre varias Cuentas.
 
+Especificación aprobada en la ficha F7 (`03` §6): incluye Cuentas no `CANCELADA` con saldo pendiente mayor que cero, del mismo Cliente y de la misma moneda; puede combinar Perfiles porque cada Cuenta conserva su snapshot. Su ciclo es `PENDIENTE`/`PARCIAL`/`PAGADA`/`CANCELADA` (los intermedios los deriva el servidor; se cancela solo sin pagos aplicados y libera sus Cuentas; miembros editables solo en `PENDIENTE`). Una Cuenta dentro de un Consolidado no cancelado no admite asignación directa ni pertenencia a otro Consolidado no cancelado; los pagos reducen el saldo conjunto sin distribuirse entre las originales. Numeración `CONS-PEND-XXXX` → `CONS-AAAAMM-NNN` idempotente en la primera aceptación del servidor. Las asignaciones reutilizan `assign`/`unassign`/`reassign` con motivo y validación atómica, incluido el excedente `UNASSIGNED`.
+
 **31.2 Reembolsos**
 
 Un Reembolso es un nuevo movimiento de dinero y conserva intacto el Pago original. Puede ser parcial o total y registra fecha, valor, Método de Cobro utilizado y observación. No se cambia ni elimina el Pago original y V1 no crea un estado `REEMBOLSADA`.
+
+Alcance aprobado en la ficha F7 (`03` §6): un Reembolso solo puede cubrirse con el remanente disponible del Pago — `disponible = montoEfectivo − aplicadoVigente − reembolsadoAcumulado` — y las asignaciones consumen la misma reserva. Para reembolsar fondos aplicados a un documento, primero se liberan mediante una operación auditada (`unassign`/`reassign`). El Reembolso es irreversible.
 
 **31.3 Pago recibido antes de la Cuenta de Cobro (anticipo)**
 
@@ -734,9 +738,11 @@ Un anticipo es un adelanto o pago parcial recibido; no existe un módulo separad
 
 Corregir o anular un Pago registrado es funcionalidad de V1. El ajuste conserva valor anterior, valor nuevo, motivo, usuario, dispositivo, operación y fecha; el registro original no se modifica silenciosamente ni se elimina. Un Pago anulado permanece en el historial y deja de contar en el cálculo del documento asociado. Esto no debe confundirse con un Reembolso, que es un nuevo movimiento de dinero sobre un Pago correcto.
 
+Diseño confirmado en la ficha F7 (`03` §6): `CORRECTION` al alza deja el incremento `UNASSIGNED` hasta asignación explícita; a la baja consume primero la parte libre (`efectivo − aplicado − reembolsado`) y luego libera las asignaciones más recientes (LIFO) atómicamente; se rechaza si el nuevo efectivo queda por debajo del total reembolsado. `ANNULMENT` es terminal y solo puede registrarse una vez por Pago: libera atómicamente las asignaciones vigentes y fija el monto efectivo en el total reembolsado (0 sin Reembolsos); después se rechazan nuevas asignaciones, reasignaciones, correcciones y reembolsos; el reintento de la misma operación devuelve el resultado memorizado y una segunda anulación distinta se rechaza. Invariante: `aplicadoVigente + reembolsadoAcumulado ≤ montoEfectivo`.
+
 **31.5 División de fases y naturaleza de los Pagos (aprobado en la planificación de F6)**
 
-La división de fases aprobada (`03` §6): F6 cubre Cuenta de Cobro, Métodos de Cobro y pagos esenciales; F7 cubre el Consolidado de Cuentas, el mecanismo `payment_adjustments` (corrección/anulación) y los Reembolsos.
+La división de fases aprobada (`03` §6): F6 cubre Cuenta de Cobro, Métodos de Cobro y pagos esenciales; F7 cubre el Consolidado de Cuentas, el mecanismo `payment_adjustments` (corrección/anulación) y los Reembolsos — decisiones de producto aprobadas en la ficha F7 (`03` §6); su implementación sigue sin autorización.
 
 En F6: pago contra una Cuenta individual (sin superar su saldo) o pago sin asignar vinculado al Cliente. Los Pagos y las operaciones de asignación son eventos financieros append-only e idempotentes: no se editan ni se eliminan; los duplicados no se resuelven por sobrescritura ni por reloj local; el servidor valida el saldo de forma atómica.
 
@@ -1007,3 +1013,4 @@ Este documento no constituye todavía el modelo físico de base de datos, el con
 | v0.2 (enmienda 4) | 12/10/2026 | 13 y 30: reglas de Informes de la ficha F5 — un Informe solo agrupa Trabajos del mismo Cliente y del mismo Perfil Profesional, y solo las actividades `COMPLETADA` se presentan como ejecución realizada. | Formalización de las reglas de Informes aprobadas por el titular en la planificación de F5 (`03` §6). | Aprobado. |
 | v0.2 (enmienda 5) | 13/10/2026 | 17: mínimos de Métodos de Cobro de la ficha F6; 17.3: ciclo de vida, campos mínimos, numeración `CC-` y elegibilidad de Cotización pendiente de la ficha F6; 31: restricción de asociaciones de un solo tipo con a lo sumo una Cuenta no cancelada por origen; 31.5: división F6/F7, Pagos y asignaciones como eventos append-only con validación de saldo en servidor y limitación de F6 para datos reales. | Formalización de las reglas de Cuenta de Cobro, Métodos de Cobro y Pagos aprobadas por el titular en la planificación de F6 (`03` §6). | Aprobado. |
 | v0.2 (enmienda 6) | 13/10/2026 | 17.3: elegibilidad de Cotización aprobada — en F6 solo Cotizaciones `APROBADA` son elegibles como origen de Cuenta de Cobro, validado con el estado persistido por el backend (`03` §6). | Aprobación de la decisión pendiente `03` §4.9 por el titular. | Aprobado. |
+| v0.2 (enmienda 6) | 13/10/2026 | 31.1: especificación del Consolidado de la ficha F7 (elegibilidad, composición, ciclo derivado, anti-doble-vínculo, numeración `CONS-`); 31.2: remanente de reembolso `efectivo − aplicado − reembolsado`, reserva compartida e irreversibilidad; 31.4: diseño confirmado de `payment_adjustments` (`CORRECTION` LIFO con piso; `ANNULMENT` terminal con piso e invariante); 31.5: la implementación de F7 sigue sin autorización. | Formalización de las reglas de Consolidado, ajustes/anulación y Reembolsos aprobadas por el titular en la ficha F7 (`03` §6). | Aprobado. |
