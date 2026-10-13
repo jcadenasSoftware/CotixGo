@@ -2,12 +2,18 @@ package com.cotixgo.app
 
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.core.ClientType
+import com.cotixgo.app.core.CollectionAccountStatus
+import com.cotixgo.app.core.CollectionAccountTransitions
 import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.JobTransitions
+import com.cotixgo.app.core.PaymentAssignmentStatus
 import com.cotixgo.app.core.ReportStatus
 import com.cotixgo.app.core.ReportTransitions
+import com.cotixgo.app.core.deriveAssignmentStatus
+import com.cotixgo.app.core.deriveCollectionStatus
 import com.cotixgo.app.core.validateClient
+import com.cotixgo.app.core.validateCollectionMethod
 import com.cotixgo.app.core.validateOnboarding
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -128,5 +134,84 @@ class DomainTest {
     fun `report is editable only in BORRADOR`() {
         assertTrue(ReportTransitions.isEditable(ReportStatus.BORRADOR))
         assertFalse(ReportTransitions.isEditable(ReportStatus.EMITIDO))
+    }
+
+    // ---------- Reglas de Cuenta de Cobro y Pago (F6, docs/03 §6) ----------
+
+    @Test
+    fun `collection account editable only when PENDIENTE without applied payments`() {
+        val zero = "0.00".toBigDecimal()
+        val some = "50.00".toBigDecimal()
+        assertTrue(CollectionAccountTransitions.isEditable(CollectionAccountStatus.PENDIENTE, zero))
+        assertFalse(CollectionAccountTransitions.isEditable(CollectionAccountStatus.PENDIENTE, some))
+        assertFalse(CollectionAccountTransitions.isEditable(CollectionAccountStatus.PARCIAL, zero))
+        assertFalse(CollectionAccountTransitions.isEditable(CollectionAccountStatus.PAGADA, zero))
+        assertFalse(CollectionAccountTransitions.isEditable(CollectionAccountStatus.CANCELADA, zero))
+    }
+
+    @Test
+    fun `collection account cancellable only without applied payments`() {
+        val zero = "0.00".toBigDecimal()
+        val some = "10.00".toBigDecimal()
+        assertTrue(CollectionAccountTransitions.canCancel(CollectionAccountStatus.PENDIENTE, zero))
+        assertFalse(CollectionAccountTransitions.canCancel(CollectionAccountStatus.PENDIENTE, some))
+        assertFalse(CollectionAccountTransitions.canCancel(CollectionAccountStatus.PARCIAL, zero))
+        assertFalse(CollectionAccountTransitions.canCancel(CollectionAccountStatus.CANCELADA, zero))
+    }
+
+    @Test
+    fun `collection account receives payments only while alive`() {
+        assertTrue(CollectionAccountTransitions.canReceivePayments(CollectionAccountStatus.PENDIENTE))
+        assertTrue(CollectionAccountTransitions.canReceivePayments(CollectionAccountStatus.PARCIAL))
+        assertFalse(CollectionAccountTransitions.canReceivePayments(CollectionAccountStatus.PAGADA))
+        assertFalse(CollectionAccountTransitions.canReceivePayments(CollectionAccountStatus.CANCELADA))
+    }
+
+    @Test
+    fun `collection status derives from applied vs net`() {
+        val net = "100.00".toBigDecimal()
+        assertEquals(
+            CollectionAccountStatus.PENDIENTE,
+            deriveCollectionStatus(false, "0.00".toBigDecimal(), net),
+        )
+        assertEquals(
+            CollectionAccountStatus.PARCIAL,
+            deriveCollectionStatus(false, "40.00".toBigDecimal(), net),
+        )
+        assertEquals(
+            CollectionAccountStatus.PAGADA,
+            deriveCollectionStatus(false, "100.00".toBigDecimal(), net),
+        )
+        // Cancelada es terminal: nunca deriva de importes.
+        assertEquals(
+            CollectionAccountStatus.CANCELADA,
+            deriveCollectionStatus(true, "0.00".toBigDecimal(), net),
+        )
+        assertEquals(
+            CollectionAccountStatus.CANCELADA,
+            deriveCollectionStatus(true, "50.00".toBigDecimal(), net),
+        )
+    }
+
+    @Test
+    fun `payment assignment status derives from applied and unassigned`() {
+        assertEquals(
+            PaymentAssignmentStatus.UNASSIGNED,
+            deriveAssignmentStatus("0.00".toBigDecimal(), "100.00".toBigDecimal()),
+        )
+        assertEquals(
+            PaymentAssignmentStatus.PARTIAL_ASSIGNED,
+            deriveAssignmentStatus("40.00".toBigDecimal(), "60.00".toBigDecimal()),
+        )
+        assertEquals(
+            PaymentAssignmentStatus.ASSIGNED,
+            deriveAssignmentStatus("100.00".toBigDecimal(), "0.00".toBigDecimal()),
+        )
+    }
+
+    @Test
+    fun `collection method requires name`() {
+        assertNotNull(validateCollectionMethod("  "))
+        assertNull(validateCollectionMethod("Transferencia"))
     }
 }

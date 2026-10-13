@@ -709,4 +709,282 @@ check('pull_report_versions_server_order', count($repVerRows) >= 3
     && !in_array(null, array_column($repVerRows, 'server_order'), true), json_encode($repVerRows));
 check('pull_report_conflict_cleared', ($repRow['has_version_conflict'] ?? true) === false, json_encode($repRow));
 
+// =====================  F6 — Cuentas de Cobro, Métodos y Pagos  =====================
+
+$clienteId = $u('30000001'); // Cliente Sintético ya persistido
+$perfilId = $u('20000001');
+
+// Método de Cobro: nombre requerido; se crea y archiva por la vía genérica.
+$cm = $u('c1000001');
+$ops = [['operation_id' => $u('c1000000'), 'entity_type' => 'collection_method', 'entity_id' => $cm,
+    'type' => 'upsert', 'base_server_version' => 0,
+    'payload' => ['id' => $cm, 'userId' => $userId, 'name' => '', 'detail' => '',
+        'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('f6_method_sin_nombre_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+$ops[0]['operation_id'] = $u('c1000002');
+$ops[0]['payload']['name'] = 'Transferencia sintética';
+$ops[0]['payload']['detail'] = 'Banco X 123';
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('f6_method_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Cuenta de Cobro con líneas y un Trabajo del mismo Cliente+Perfil ($job1
+// quedó BORRADOR tras la reversa F4). CC oficial en la primera aceptación.
+$cc1 = $u('c2000001');
+$ccPayload = fn(string $id, string $status, array $over = []) => array_merge([
+    'id' => $id, 'userId' => $userId, 'clientId' => $clienteId, 'profileId' => $perfilId,
+    'provisionalNumber' => 'CC-PEND-' . strtoupper(substr($id, -4)), 'status' => $status,
+    'currency' => 'COP', 'gross' => '120.00', 'totalRetained' => '6.00', 'net' => '114.00',
+    'appliedAmount' => '0.00', 'balance' => '114.00', 'issuedAt' => $now,
+    'dueDateEpochDay' => null, 'conditions' => 'a 30 días',
+    'clientSnapshotJson' => '{"id":"' . $clienteId . '"}',
+    'profileSnapshotJson' => '{"id":"' . $perfilId . '"}',
+    'retentionsSnapshotJson' => '[]', 'clientNameSnapshot' => 'Cliente Sintético',
+    'archived' => false,
+    'items' => [
+        ['id' => $u('c2i00001'), 'position' => 1, 'conceptType' => 'SERVICIO',
+            'description' => 'Servicio ejecutado', 'quantity' => '2', 'unit' => 'u',
+            'unitPrice' => '50.00', 'lineTotal' => '100.00'],
+        ['id' => $u('c2i00002'), 'position' => 2, 'conceptType' => 'MATERIAL',
+            'description' => 'Material', 'quantity' => '1', 'unit' => '',
+            'unitPrice' => '20.00', 'lineTotal' => '20.00'],
+    ],
+    'jobIds' => [$job1], 'quoteIds' => [],
+    'createdAt' => $now, 'updatedAt' => $now], $over);
+$ccop = fn(string $opId, string $id, string $status, int $base, array $over = []) =>
+    [['operation_id' => $opId, 'entity_type' => 'collection_account', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $base, 'payload' => $ccPayload($id, $status, $over)]];
+
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000000'), $cc1, 'PENDIENTE', 0)], $token);
+$ccNum = $r['results'][0]['official_number'] ?? null;
+check('f6_cc_created_CC_number', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && is_string($ccNum) && str_starts_with($ccNum, 'CC-'), json_encode($r));
+
+// Numeración idempotente: replay de la misma operación conserva el número.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000000'), $cc1, 'PENDIENTE', 0)], $token);
+check('f6_cc_number_idempotent', ($r['results'][0]['official_number'] ?? null) === $ccNum,
+    json_encode($r));
+
+// Nunca mezclar Trabajos y Cotizaciones.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000010'), $u('c2000011'), 'PENDIENTE', 0,
+        ['quoteIds' => [$q2]])], $token);
+check('f6_cc_mix_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Trabajo de otro Cliente ($jobOtro es de $cliente2) → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000020'), $u('c2000021'), 'PENDIENTE', 0,
+        ['jobIds' => [$jobOtro]])], $token);
+check('f6_cc_job_otro_cliente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Cotización no APROBADA persistida ($q5 CANCELADA) → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000030'), $u('c2000031'), 'PENDIENTE', 0,
+        ['jobIds' => [], 'quoteIds' => [$q5]])], $token);
+check('f6_cc_quote_no_aprobada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Cotización APROBADA persistida del mismo Cliente+Perfil ($q2) → aceptada.
+$cc2 = $u('c2000041');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000040'), $cc2, 'PENDIENTE', 0,
+        ['jobIds' => [], 'quoteIds' => [$q2]])], $token);
+check('f6_cc_quote_aprobada_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && str_starts_with($r['results'][0]['official_number'] ?? '', 'CC-'), json_encode($r));
+
+// Doble vínculo: la misma Cotización $q2 ya pertenece a $cc2 no cancelada.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000050'), $u('c2000051'), 'PENDIENTE', 0,
+        ['jobIds' => [], 'quoteIds' => [$q2]])], $token);
+check('f6_cc_doble_vinculo_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Estado fabricado en creación (PAGADA directa) → INVALID_TRANSITION.
+// Sin orígenes para no disparar antes la regla de doble vínculo.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000060'), $u('c2000061'), 'PAGADA', 0,
+        ['jobIds' => []])], $token);
+check('f6_cc_pagada_on_create_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// --- Pago append-only + eventos de asignación ---
+
+$pay1 = $u('c3000001');
+$payOp = fn(string $opId, array $over = []) =>
+    [['operation_id' => $opId, 'entity_type' => 'payment', 'entity_id' => $pay1,
+      'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => array_merge([
+        'id' => $pay1, 'userId' => $userId, 'clientId' => $clienteId,
+        'collectionMethodId' => $cm, 'amount' => '150.00', 'paidAtEpochDay' => 21000,
+        'reference' => 'ref-sintética', 'notes' => '',
+        'appliedAmount' => '0.00', 'unassignedAmount' => '150.00',
+        'assignedAccountId' => null, 'assignmentStatus' => 'UNASSIGNED',
+        'createdAt' => $now, 'updatedAt' => $now], $over)]];
+
+// Cliente inexistente → DEPENDENCY.
+$ops = [['operation_id' => $u('c3000010'), 'entity_type' => 'payment', 'entity_id' => $u('c3000011'),
+    'type' => 'upsert', 'base_server_version' => 0,
+    'payload' => ['id' => $u('c3000011'), 'userId' => $userId, 'clientId' => $u('fffff002'),
+        'amount' => '10.00', 'paidAtEpochDay' => 21000, 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('f6_payment_cliente_inexistente_DEPENDENCY', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'DEPENDENCY', json_encode($r));
+
+// Importe no positivo → VALIDATION_ERROR.
+$ops[0]['operation_id'] = $u('c3000020');
+$ops[0]['entity_id'] = $u('c3000021');
+$ops[0]['payload']['id'] = $u('c3000021');
+$ops[0]['payload']['clientId'] = $clienteId;
+$ops[0]['payload']['amount'] = '0';
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('f6_payment_monto_invalido_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Pago válido sin asignar: el servidor normaliza sus importes derivados.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $payOp($u('c3000000'))], $token);
+check('f6_payment_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Append-only: mismo entity_id con monto distinto → IMMUTABLE_FINANCIAL.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $payOp($u('c3000030'), ['amount' => '999.00'])], $token);
+check('f6_payment_append_only_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'IMMUTABLE_FINANCIAL', json_encode($r));
+
+// Evento de asignación: assign 200 a $cc1 (saldo 114): aplica solo 114 →
+// la Cuenta deriva a PAGADA y el remanente 36 queda UNASSIGNED en el Pago.
+$asg1 = $u('c4000001');
+$asgOp = fn(string $opId, string $action, string $accId, string $amount, string $reason,
+            ?string $fromId = null, string $released = '0.00') =>
+    [['operation_id' => $opId, 'entity_type' => 'payment_assignment', 'entity_id' => $u('c4' . substr($opId, -6)),
+      'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => ['id' => $u('c4' . substr($opId, -6)), 'userId' => $userId,
+        'paymentId' => $pay1, 'action' => $action, 'accountId' => $accId,
+        'fromAccountId' => $fromId, 'amount' => $amount, 'releasedAmount' => $released,
+        'reason' => $reason, 'createdAt' => $now, 'updatedAt' => $now]]];
+
+// Motivo obligatorio → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asgOp($u('c4000010'), 'assign', $cc1, '50.00', ' ')], $token);
+check('f6_assign_sin_motivo_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// La asignación excede el saldo: el servidor aplica solo lo necesario.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asgOp($u('c4000020'), 'assign', $cc1, '200.00', 'Pago total intentado')], $token);
+check('f6_assign_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId2 = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId2[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+$ccRow = $byId2["collection_account:$cc1"] ?? [];
+$payRow = $byId2["payment:$pay1"] ?? [];
+check('f6_cc_pagada_por_evento', ($ccRow['status'] ?? '') === 'PAGADA'
+    && ($ccRow['appliedAmount'] ?? '') === '114.00' && ($ccRow['balance'] ?? '') === '0.00',
+    json_encode($ccRow));
+check('f6_payment_remanente_unassigned', ($payRow['appliedAmount'] ?? '') === '114.00'
+    && ($payRow['unassignedAmount'] ?? '') === '36.00'
+    && ($payRow['assignmentStatus'] ?? '') === 'PARTIAL_ASSIGNED', json_encode($payRow));
+// El evento persiste el importe autoritativo aplicado (114), no el pedido (200).
+$evRows = array_values(array_filter($r['changes'] ?? [], fn($x) => $x['entity_type'] === 'payment_assignment'));
+check('f6_assignment_importe_autoritativo', count($evRows) === 1
+    && ($evRows[0]['payload']['amount'] ?? '') === '114.00', json_encode($evRows));
+
+// Cuenta con pagos aplicados es inmutable: edición fabricada → REJECTED.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000070'), $cc1, 'PAGADA', 2,
+        ['conditions' => 'edición fabricada', 'appliedAmount' => '114.00', 'balance' => '0.00'])], $token);
+check('f6_cc_pagada_inmutable_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Cancelar una Cuenta con pagos aplicados → INVALID_TRANSITION.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000080'), $cc1, 'CANCELADA', 2,
+        ['appliedAmount' => '114.00', 'balance' => '0.00'])], $token);
+check('f6_cc_pagada_no_cancelable', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Segunda Cuenta ($cc3) sin origen para reasignarle 36.
+$cc3 = $u('c2000091');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000090'), $cc3, 'PENDIENTE', 0,
+        ['jobIds' => [], 'net' => '50.00', 'balance' => '50.00',
+         'items' => [['id' => $u('c2i00003'), 'position' => 1, 'conceptType' => 'SERVICIO',
+            'description' => 'Otro servicio', 'quantity' => '1', 'unit' => '',
+            'unitPrice' => '50.00', 'lineTotal' => '50.00']],
+         'gross' => '50.00', 'totalRetained' => '0.00'])], $token);
+check('f6_cc3_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Reasignar: libera 114 de $cc1, aplica min(114, saldo $cc3=50) → 50; el
+// resto (64) queda UNASSIGNED dentro del mismo Pago. $cc1 vuelve PENDIENTE.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asgOp($u('c4000030'), 'reassign', $cc3, '50.00', 'Error de destino', $cc1, '114.00')], $token);
+check('f6_reassign_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId3 = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId3[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+check('f6_reassign_saldos', ($byId3["payment:$pay1"]['appliedAmount'] ?? '') === '50.00'
+    && ($byId3["payment:$pay1"]['unassignedAmount'] ?? '') === '100.00'
+    && ($byId3["collection_account:$cc1"]['status'] ?? '') === 'PENDIENTE'
+    && ($byId3["collection_account:$cc1"]['appliedAmount'] ?? '') === '0.00'
+    && ($byId3["collection_account:$cc3"]['status'] ?? '') === 'PAGADA',
+    json_encode([$byId3["payment:$pay1"], $byId3["collection_account:$cc1"], $byId3["collection_account:$cc3"]]));
+// El evento reasignar registra lo liberado (114) y lo aplicado (50).
+$evRe = array_values(array_filter($r['changes'] ?? [], fn($x) =>
+    $x['entity_type'] === 'payment_assignment' && ($x['payload']['action'] ?? '') === 'reassign'));
+check('f6_reassign_evento_auditado', count($evRe) === 1
+    && ($evRe[0]['payload']['releasedAmount'] ?? '') === '114.00'
+    && ($evRe[0]['payload']['amount'] ?? '') === '50.00'
+    && ($evRe[0]['payload']['fromAccountId'] ?? '') === $cc1, json_encode($evRe));
+
+// Retirar lo aplicado de $cc3: el Pago vuelve 150 UNASSIGNED; $cc3 PENDIENTE.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asgOp($u('c4000040'), 'unassign', $cc3, '50.00', 'Retiro total')], $token);
+check('f6_unassign_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId4 = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId4[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+check('f6_unassign_saldos', ($byId4["payment:$pay1"]['appliedAmount'] ?? '') === '0.00'
+    && ($byId4["payment:$pay1"]['unassignedAmount'] ?? '') === '150.00'
+    && ($byId4["payment:$pay1"]['assignmentStatus'] ?? '') === 'UNASSIGNED'
+    && ($byId4["collection_account:$cc3"]['appliedAmount'] ?? '') === '0.00',
+    json_encode([$byId4["payment:$pay1"], $byId4["collection_account:$cc3"]]));
+
+// Append-only también para eventos: mismo entity_id, motivo distinto.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('c4000050'), 'entity_type' => 'payment_assignment',
+        'entity_id' => $u('c4' . substr($u('c4000020'), -6)),
+        'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $u('c4' . substr($u('c4000020'), -6)), 'userId' => $userId,
+            'paymentId' => $pay1, 'action' => 'assign', 'accountId' => $cc1,
+            'fromAccountId' => null, 'amount' => '114.00', 'releasedAmount' => '0.00',
+            'reason' => 'motivo fabricado', 'createdAt' => $now, 'updatedAt' => $now]]]], $token);
+check('f6_assignment_append_only_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'IMMUTABLE_FINANCIAL', json_encode($r));
+
+// Cancelación sin pagos aplicados libera la asociación: $cc2 (con $q2) se
+// cancela y $q2 queda libre para otra Cuenta.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000100'), $cc2, 'CANCELADA', 1,
+        ['jobIds' => [], 'quoteIds' => [$q2]])], $token);
+check('f6_cc_cancel_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000110'), $u('c2000111'), 'PENDIENTE', 0,
+        ['jobIds' => [], 'quoteIds' => [$q2]])], $token);
+check('f6_cc_cancel_libera_origen', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Auditoría: las asignaciones financieras quedaron registradas.
+$aud = (int) $pdo->query(
+    "SELECT COUNT(*) FROM audit_events WHERE entity_type = 'payment_assignment'
+     AND action IN ('PAYMENT_ASSIGN','PAYMENT_UNASSIGN','PAYMENT_REASSIGN')"
+)->fetchColumn();
+check('f6_audit_events_registrados', $aud >= 3, (string) $aud);
+
 echo "\n$pass passed, $fail failed\n";

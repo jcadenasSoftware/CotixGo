@@ -61,6 +61,70 @@ const REPORT_TRANSITIONS = [
 /** Estados que disparan la asignación del número oficial `INF-AAAAMM-NNN`. */
 const REPORT_NUMBERED_STATUSES = ['EMITIDO'];
 
+/**
+ * F6 — Cuenta de Cobro (docs/03 §6). Nace en PENDIENTE; PARCIAL/PAGADA son
+ * derivadas por los eventos de pago (el servidor las recalcula; el cliente
+ * no las declara) y CANCELADA es terminal. El número oficial
+ * `CC-AAAAMM-NNN` se asigna en la primera aceptación del backend.
+ */
+const COLLECTION_ACCOUNT_STATUSES = ['PENDIENTE', 'PARCIAL', 'PAGADA', 'CANCELADA'];
+const COLLECTION_ACCOUNT_TERMINAL = ['CANCELADA'];
+const COLLECTION_ACCOUNT_RECEIVABLE = ['PENDIENTE', 'PARCIAL'];
+
+/** F6 — tipos de línea de la Cuenta (mismo motor de cálculo F2). */
+const COLLECTION_LINE_TYPES = ['SERVICIO', 'MATERIAL', 'OTRO'];
+
+/** F6 — acciones auditables del evento de asignación de pago. */
+const PAYMENT_ASSIGNMENT_ACTIONS = ['assign', 'unassign', 'reassign'];
+
+/** F6 — estado derivado del Pago según su dinero aplicado/retenido. */
+const PAYMENT_ASSIGNMENT_STATUSES = ['UNASSIGNED', 'PARTIAL_ASSIGNED', 'ASSIGNED'];
+
+/**
+ * Dinero en centavos: los importes viajan como cadenas decimales de dos
+ * cifras (BigDecimal/HALF_UP del lado Android); el servidor los compara y
+ * suma en enteros para evitar flotantes.
+ */
+function toCents(string $amount): int
+{
+    $a = trim($amount);
+    if (!preg_match('/^-?\d+(\.\d{1,2})?$/', $a)) {
+        return -1; // señal de formato inválido para el llamador
+    }
+    $neg = str_starts_with($a, '-') ? -1 : 1;
+    $a = ltrim($a, '-');
+    [$w, $f] = array_pad(explode('.', $a, 2), 2, '0');
+    return $neg * ((int) $w * 100 + (int) str_pad(substr($f, 0, 2), 2, '0'));
+}
+
+function fromCents(int $cents): string
+{
+    $neg = $cents < 0;
+    $abs = abs($cents);
+    return ($neg ? '-' : '') . intdiv($abs, 100) . '.' . str_pad((string) ($abs % 100), 2, '0');
+}
+
+/** Estado derivado de la Cuenta tras aplicar/retirar dinero (docs/03 §6). */
+function deriveCollectionStatus(string $current, int $appliedCents, int $netCents): string
+{
+    if ($current === 'CANCELADA') {
+        return 'CANCELADA';
+    }
+    if ($appliedCents <= 0) {
+        return 'PENDIENTE';
+    }
+    return $appliedCents >= $netCents ? 'PAGADA' : 'PARCIAL';
+}
+
+/** Estado derivado del Pago: cuánto de su monto sigue sin asignar. */
+function deriveAssignmentStatus(int $appliedCents, int $unassignedCents): string
+{
+    if ($appliedCents <= 0) {
+        return 'UNASSIGNED';
+    }
+    return $unassignedCents <= 0 ? 'ASSIGNED' : 'PARTIAL_ASSIGNED';
+}
+
 function validReportTransition(string $from, string $to): bool
 {
     if ($from === $to) {

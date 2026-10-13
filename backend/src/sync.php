@@ -23,6 +23,7 @@ const ENTITY_TYPES = [
     'quote', 'quote_version',
     'job', 'job_quote', 'job_activity', 'job_material',
     'report', 'report_job', 'report_version',
+    'collection_account', 'collection_method', 'payment', 'payment_assignment',
 ];
 
 /** Dependencias: la entidad padre debe existir en el servidor antes de aplicar. */
@@ -40,6 +41,14 @@ const DEPENDENCIES = [
     'report'           => [['client', 'clientId'], ['profile', 'profileId']],
     'report_job'       => [['report', 'reportId'], ['job', 'jobId']],
     'report_version'   => [['report', 'reportId']],
+    // F6: la Cuenta exige Cliente y Perfil; los orígenes (Trabajos /
+    // Cotizaciones) se validan con datos persistidos en applyCollectionAccount.
+    'collection_account' => [['client', 'clientId'], ['profile', 'profileId']],
+    'collection_method'  => [],
+    'payment'            => [['client', 'clientId']],
+    // El evento exige Pago y Cuenta destino; la Cuenta de origen de una
+    // reasignación (fromAccountId) se valida opcionalmente en el handler.
+    'payment_assignment' => [['payment', 'paymentId'], ['collection_account', 'accountId']],
 ];
 
 /** Estado remoto para resultados CONFLICT/REJECTED: el payload persistido
@@ -57,6 +66,20 @@ function serverState(array $row): array
 function entityRow(PDO $pdo, string $type, string $id): ?array
 {
     $stmt = $pdo->prepare('SELECT * FROM entities WHERE entity_type = ? AND id = ?');
+    $stmt->execute([$type, $id]);
+    $row = $stmt->fetch();
+    return $row === false ? null : $row;
+}
+
+/**
+ * Variante con bloqueo de fila (FOR UPDATE): las operaciones financieras
+ * F6 leen y actualizan los saldos de Pago/Cuenta atómicamente dentro de la
+ * transacción de la operación — dos eventos concurrentes se serializan en
+ * la fila y el segundo ve el estado ya aplicado por el primero.
+ */
+function entityRowForUpdate(PDO $pdo, string $type, string $id): ?array
+{
+    $stmt = $pdo->prepare('SELECT * FROM entities WHERE entity_type = ? AND id = ? FOR UPDATE');
     $stmt->execute([$type, $id]);
     $row = $stmt->fetch();
     return $row === false ? null : $row;
@@ -202,6 +225,25 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
 
     if ($type === 'report_version') {
         return applyReportVersion($pdo, $userId, $deviceId, $opId, $entityId, $payload, $opType === 'resolve');
+    }
+
+    if ($type === 'collection_account') {
+        return applyCollectionAccount($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
+    }
+
+    if ($type === 'payment') {
+        return applyPayment($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current);
+    }
+
+    if ($type === 'payment_assignment') {
+        return applyPaymentAssignment($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current);
+    }
+
+    // Métodos de Cobro (F6): nombre requerido; el resto sigue la vía
+    // genérica de entidad maestra con concurrencia optimista.
+    if ($type === 'collection_method' && trim((string) ($payload['name'] ?? '')) === '') {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'El nombre del método de cobro es obligatorio.');
     }
 
     // Vínculo Informe↔Trabajo (F5): validado sobre las entidades ya
@@ -644,6 +686,431 @@ function applyReportVersion(PDO $pdo, string $userId, string $deviceId, string $
         ? result($opId, 'APPLIED', 'VERSION_CONFLICT',
             'Versión concurrente conservada; el informe requiere resolución del usuario.')
         : result($opId, 'APPLIED');
+}
+
+/**
+ * F6 — Cuenta de Cobro (docs/03 §6): nace PENDIENTE con número oficial
+ * `CC-AAAAMM-NNN` en la primera aceptación; editable solo en PENDIENTE sin
+ * pagos aplicados; PARCIAL/PAGADA las deriva el servidor desde los eventos
+ * de pago; CANCELADA es terminal y solo sin pagos. Asociaciones Trabajos O
+ * Cotizaciones (nunca ambos), mismo Cliente/Perfil, un origen en a lo
+ * sumo una Cuenta no cancelada, Cotizaciones solo APROBADA — todo validado
+ * con datos persistidos, nunca con lo declarado por el cliente.
+ */
+function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, string $opId,
+                                string $entityId, array $payload, ?array $current, int $base): array
+{
+    $newStatus = (string) ($payload['status'] ?? '');
+    if (!in_array($newStatus, COLLECTION_ACCOUNT_STATUSES, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Estado de cuenta de cobro desconocido.');
+    }
+    $items = $payload['items'] ?? null;
+    if (!is_array($items) || count($items) === 0) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La cuenta de cobro requiere al menos una línea.');
+    }
+    foreach ($items as $it) {
+        if (!is_array($it)
+            || !in_array((string) ($it['conceptType'] ?? ''), COLLECTION_LINE_TYPES, true)
+            || trim((string) ($it['description'] ?? '')) === '') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Línea inválida: tipo o descripción desconocidos.');
+        }
+    }
+    $jobIds = array_values(array_filter(
+        array_map('strval', (array) ($payload['jobIds'] ?? [])), 'strlen'));
+    $quoteIds = array_values(array_filter(
+        array_map('strval', (array) ($payload['quoteIds'] ?? [])), 'strlen'));
+    if (count($jobIds) !== count(array_unique($jobIds))
+        || count($quoteIds) !== count(array_unique($quoteIds))) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Orígenes duplicados.');
+    }
+    if ($jobIds !== [] && $quoteIds !== []) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La cuenta no puede mezclar trabajos y cotizaciones.');
+    }
+
+    // Validación de orígenes con datos persistidos: mismo Cliente/Perfil
+    // declarados (comparados contra el payload persistido del origen),
+    // Cotización solo en estado persistido APROBADA, y un origen en a lo
+    // sumo una Cuenta no cancelada.
+    foreach ($jobIds as $jobId) {
+        $job = entityRow($pdo, 'job', $jobId);
+        if ($job === null) {
+            return result($opId, 'REJECTED', 'DEPENDENCY', "Falta el trabajo $jobId referenciado.");
+        }
+        if ($job['user_id'] !== $userId) {
+            return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', 'El trabajo referenciado pertenece a otra cuenta.');
+        }
+        $jd = json_decode($job['payload'], true) ?: [];
+        if (($jd['clientId'] ?? '') !== (string) ($payload['clientId'] ?? '')
+            || ($jd['profileId'] ?? '') !== (string) ($payload['profileId'] ?? '')) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El trabajo no coincide en cliente y perfil con la cuenta.');
+        }
+        if (collectionSourceTaken($pdo, $userId, $jobId, 'jobIds', $entityId)) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El trabajo ya pertenece a otra cuenta de cobro no cancelada.');
+        }
+    }
+    foreach ($quoteIds as $quoteId) {
+        $quote = entityRow($pdo, 'quote', $quoteId);
+        if ($quote === null) {
+            return result($opId, 'REJECTED', 'DEPENDENCY', "Falta la cotización $quoteId referenciada.");
+        }
+        if ($quote['user_id'] !== $userId) {
+            return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', 'La cotización referenciada pertenece a otra cuenta.');
+        }
+        if ((string) $quote['status'] !== 'APROBADA') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Solo se pueden asociar cotizaciones en estado APROBADA.');
+        }
+        $qd = json_decode($quote['payload'], true) ?: [];
+        if (($qd['clientId'] ?? '') !== (string) ($payload['clientId'] ?? '')
+            || ($qd['profileId'] ?? '') !== (string) ($payload['profileId'] ?? '')) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La cotización no coincide en cliente y perfil con la cuenta.');
+        }
+        if (collectionSourceTaken($pdo, $userId, $quoteId, 'quoteIds', $entityId)) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La cotización ya pertenece a otra cuenta de cobro no cancelada.');
+        }
+    }
+
+    if ($current === null) {
+        if ($base !== 0) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'La entidad no existe en el servidor pero la base no es cero.', 0, null);
+        }
+        if ($newStatus !== 'PENDIENTE') {
+            return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                'La cuenta de cobro nace en PENDIENTE; los demás estados los deriva el servidor.');
+        }
+        // Importes derivados: el servidor conserva el neto declarado pero
+        // recalcula aplicado/saldo/estado desde sus propios datos — nunca
+        // confía en los importes del payload.
+        $payload['appliedAmount'] = '0.00';
+        $payload['balance'] = (string) ($payload['net'] ?? '0');
+        $payload['status'] = 'PENDIENTE';
+        $official = ensureOfficialNumber($pdo, $userId, $entityId, 'CC');
+        insertEntity($pdo, 'collection_account', $entityId, $userId, $payload, 'PENDIENTE', $official);
+        audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'CREATE',
+            ['status' => 'PENDIENTE']);
+        return result($opId, 'APPLIED', null, null, 1, null, $official);
+    }
+
+    if ($base !== (int) $current['server_version']) {
+        return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+            'La cuenta de cobro cambió desde la versión conocida por el dispositivo.',
+            (int) $current['server_version'], serverState($current));
+    }
+
+    $oldStatus = (string) $current['status'];
+    $prevData = json_decode($current['payload'], true) ?: [];
+
+    // Inmutable tras pagos aplicados o cancelada: solo `archived` puede
+    // cambiar; líneas, totales, asociaciones y snapshots quedan cerrados
+    // (y el estado derivado lo gobierna el servidor).
+    if (in_array($oldStatus, ['PARCIAL', 'PAGADA', 'CANCELADA'], true)) {
+        if ($newStatus !== $oldStatus) {
+            return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                "La cuenta está $oldStatus y no admite la transición declarada.",
+                (int) $current['server_version'], serverState($current));
+        }
+        foreach (['clientId', 'profileId', 'provisionalNumber', 'currency',
+                  'gross', 'totalRetained', 'net', 'issuedAt', 'dueDateEpochDay',
+                  'conditions', 'clientSnapshotJson', 'profileSnapshotJson',
+                  'retentionsSnapshotJson'] as $f) {
+            if (($prevData[$f] ?? null) !== ($payload[$f] ?? null)) {
+                return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                    'La cuenta con pagos aplicados (o cancelada) es inmutable; solo puede archivarse.',
+                    (int) $current['server_version'], serverState($current));
+            }
+        }
+        $norm = fn($v) => array_values(array_map('strval', (array) ($v ?? [])));
+        if ($norm($prevData['items'] ?? []) != $norm($payload['items'] ?? [])
+            || $norm($prevData['jobIds'] ?? []) != $norm($payload['jobIds'] ?? [])
+            || $norm($prevData['quoteIds'] ?? []) != $norm($payload['quoteIds'] ?? [])) {
+            return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                'La cuenta con pagos aplicados (o cancelada) es inmutable; solo puede archivarse.',
+                (int) $current['server_version'], serverState($current));
+        }
+        $payload['status'] = $oldStatus;
+        $payload['appliedAmount'] = $prevData['appliedAmount'] ?? '0.00';
+        $payload['balance'] = $prevData['balance'] ?? $payload['net'];
+        updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
+            $oldStatus, $current['official_number']);
+        audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'UPDATE',
+            ['archived' => (bool) ($payload['archived'] ?? false)]);
+        return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+    }
+
+    // Persistida en PENDIENTE: edición libre o cancelación (solo sin pagos
+    // aplicados — garantizado: un pago la habría derivado a PARCIAL/PAGADA).
+    if ($newStatus === 'CANCELADA') {
+        $applied = toCents((string) ($prevData['appliedAmount'] ?? '0'));
+        if ($applied > 0) {
+            return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                'Solo se puede cancelar una cuenta sin pagos aplicados.',
+                (int) $current['server_version'], serverState($current));
+        }
+        $payload['status'] = 'CANCELADA';
+        updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
+            'CANCELADA', $current['official_number']);
+        audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'TRANSITION',
+            ['from' => 'PENDIENTE', 'to' => 'CANCELADA']);
+        return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+    }
+    if ($newStatus !== 'PENDIENTE') {
+        return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+            'PARCIAL y PAGADA las deriva el servidor desde los pagos aplicados.',
+            (int) $current['server_version'], serverState($current));
+    }
+    $payload['appliedAmount'] = $prevData['appliedAmount'] ?? '0.00';
+    $payload['balance'] = (string) ($payload['net'] ?? $prevData['net'] ?? '0');
+    updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
+        'PENDIENTE', $current['official_number']);
+    audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'UPDATE');
+    return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+}
+
+/** ¿El origen ya está ligado a otra Cuenta no cancelada del usuario? */
+function collectionSourceTaken(PDO $pdo, string $userId, string $sourceId,
+                               string $field, string $selfId): bool
+{
+    $stmt = $pdo->prepare(
+        "SELECT id, status, payload FROM entities
+         WHERE entity_type = 'collection_account' AND user_id = ? AND status != 'CANCELADA'"
+    );
+    $stmt->execute([$userId]);
+    foreach ($stmt->fetchAll() as $row) {
+        if ($row['id'] === $selfId) {
+            continue;
+        }
+        $data = json_decode($row['payload'], true) ?: [];
+        if (in_array($sourceId, array_map('strval', (array) ($data[$field] ?? [])), true)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * F6 — Pago append-only: se registra una vez y nunca se edita ni elimina.
+ * Los importes derivados los calcula el servidor desde sus propios eventos
+ * de asignación; el payload se normaliza (applied/unassigned/destino) antes
+ * de persistirse. Un entity_id existente con campos estables distintos es
+ * una mutación fabricada → REJECTED (sin sobrescritura financiera).
+ */
+function applyPayment(PDO $pdo, string $userId, string $deviceId, string $opId,
+                      string $entityId, array $payload, ?array $current): array
+{
+    $amount = toCents((string) ($payload['amount'] ?? ''));
+    if ($amount <= 0) {
+        // Formato inválido (-1) o importe no positivo: un solo rechazo.
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'El importe del pago debe ser un decimal positivo.');
+    }
+    $methodId = (string) ($payload['collectionMethodId'] ?? '');
+    if ($methodId !== '') {
+        $method = entityRow($pdo, 'collection_method', $methodId);
+        if ($method === null) {
+            return result($opId, 'REJECTED', 'DEPENDENCY', 'El método de cobro referenciado no existe.');
+        }
+        if ($method['user_id'] !== $userId) {
+            return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', 'El método de cobro pertenece a otra cuenta.');
+        }
+    }
+
+    if ($current !== null) {
+        // Idempotencia de entidad (replay con otro operation_id, p. ej. tras
+        // re-vinculación de cuenta): campos estables idénticos → dedupe.
+        $prev = json_decode($current['payload'], true) ?: [];
+        foreach (['clientId', 'collectionMethodId', 'amount', 'paidAtEpochDay',
+                  'reference', 'notes'] as $f) {
+            if (($prev[$f] ?? null) !== ($payload[$f] ?? null)) {
+                return result($opId, 'REJECTED', 'IMMUTABLE_FINANCIAL',
+                    'El pago es un evento financiero append-only y no admite edición.');
+            }
+        }
+        return result($opId, 'APPLIED', null, null, (int) $current['server_version']);
+    }
+
+    // Normalización autoritativa: nace sin aplicación; los eventos de
+    // asignación son la única vía que mueve su dinero.
+    $payload['appliedAmount'] = '0.00';
+    $payload['unassignedAmount'] = fromCents($amount);
+    $payload['assignedAccountId'] = null;
+    $payload['assignmentStatus'] = 'UNASSIGNED';
+    insertEntity($pdo, 'payment', $entityId, $userId, $payload, 'UNASSIGNED');
+    audit($pdo, $userId, $deviceId, $opId, 'payment', $entityId, 'CREATE',
+        ['amount' => (string) ($payload['amount'] ?? '')]);
+    return result($opId, 'APPLIED', null, null, 1);
+}
+
+/**
+ * F6 — Evento de asignación de Pago (append-only, auditado, atómico):
+ * assign aplica solo hasta el saldo pendiente (el excedente queda
+ * UNASSIGNED), unassign retira la aplicación vigente y reassign libera de
+ * la origen aplicando al destino — todo en una transacción con las filas
+ * de Pago y Cuentas bloqueadas FOR UPDATE, de modo que la validación de
+ * saldo sea atómica frente a eventos concurrentes.
+ */
+function applyPaymentAssignment(PDO $pdo, string $userId, string $deviceId, string $opId,
+                                string $entityId, array $payload, ?array $current): array
+{
+    if ($current !== null) {
+        // Append-only: mismo entity_id + campos estables → dedupe; cualquier
+        // diferencia es una mutación fabricada del historial financiero.
+        $prev = json_decode($current['payload'], true) ?: [];
+        foreach (['paymentId', 'action', 'accountId', 'fromAccountId', 'reason'] as $f) {
+            if (($prev[$f] ?? null) !== ($payload[$f] ?? null)) {
+                return result($opId, 'REJECTED', 'IMMUTABLE_FINANCIAL',
+                    'La asignación es un evento append-only y no admite edición.');
+            }
+        }
+        return result($opId, 'APPLIED', null, null, (int) $current['server_version']);
+    }
+
+    $action = (string) ($payload['action'] ?? '');
+    if (!in_array($action, PAYMENT_ASSIGNMENT_ACTIONS, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Acción de asignación desconocida.');
+    }
+    if (trim((string) ($payload['reason'] ?? '')) === '') {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'Toda asignación, retiro o reasignación requiere un motivo.');
+    }
+    $requested = toCents((string) ($payload['amount'] ?? '0'));
+    $released = toCents((string) ($payload['releasedAmount'] ?? '0'));
+
+    // Bloqueos atómicos: el Pago y la(s) Cuenta(s) se leen FOR UPDATE.
+    $payment = entityRowForUpdate($pdo, 'payment', (string) $payload['paymentId']);
+    if ($payment === null || $payment['user_id'] !== $userId) {
+        return result($opId, 'REJECTED', 'DEPENDENCY', 'El pago referenciado no existe.');
+    }
+    $account = entityRowForUpdate($pdo, 'collection_account', (string) $payload['accountId']);
+    if ($account === null) {
+        return result($opId, 'REJECTED', 'DEPENDENCY', 'La cuenta referenciada no existe.');
+    }
+    $p = json_decode($payment['payload'], true) ?: [];
+    $a = json_decode($account['payload'], true) ?: [];
+
+    if (($a['clientId'] ?? '') !== ($p['clientId'] ?? '')) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La cuenta destino pertenece a un cliente distinto del pago.');
+    }
+
+    $pApplied = toCents((string) ($p['appliedAmount'] ?? '0'));
+    $pUnassigned = toCents((string) ($p['unassignedAmount'] ?? '0'));
+    $pTotal = toCents((string) ($p['amount'] ?? '0'));
+    $pAssignedTo = $p['assignedAccountId'] ?? null;
+    $aApplied = toCents((string) ($a['appliedAmount'] ?? '0'));
+    $aBalance = toCents((string) ($a['balance'] ?? '0'));
+    $aNet = toCents((string) ($a['net'] ?? '0'));
+    $aStatus = (string) $account['status'];
+    $now = nowUtc();
+
+    $appliedNow = 0;
+    $releasedNow = 0;
+    $fromRow = null;
+    $fromData = null;
+
+    if ($action === 'assign') {
+        if ($pAssignedTo !== null && $pAssignedTo !== (string) $payload['accountId']) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El pago ya está aplicado a otra cuenta; usa reasignar.');
+        }
+        if ($pUnassigned <= 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El pago no tiene dinero sin asignar.');
+        }
+        if (!in_array($aStatus, COLLECTION_ACCOUNT_RECEIVABLE, true) || $aBalance <= 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La cuenta no puede recibir pagos (sin saldo, pagada o cancelada).');
+        }
+        // Solo lo necesario: min(solicitado, remanente del pago, saldo).
+        $appliedNow = min($requested, $pUnassigned, $aBalance);
+        if ($appliedNow <= 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La asignación no aplicó importe alguno.');
+        }
+    } elseif ($action === 'unassign') {
+        if ($pAssignedTo === null || $pAssignedTo !== (string) $payload['accountId'] || $pApplied <= 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El pago no tiene dinero aplicado a esta cuenta.');
+        }
+        $releasedNow = $pApplied;
+    } else { // reassign
+        $fromId = (string) ($payload['fromAccountId'] ?? '');
+        if ($fromId === '' || $pAssignedTo !== $fromId || $pApplied <= 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El pago no está aplicado a la cuenta de origen indicada.');
+        }
+        if ($fromId === (string) $payload['accountId']) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Origen y destino son la misma cuenta.');
+        }
+        $fromRow = entityRowForUpdate($pdo, 'collection_account', $fromId);
+        if ($fromRow === null) {
+            return result($opId, 'REJECTED', 'DEPENDENCY', 'La cuenta de origen no existe.');
+        }
+        $fromData = json_decode($fromRow['payload'], true) ?: [];
+        if (!in_array($aStatus, COLLECTION_ACCOUNT_RECEIVABLE, true) || $aBalance <= 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La cuenta destino no puede recibir pagos.');
+        }
+        $releasedNow = $pApplied;
+        $appliedNow = min($releasedNow, $aBalance);
+    }
+
+    // Actualización derivada del Pago (siempre un solo destino vigente):
+    // assign SUMA sobre lo ya aplicado a la misma cuenta; unassign retira
+    // todo; reassign mueve lo liberado (la parte que cupo en el destino).
+    $newApplied = match ($action) {
+        'assign' => $pApplied + $appliedNow,
+        'unassign' => 0,
+        default => $appliedNow,
+    };
+    $newUnassigned = $pTotal - $newApplied;
+    $p['appliedAmount'] = fromCents($newApplied);
+    $p['unassignedAmount'] = fromCents($newUnassigned);
+    $p['assignedAccountId'] = $newApplied > 0 ? (string) $payload['accountId'] : null;
+    $p['assignmentStatus'] = deriveAssignmentStatus($newApplied, $newUnassigned);
+    updateEntity($pdo, 'payment', (string) $payload['paymentId'], $payment, $p, $p['assignmentStatus']);
+
+    // Cuenta(s) afectada(s) con estado derivado recalculado por el servidor.
+    $aNewApplied = $aApplied + $appliedNow - ($action === 'unassign' ? $releasedNow : 0);
+    $a['appliedAmount'] = fromCents($aNewApplied);
+    $a['balance'] = fromCents($aNet - $aNewApplied);
+    $aNewStatus = deriveCollectionStatus(
+        $aStatus === 'CANCELADA' ? 'CANCELADA' : 'PENDIENTE', $aNewApplied, $aNet);
+    $a['status'] = $aNewStatus;
+    updateEntity($pdo, 'collection_account', (string) $payload['accountId'], $account, $a, $aNewStatus);
+
+    if ($fromRow !== null) {
+        $fApplied = toCents((string) ($fromData['appliedAmount'] ?? '0')) - $releasedNow;
+        $fNet = toCents((string) ($fromData['net'] ?? '0'));
+        $fromData['appliedAmount'] = fromCents($fApplied);
+        $fromData['balance'] = fromCents($fNet - $fApplied);
+        $fStatus = deriveCollectionStatus(
+            (string) $fromRow['status'] === 'CANCELADA' ? 'CANCELADA' : 'PENDIENTE',
+            $fApplied, $fNet);
+        $fromData['status'] = $fStatus;
+        updateEntity($pdo, 'collection_account', $fromId, $fromRow, $fromData, $fStatus);
+    }
+
+    // El evento persiste los importes autoritativos del servidor.
+    $payload['amount'] = fromCents($appliedNow);
+    $payload['releasedAmount'] = fromCents($releasedNow);
+    insertEntity($pdo, 'payment_assignment', $entityId, $userId, $payload);
+    audit($pdo, $userId, $deviceId, $opId, 'payment_assignment', $entityId,
+        'PAYMENT_' . strtoupper($action),
+        ['payment_id' => (string) $payload['paymentId'],
+         'account_id' => (string) $payload['accountId'],
+         'from_account_id' => $payload['fromAccountId'] ?? null,
+         'applied' => fromCents($appliedNow), 'released' => fromCents($releasedNow),
+         'reason' => (string) ($payload['reason'] ?? '')]);
+    return result($opId, 'APPLIED', null, null, 1);
 }
 
 /**

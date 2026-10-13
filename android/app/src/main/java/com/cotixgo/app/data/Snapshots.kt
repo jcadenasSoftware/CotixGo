@@ -132,4 +132,22 @@ object SnapshotJson {
 
     fun decodeReport(raw: String): ReportSnapshot =
         json.decodeFromString(ReportSnapshot.serializer(), raw)
+
+    fun encodeClient(snapshot: ClientSnapshot): String =
+        json.encodeToString(ClientSnapshot.serializer(), snapshot)
+
+    fun encodeProfile(snapshot: ProfileSnapshot): String =
+        json.encodeToString(ProfileSnapshot.serializer(), snapshot)
+
+    fun encodeRetentions(list: List<AppliedRetentionSnapshot>): String =
+        json.encodeToString(
+            kotlinx.serialization.builtins.ListSerializer(AppliedRetentionSnapshot.serializer()),
+            list,
+        )
+
+    fun decodeRetentions(raw: String): List<AppliedRetentionSnapshot> =
+        if (raw.isBlank()) emptyList() else json.decodeFromString(
+            kotlinx.serialization.builtins.ListSerializer(AppliedRetentionSnapshot.serializer()),
+            raw,
+        )
 }

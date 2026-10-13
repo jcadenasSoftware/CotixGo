@@ -11,6 +11,12 @@ import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.data.AppRepository
 import com.cotixgo.app.data.AuthRepository
 import com.cotixgo.app.data.ClientEntity
+import com.cotixgo.app.data.CollectionAccountEntity
+import com.cotixgo.app.data.CollectionAccountInput
+import com.cotixgo.app.data.CollectionMethodEntity
+import com.cotixgo.app.data.CollectionMethodInput
+import com.cotixgo.app.data.PaymentEntity
+import com.cotixgo.app.data.PaymentInput
 import com.cotixgo.app.data.JobActivityInput
 import com.cotixgo.app.data.JobEntity
 import com.cotixgo.app.data.JobInput
@@ -181,6 +187,67 @@ class AppViewModel(
             onDone(sync.resolveReportVersions(reportId, keepVersionRowId))
             syncNow()
         }
+    }
+
+    // ---------- Cuentas de Cobro, Métodos y Pagos (F6) ----------
+
+    val collectionAccounts: StateFlow<List<CollectionAccountEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeCollectionAccounts(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val collectionMethods: StateFlow<List<CollectionMethodEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeCollectionMethods(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val payments: StateFlow<List<PaymentEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observePayments(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun observeCollectionAccount(id: String) = repo.observeCollectionAccount(id)
+    fun observeCollectionAccountItems(id: String) = repo.observeCollectionAccountItems(id)
+    fun observeCollectionAccountJobs(id: String) = repo.observeCollectionAccountJobs(id)
+    fun observeCollectionAccountQuotes(id: String) = repo.observeCollectionAccountQuotes(id)
+    fun observeAllCollectionAccountJobs() = repo.observeAllCollectionAccountJobs()
+    fun observeAllCollectionAccountQuotes() = repo.observeAllCollectionAccountQuotes()
+    fun observePaymentsForAccount(id: String) = repo.observePaymentsForAccount(id)
+    fun observeAccountAssignments(id: String) = repo.observeAccountAssignments(id)
+    fun observePayment(id: String) = repo.observePayment(id)
+    fun observePaymentAssignments(paymentId: String) = repo.observePaymentAssignments(paymentId)
+
+    fun saveCollectionAccount(input: CollectionAccountInput, existingId: String?, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.saveCollectionAccount(input, existingId)) }
+    }
+
+    fun cancelCollectionAccount(id: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.cancelCollectionAccount(id)) }
+    }
+
+    fun setCollectionAccountArchived(id: String, archived: Boolean) {
+        viewModelScope.launch { repo.setCollectionAccountArchived(id, archived) }
+    }
+
+    fun saveCollectionMethod(input: CollectionMethodInput, existingId: String?, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.saveCollectionMethod(input, existingId) != null) }
+    }
+
+    fun setCollectionMethodArchived(id: String, archived: Boolean) {
+        viewModelScope.launch { repo.setCollectionMethodArchived(id, archived) }
+    }
+
+    fun savePayment(input: PaymentInput, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.savePayment(input) != null) }
+    }
+
+    fun assignPayment(paymentId: String, accountId: String, requested: String, reason: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.assignPayment(paymentId, accountId, requested, reason)) }
+    }
+
+    fun unassignPayment(paymentId: String, reason: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.unassignPayment(paymentId, reason)) }
+    }
+
+    fun reassignPayment(paymentId: String, toAccountId: String, reason: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.reassignPayment(paymentId, toAccountId, reason)) }
     }
 
     fun syncNow() {
