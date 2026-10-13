@@ -1,0 +1,63 @@
+Evidencia F6 — Cuentas de Cobro, Métodos de Cobro y Pagos — E2E backend PHP/MariaDB local
+======================================================================================
+Fecha: 13/10/2026
+Entorno: php -S 0.0.0.0:8080 -t backend/public -c backend/dev.ini + MariaDB 127.0.0.1:3306 cotixgo_dev
+Datos: 100% sintéticos
+Comando: php -c backend/dev.ini backend/tests/e2e.php http://localhost:8080
+Resultado: 126 passed, 0 failed (tras la segunda corrección post-revisión del PR #13)
+
+Casos F6 ejecutados (sección final de backend/tests/e2e.php):
+
+  PASS f6_method_sin_nombre_REJECTED          Método de Cobro sin nombre → REJECTED VALIDATION_ERROR
+  PASS f6_method_created                      Método de Cobro creado (nombre + detalle)
+  PASS f6_cc_created_CC_number                Cuenta creada PENDIENTE → oficial CC-AAAAMM-NNN en la primera aceptación
+  PASS f6_cc_number_idempotent                Replay de la misma operación conserva el CC asignado (idempotente por entity_id)
+  PASS f6_cc_mix_REJECTED                     Cuenta con Trabajos Y Cotizaciones a la vez → REJECTED VALIDATION_ERROR
+  PASS f6_cc_job_otro_cliente_REJECTED        Trabajo de otro Cliente → REJECTED VALIDATION_ERROR (datos persistidos)
+  PASS f6_cc_quote_no_aprobada_REJECTED       Cotización persistida en CANCELADA → REJECTED VALIDATION_ERROR
+  PASS f6_cc_quote_aprobada_APPLIED           Cotización persistida en APROBADA del mismo Cliente+Perfil → APPLIED con CC
+  PASS f6_cc_doble_vinculo_REJECTED           Misma Cotización en segunda Cuenta no cancelada → REJECTED VALIDATION_ERROR
+  PASS f6_cc_pagada_on_create_REJECTED        Creación fabricada directamente en PAGADA → REJECTED INVALID_TRANSITION
+  PASS f6_payment_cliente_inexistente_DEPENDENCY  Pago con Cliente inexistente → REJECTED DEPENDENCY
+  PASS f6_payment_monto_invalido_REJECTED     Pago con importe 0 → REJECTED VALIDATION_ERROR
+  PASS f6_payment_created                     Pago sin asignar (vinculado al Cliente) → APPLIED, UNASSIGNED
+  PASS f6_payment_append_only_REJECTED        Mismo entity_id de Pago con monto distinto → REJECTED IMMUTABLE_FINANCIAL
+  PASS f6_assign_sin_motivo_REJECTED          Asignación sin motivo → REJECTED VALIDATION_ERROR
+  PASS f6_assign_applied                      assign 200 sobre Cuenta con saldo 114 → APPLIED
+  PASS f6_cc_pagada_por_evento                La Cuenta deriva a PAGADA: appliedAmount 114.00, balance 0.00
+  PASS f6_payment_remanente_unassigned        El Pago conserva 114.00 aplicados y 36.00 UNASSIGNED (PARTIAL_ASSIGNED)
+  PASS f6_assignment_importe_autoritativo     El evento persistió el importe autoritativo 114.00, no el pedido 200.00
+  PASS f6_cc_pagada_inmutable_REJECTED        Edición de contenido sobre Cuenta con pagos → REJECTED INVALID_TRANSITION
+  PASS f6_cc_pagada_no_cancelable             Cancelación con pagos aplicados → REJECTED INVALID_TRANSITION
+  PASS f6_cc_pagada_linea_alterada_REJECTED   Operación fabricada: mismo conteo de líneas con contenido alterado → REJECTED INVALID_TRANSITION
+  PASS f6_cc_pagada_archivado_APPLIED         Archivado permitido sobre Cuenta con pagos (solo `archived` cambia) → APPLIED
+  PASS f6_cc_pagada_nombre_alterado_REJECTED  Operación fabricada: clientNameSnapshot alterado → REJECTED INVALID_TRANSITION
+  PASS f6_cc_pagada_identidad_APPLIED         id/userId/createdAt fabricados → APPLIED con normalización a valores persistidos
+  PASS f6_cc_pagada_identidad_intacta         Pull confirma id, userId (titular) y createdAt canónicos — sin corrupción
+  PASS f6_cc3_created                         Segunda Cuenta PENDIENTE para reasignación
+  PASS f6_reassign_applied                    Reasignación: libera 114 de la primera Cuenta, aplica 50 en la segunda
+  PASS f6_reassign_saldos                     Saldos derivados: Pago 50/100 UNASSIGNED, origen vuelve PENDIENTE, destino PAGADA
+  PASS f6_reassign_evento_auditado            Evento conserva releasedAmount 114.00, amount 50.00 y fromAccountId
+  PASS f6_unassign_applied                    Retiro de la aplicación vigente → APPLIED
+  PASS f6_unassign_saldos                     Pago vuelve 0.00 aplicados / 150.00 UNASSIGNED; Cuenta destino a PENDIENTE
+  PASS f6_assignment_append_only_REJECTED     Mismo entity_id de evento con motivo distinto → REJECTED IMMUTABLE_FINANCIAL
+  PASS f6_cc_cancel_applied                   Cancelación sin pagos aplicados → APPLIED (estado CANCELADA)
+  PASS f6_cc_cancel_libera_origen             Tras cancelar, la misma Cotización es elegible de nuevo → APPLIED
+  PASS f6_audit_events_registrados            audit_events registra PAYMENT_ASSIGN / PAYMENT_UNASSIGN / PAYMENT_REASSIGN
+
+Los 90 casos F3–F5 previos se mantienen en verde (regresión completa).
+Post-revisión PR #13 (1ª corrección): la comparación de `items` en la
+rama inmutable era degenerada (strval sobre arrays asociativos → igualdad
+de conteo); corregida a comparación estructural.
+Post-revisión PR #13 (2ª corrección): `clientNameSnapshot` se añadió a la
+lista estricta de campos protegidos y `id`/`userId`/`createdAt` se
+restauran desde lo persistido en la rama inmutable — el payload no puede
+reasignar identidad, titular ni creación (el user_id de la fila ya es
+autoritativo y nunca lo toca updateEntity). `archived` sigue siendo el
+único cambio permitido. Verificado con los tres casos nuevos.
+Nota: la primera corrida detectó un defecto real corregido antes de esta
+evidencia — el estado derivado de la Cuenta se escribía en la columna
+meta pero no en el payload; corregido en applyPaymentAssignment y
+re-verificado. También se corrigió el test fabricado en PAGADA (reusaba
+un Trabajo ya vinculado y disparaba la regla de doble vínculo antes de
+la transición).

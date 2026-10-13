@@ -41,6 +41,10 @@ object EntityTypes {
     const val REPORT = "report"
     const val REPORT_JOB = "report_job"
     const val REPORT_VERSION = "report_version"
+    const val COLLECTION_ACCOUNT = "collection_account"
+    const val COLLECTION_METHOD = "collection_method"
+    const val PAYMENT = "payment"
+    const val PAYMENT_ASSIGNMENT = "payment_assignment"
 }
 
 /**
@@ -187,6 +191,64 @@ object SyncPayloads {
         put("snapshotJson", e.snapshotJson); put("previousVersionId", e.previousVersionId)
         put("createdAt", e.createdAt)
     }
+    /**
+     * Documento F6 completo: las líneas y los vínculos (jobIds/quoteIds)
+     * viajan dentro del payload — la Cuenta y su contenido se aplican
+     * atómicamente y el servidor valida cada referencia con datos
+     * persistidos. `appliedAmount`/`balance` son derivados mantenidos por
+     * los eventos de pago; el servidor los recalcula siempre.
+     */
+    fun collectionAccount(
+        e: CollectionAccountEntity,
+        items: List<CollectionAccountItemEntity>,
+        jobIds: List<String>,
+        quoteIds: List<String>,
+    ) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("clientId", e.clientId)
+        put("profileId", e.profileId); put("provisionalNumber", e.provisionalNumber)
+        put("status", e.status); put("currency", e.currency)
+        put("gross", e.gross); put("totalRetained", e.totalRetained)
+        put("net", e.net); put("appliedAmount", e.appliedAmount); put("balance", e.balance)
+        put("issuedAt", e.issuedAt); put("dueDateEpochDay", e.dueDateEpochDay)
+        put("conditions", e.conditions)
+        put("clientSnapshotJson", e.clientSnapshotJson)
+        put("profileSnapshotJson", e.profileSnapshotJson)
+        put("retentionsSnapshotJson", e.retentionsSnapshotJson)
+        put("clientNameSnapshot", e.clientNameSnapshot); put("archived", e.archived)
+        put("items", kotlinx.serialization.json.JsonArray(items.map { item ->
+            buildJsonObject {
+                put("id", item.id); put("position", item.position)
+                put("conceptType", item.conceptType); put("description", item.description)
+                put("quantity", item.quantity); put("unit", item.unit)
+                put("unitPrice", item.unitPrice); put("lineTotal", item.lineTotal)
+            }
+        }))
+        put("jobIds", kotlinx.serialization.json.JsonArray(jobIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+        put("quoteIds", kotlinx.serialization.json.JsonArray(quoteIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun collectionMethod(e: CollectionMethodEntity) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("name", e.name)
+        put("detail", e.detail); put("archived", e.archived)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun payment(e: PaymentEntity) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("clientId", e.clientId)
+        put("collectionMethodId", e.collectionMethodId)
+        put("amount", e.amount); put("paidAtEpochDay", e.paidAtEpochDay)
+        put("reference", e.reference); put("notes", e.notes)
+        put("appliedAmount", e.appliedAmount); put("unassignedAmount", e.unassignedAmount)
+        put("assignedAccountId", e.assignedAccountId)
+        put("assignmentStatus", e.assignmentStatus)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun paymentAssignment(e: PaymentAssignmentEntity) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("paymentId", e.paymentId)
+        put("action", e.action.lowercase()); put("accountId", e.accountId)
+        put("fromAccountId", e.fromAccountId); put("amount", e.amount)
+        put("releasedAmount", e.releasedAmount); put("reason", e.reason)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
 }
 
 /**
@@ -297,11 +359,32 @@ class SyncRepository(
      * cada tanda lleva una sola operación por entidad, el vínculo espera a
      * que la Cotización no tenga operaciones activas; si las suyas quedan
      * pausadas, el vínculo se envía y el rechazo del servidor queda visible.
+     * Misma regla F6: la Cuenta espera a que sus orígenes (Trabajos,
+     * Cotizaciones, Cliente, Perfil) no tengan operaciones activas, y un
+     * evento de asignación espera a su Pago y a las Cuentas referenciadas.
      */
     private suspend fun pushableNow(op: SyncOperationEntity): Boolean {
-        if (op.entityType != EntityTypes.JOB_QUOTE) return true
-        val quoteId = json.parseToJsonElement(op.payloadJson).jsonObject.str("quoteId") ?: return true
-        return db.syncDao().activeOpsForEntity(EntityTypes.QUOTE, quoteId) == 0
+        val p = json.parseToJsonElement(op.payloadJson).jsonObject
+        suspend fun free(type: String, id: String?): Boolean =
+            id == null || db.syncDao().activeOpsForEntity(type, id) == 0
+        return when (op.entityType) {
+            EntityTypes.JOB_QUOTE -> free(EntityTypes.QUOTE, p.str("quoteId"))
+            EntityTypes.COLLECTION_ACCOUNT -> {
+                val jobs = p["jobIds"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+                val quotes = p["quoteIds"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+                free(EntityTypes.CLIENT, p.str("clientId")) &&
+                    free(EntityTypes.PROFILE, p.str("profileId")) &&
+                    jobs.all { free(EntityTypes.JOB, it) } &&
+                    quotes.all { free(EntityTypes.QUOTE, it) }
+            }
+            EntityTypes.PAYMENT -> free(EntityTypes.CLIENT, p.str("clientId")) &&
+                free(EntityTypes.COLLECTION_METHOD, p.str("collectionMethodId"))
+            EntityTypes.PAYMENT_ASSIGNMENT ->
+                free(EntityTypes.PAYMENT, p.str("paymentId")) &&
+                    free(EntityTypes.COLLECTION_ACCOUNT, p.str("accountId")) &&
+                    free(EntityTypes.COLLECTION_ACCOUNT, p.str("fromAccountId"))
+            else -> true
+        }
     }
 
     private suspend fun applyApplied(op: SyncOperationEntity, r: JsonObject) {
@@ -373,6 +456,15 @@ class SyncRepository(
                         }
                     }
                 }
+                EntityTypes.COLLECTION_ACCOUNT -> {
+                    db.collectionAccountDao().markSynced(op.entityId, sv, now)
+                    if (official != null) {
+                        db.collectionAccountDao().updateOfficial(op.entityId, official, now)
+                    }
+                }
+                EntityTypes.COLLECTION_METHOD -> db.collectionMethodDao().markSynced(op.entityId, sv, now)
+                EntityTypes.PAYMENT -> db.paymentDao().markSynced(op.entityId, sv, now)
+                EntityTypes.PAYMENT_ASSIGNMENT -> db.paymentAssignmentDao().markSynced(op.entityId, sv, now)
             }
         }
     }
@@ -514,6 +606,9 @@ class SyncRepository(
                 c.boolOr("has_version_conflict"), nowEpochMillis(),
             )
         }
+        if (type == EntityTypes.COLLECTION_ACCOUNT) {
+            db.collectionAccountDao().updateOfficial(id, c.str("official_number"), nowEpochMillis())
+        }
     }
 
     /** Devuelve (tiene pendingSync local, serverVersion local) o null si no existe. */
@@ -530,6 +625,10 @@ class SyncRepository(
         EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.REPORT -> db.reportDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.REPORT_JOB -> db.reportJobDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.COLLECTION_ACCOUNT -> db.collectionAccountDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.COLLECTION_METHOD -> db.collectionMethodDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.PAYMENT -> db.paymentDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.PAYMENT_ASSIGNMENT -> db.paymentAssignmentDao().get(id)?.let { it.pendingSync to it.serverVersion }
         else -> null
     }
 
@@ -733,6 +832,117 @@ class SyncRepository(
                     serverVersion = sv,
                 ),
             )
+            EntityTypes.COLLECTION_ACCOUNT -> {
+                // Documento completo: fila + líneas + vínculos reconstruidos
+                // desde el payload autoritativo del servidor.
+                val accountId = p.str("id") ?: id
+                db.collectionAccountDao().upsert(
+                    CollectionAccountEntity(
+                        id = accountId, userId = p.str("userId") ?: "",
+                        clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
+                        provisionalNumber = p.str("provisionalNumber") ?: "",
+                        status = p.str("status") ?: "PENDIENTE",
+                        currency = p.str("currency") ?: "COP",
+                        gross = p.str("gross") ?: "0", totalRetained = p.str("totalRetained") ?: "0",
+                        net = p.str("net") ?: "0",
+                        appliedAmount = p.str("appliedAmount") ?: "0",
+                        balance = p.str("balance") ?: "0",
+                        issuedAt = p.longOr("issuedAt") ?: now,
+                        dueDateEpochDay = p.longOr("dueDateEpochDay"),
+                        conditions = p.str("conditions") ?: "",
+                        clientSnapshotJson = p.str("clientSnapshotJson") ?: "",
+                        profileSnapshotJson = p.str("profileSnapshotJson") ?: "",
+                        retentionsSnapshotJson = p.str("retentionsSnapshotJson") ?: "",
+                        clientNameSnapshot = p.str("clientNameSnapshot") ?: "",
+                        archived = p.boolOr("archived"),
+                        officialNumber = p.str("officialNumber"),
+                        createdAt = p.longOr("createdAt") ?: now,
+                        updatedAt = now,
+                        pendingSync = false,
+                        serverVersion = sv,
+                    ),
+                )
+                val items = p["items"]?.jsonArray?.mapIndexed { i, el ->
+                    val it = el.jsonObject
+                    CollectionAccountItemEntity(
+                        id = it.str("id") ?: Ids.new(), accountId = accountId,
+                        position = it.longOr("position")?.toInt() ?: (i + 1),
+                        conceptType = it.str("conceptType") ?: "SERVICIO",
+                        description = it.str("description") ?: "",
+                        quantity = it.str("quantity") ?: "", unit = it.str("unit") ?: "",
+                        unitPrice = it.str("unitPrice") ?: "",
+                        lineTotal = it.str("lineTotal") ?: "",
+                        createdAt = it.longOr("createdAt") ?: now,
+                    )
+                } ?: emptyList()
+                db.collectionAccountItemDao().deleteForAccount(accountId)
+                db.collectionAccountItemDao().upsertAll(items)
+                val jobIds = p["jobIds"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+                val quoteIds = p["quoteIds"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+                db.collectionAccountJobDao().deleteForAccount(accountId)
+                db.collectionAccountJobDao().upsertAll(
+                    jobIds.mapIndexed { i, jobId ->
+                        CollectionAccountJobEntity(
+                            id = Ids.new(), accountId = accountId, jobId = jobId,
+                            position = i + 1, createdAt = now,
+                        )
+                    },
+                )
+                db.collectionAccountQuoteDao().deleteForAccount(accountId)
+                db.collectionAccountQuoteDao().upsertAll(
+                    quoteIds.mapIndexed { i, quoteId ->
+                        CollectionAccountQuoteEntity(
+                            id = Ids.new(), accountId = accountId, quoteId = quoteId,
+                            position = i + 1, createdAt = now,
+                        )
+                    },
+                )
+            }
+            EntityTypes.COLLECTION_METHOD -> db.collectionMethodDao().upsert(
+                CollectionMethodEntity(
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    name = p.str("name") ?: "", detail = p.str("detail") ?: "",
+                    archived = p.boolOr("archived"),
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.PAYMENT -> db.paymentDao().upsert(
+                PaymentEntity(
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    clientId = p.str("clientId") ?: "",
+                    collectionMethodId = p.str("collectionMethodId"),
+                    amount = p.str("amount") ?: "0",
+                    paidAtEpochDay = p.longOr("paidAtEpochDay") ?: 0,
+                    reference = p.str("reference") ?: "", notes = p.str("notes") ?: "",
+                    appliedAmount = p.str("appliedAmount") ?: "0",
+                    unassignedAmount = p.str("unassignedAmount") ?: "0",
+                    assignedAccountId = p.str("assignedAccountId"),
+                    assignmentStatus = p.str("assignmentStatus") ?: "UNASSIGNED",
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.PAYMENT_ASSIGNMENT -> db.paymentAssignmentDao().upsert(
+                PaymentAssignmentEntity(
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    paymentId = p.str("paymentId") ?: "",
+                    action = (p.str("action") ?: "assign").uppercase(),
+                    accountId = p.str("accountId") ?: "",
+                    fromAccountId = p.str("fromAccountId"),
+                    amount = p.str("amount") ?: "0",
+                    releasedAmount = p.str("releasedAmount") ?: "0",
+                    reason = p.str("reason") ?: "",
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
         }
     }
 
@@ -758,6 +968,10 @@ class SyncRepository(
                 db.openHelper.writableDatabase.execSQL("UPDATE quotes SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE jobs SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE reports SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE collection_accounts SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE collection_methods SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE payments SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE payment_assignments SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 // Regenerar operaciones pendientes con identidad canónica:
                 // reescribe userId en el payload y, para la entidad user,
                 // también entityId y payload.id hacia el id canónico.
@@ -817,6 +1031,7 @@ class SyncRepository(
             "clients", "services", "retention_configs", "quotes", "professional_profiles",
             "users", "jobs", "job_quotes", "job_activities", "job_materials",
             "reports", "report_jobs",
+            "collection_accounts", "collection_methods", "payments", "payment_assignments",
         )) {
             db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $t WHERE pendingSync = 1").use { c ->
                 if (c.moveToFirst()) n += c.getInt(0)
@@ -839,6 +1054,9 @@ class SyncRepository(
     suspend fun wipeLocalData() {
         db.withTransaction {
             for (t in listOf(
+                "payment_assignments", "payments",
+                "collection_account_jobs", "collection_account_quotes",
+                "collection_account_items", "collection_accounts", "collection_methods",
                 "report_jobs", "report_versions", "reports",
                 "job_quotes", "job_activities", "job_materials", "jobs",
                 "quote_versions", "quotes", "services", "retention_configs",
@@ -903,6 +1121,8 @@ class SyncRepository(
                 EntityTypes.REPORT -> db.reportDao().updateSyncFields(
                     conflict.entityId, remote.str("official_number"),
                     remote.boolOr("has_version_conflict"), nowEpochMillis())
+                EntityTypes.COLLECTION_ACCOUNT -> db.collectionAccountDao().updateOfficial(
+                    conflict.entityId, remote.str("official_number"), nowEpochMillis())
             }
             db.syncDao().resolveConflict(conflictId)
         }

@@ -486,6 +486,305 @@ interface ReportVersionDao {
     suspend fun insert(version: ReportVersionEntity)
 }
 
+// ---------- Cuentas de Cobro, Métodos de Cobro y Pagos (F6) ----------
+
+/**
+ * Cuenta de Cobro (docs/03 §6): nace en PENDIENTE con numeración
+ * `CC-PEND-XXXX`; el backend asigna `CC-AAAAMM-NNN` sobre el mismo
+ * entity_id en el primer registro aceptado. Editable solo en PENDIENTE y
+ * sin pagos aplicados; PARCIAL/PAGADA se derivan de `appliedAmount` vs
+ * `net`; cancelable solo sin pagos aplicados. Los snapshots JSON de
+ * Cliente, Perfil y retenciones quedan congelados al crear y son
+ * inmutables una vez aplicado un pago.
+ */
+@Entity(
+    tableName = "collection_accounts",
+    indices = [Index("userId"), Index("clientId"), Index("profileId"), Index(value = ["provisionalNumber"], unique = true)],
+)
+data class CollectionAccountEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val clientId: String,
+    val profileId: String,
+    val provisionalNumber: String,
+    val status: String,
+    val currency: String,
+    val gross: String = "0.00",
+    val totalRetained: String = "0.00",
+    val net: String = "0.00",
+    val appliedAmount: String = "0.00",
+    val balance: String = "0.00",
+    val issuedAt: Long,
+    val dueDateEpochDay: Long? = null,
+    val conditions: String = "",
+    val clientSnapshotJson: String = "",
+    val profileSnapshotJson: String = "",
+    val retentionsSnapshotJson: String = "",
+    val clientNameSnapshot: String = "",
+    val archived: Boolean = false,
+    val officialNumber: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Línea de la Cuenta de Cobro: concepto, tipo SERVICIO/MATERIAL/OTRO,
+ * cantidad, precio unitario e importe de línea calculado con el motor de
+ * F2. Viaja dentro del payload de la Cuenta (no es entidad de sync
+ * independiente): el documento y sus líneas cambian atómicamente y la
+ * regla de inmutabilidad tras el primer pago aplica al conjunto.
+ */
+@Entity(tableName = "collection_account_items", indices = [Index("accountId")])
+data class CollectionAccountItemEntity(
+    @PrimaryKey val id: String,
+    val accountId: String,
+    val position: Int,
+    val conceptType: String,
+    val description: String,
+    val quantity: String,
+    val unit: String = "",
+    val unitPrice: String,
+    val lineTotal: String,
+    val createdAt: Long,
+)
+
+/** Vínculo Cuenta ↔ Trabajo (conceptual CollectionAccountJob, docs/02 §23). */
+@Entity(tableName = "collection_account_jobs", indices = [Index("accountId"), Index("jobId")])
+data class CollectionAccountJobEntity(
+    @PrimaryKey val id: String,
+    val accountId: String,
+    val jobId: String,
+    val position: Int,
+    val createdAt: Long,
+)
+
+/** Vínculo Cuenta ↔ Cotización (conceptual CollectionAccountQuote, docs/02). */
+@Entity(tableName = "collection_account_quotes", indices = [Index("accountId"), Index("quoteId")])
+data class CollectionAccountQuoteEntity(
+    @PrimaryKey val id: String,
+    val accountId: String,
+    val quoteId: String,
+    val position: Int,
+    val createdAt: Long,
+)
+
+/**
+ * Método de Cobro global del Usuario/Titular: `name` requerido,
+ * `detail` opcional, `archived` soportado. Sin valores predeterminados.
+ */
+@Entity(tableName = "collection_methods", indices = [Index("userId")])
+data class CollectionMethodEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val name: String,
+    val detail: String = "",
+    val archived: Boolean = false,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Pago recibido (append-only, docs/03 §6): se registra contra una Cuenta
+ * individual o sin asignar vinculado al Cliente. El dinero aplicado vive
+ * en eventos `payment_assignments`; `appliedAmount`, `unassignedAmount`,
+ * `assignedAccountId` y `assignmentStatus` son derivados mantenidos en la
+ * misma transacción que cada evento (local y servidor). Nunca existe
+ * dinero aplicado a dos documentos a la vez.
+ */
+@Entity(tableName = "payments", indices = [Index("userId"), Index("clientId"), Index("assignedAccountId")])
+data class PaymentEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val clientId: String,
+    val collectionMethodId: String? = null,
+    val amount: String,
+    val paidAtEpochDay: Long,
+    val reference: String = "",
+    val notes: String = "",
+    val appliedAmount: String = "0.00",
+    val unassignedAmount: String = "0.00",
+    val assignedAccountId: String? = null,
+    val assignmentStatus: String = "UNASSIGNED",
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Evento auditado de asignación (append-only): `assign` aplica un monto
+ * del Pago a una Cuenta (el servidor recorta al saldo pendiente y el
+ * excedente queda UNASSIGNED en el mismo Pago), `unassign` retira la
+ * aplicación vigente y `reassign` la mueve a otra Cuenta del mismo
+ * Cliente. Todo evento exige `reason`; `amount` registra lo aplicado
+ * (en assign/reassign) o lo liberado (en unassign) efectivamente, y
+ * `releasedAmount` lo liberado por una reasignación.
+ */
+@Entity(tableName = "payment_assignments", indices = [Index("paymentId"), Index("accountId"), Index("userId")])
+data class PaymentAssignmentEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val paymentId: String,
+    val action: String,
+    val accountId: String,
+    val fromAccountId: String? = null,
+    val amount: String,
+    val releasedAmount: String? = null,
+    val reason: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+@Dao
+interface CollectionAccountDao {
+    @Query("SELECT * FROM collection_accounts WHERE userId = :userId ORDER BY createdAt DESC")
+    fun observeForUser(userId: String): Flow<List<CollectionAccountEntity>>
+
+    @Query("SELECT * FROM collection_accounts WHERE clientId = :clientId ORDER BY createdAt DESC")
+    fun observeForClient(clientId: String): Flow<List<CollectionAccountEntity>>
+
+    @Query("SELECT * FROM collection_accounts WHERE id = :id")
+    fun observeOne(id: String): Flow<CollectionAccountEntity?>
+
+    @Query("SELECT * FROM collection_accounts WHERE id = :id")
+    suspend fun get(id: String): CollectionAccountEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM collection_accounts WHERE provisionalNumber = :number)")
+    suspend fun provisionalNumberExists(number: String): Boolean
+
+    @Query("UPDATE collection_accounts SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Query("UPDATE collection_accounts SET officialNumber = :num, updatedAt = :now WHERE id = :id")
+    suspend fun updateOfficial(id: String, num: String?, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(account: CollectionAccountEntity)
+}
+
+@Dao
+interface CollectionAccountItemDao {
+    @Query("SELECT * FROM collection_account_items WHERE accountId = :accountId ORDER BY position, createdAt")
+    fun observeForAccount(accountId: String): Flow<List<CollectionAccountItemEntity>>
+
+    @Query("SELECT * FROM collection_account_items WHERE accountId = :accountId ORDER BY position, createdAt")
+    suspend fun forAccount(accountId: String): List<CollectionAccountItemEntity>
+
+    @Query("DELETE FROM collection_account_items WHERE accountId = :accountId")
+    suspend fun deleteForAccount(accountId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<CollectionAccountItemEntity>)
+}
+
+@Dao
+interface CollectionAccountJobDao {
+    @Query("SELECT * FROM collection_account_jobs WHERE accountId = :accountId ORDER BY position, createdAt")
+    fun observeForAccount(accountId: String): Flow<List<CollectionAccountJobEntity>>
+
+    @Query("SELECT * FROM collection_account_jobs WHERE accountId = :accountId ORDER BY position, createdAt")
+    suspend fun forAccount(accountId: String): List<CollectionAccountJobEntity>
+
+    @Query("SELECT * FROM collection_account_jobs WHERE jobId = :jobId")
+    suspend fun forJob(jobId: String): List<CollectionAccountJobEntity>
+
+    @Query("SELECT * FROM collection_account_jobs")
+    fun observeAll(): Flow<List<CollectionAccountJobEntity>>
+
+    @Query("DELETE FROM collection_account_jobs WHERE accountId = :accountId")
+    suspend fun deleteForAccount(accountId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(links: List<CollectionAccountJobEntity>)
+}
+
+@Dao
+interface CollectionAccountQuoteDao {
+    @Query("SELECT * FROM collection_account_quotes WHERE accountId = :accountId ORDER BY position, createdAt")
+    fun observeForAccount(accountId: String): Flow<List<CollectionAccountQuoteEntity>>
+
+    @Query("SELECT * FROM collection_account_quotes WHERE accountId = :accountId ORDER BY position, createdAt")
+    suspend fun forAccount(accountId: String): List<CollectionAccountQuoteEntity>
+
+    @Query("SELECT * FROM collection_account_quotes WHERE quoteId = :quoteId")
+    suspend fun forQuote(quoteId: String): List<CollectionAccountQuoteEntity>
+
+    @Query("SELECT * FROM collection_account_quotes")
+    fun observeAll(): Flow<List<CollectionAccountQuoteEntity>>
+
+    @Query("DELETE FROM collection_account_quotes WHERE accountId = :accountId")
+    suspend fun deleteForAccount(accountId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(links: List<CollectionAccountQuoteEntity>)
+}
+
+@Dao
+interface CollectionMethodDao {
+    @Query("SELECT * FROM collection_methods WHERE userId = :userId ORDER BY name")
+    fun observeForUser(userId: String): Flow<List<CollectionMethodEntity>>
+
+    @Query("SELECT * FROM collection_methods WHERE id = :id")
+    suspend fun get(id: String): CollectionMethodEntity?
+
+    @Query("UPDATE collection_methods SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(method: CollectionMethodEntity)
+}
+
+@Dao
+interface PaymentDao {
+    @Query("SELECT * FROM payments WHERE userId = :userId ORDER BY createdAt DESC")
+    fun observeForUser(userId: String): Flow<List<PaymentEntity>>
+
+    @Query("SELECT * FROM payments WHERE clientId = :clientId ORDER BY createdAt DESC")
+    fun observeForClient(clientId: String): Flow<List<PaymentEntity>>
+
+    @Query("SELECT * FROM payments WHERE assignedAccountId = :accountId ORDER BY createdAt DESC")
+    fun observeForAccount(accountId: String): Flow<List<PaymentEntity>>
+
+    @Query("SELECT * FROM payments WHERE id = :id")
+    fun observeOne(id: String): Flow<PaymentEntity?>
+
+    @Query("SELECT * FROM payments WHERE id = :id")
+    suspend fun get(id: String): PaymentEntity?
+
+    @Query("UPDATE payments SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(payment: PaymentEntity)
+}
+
+@Dao
+interface PaymentAssignmentDao {
+    @Query("SELECT * FROM payment_assignments WHERE paymentId = :paymentId ORDER BY createdAt, id")
+    fun observeForPayment(paymentId: String): Flow<List<PaymentAssignmentEntity>>
+
+    @Query("SELECT * FROM payment_assignments WHERE paymentId = :paymentId ORDER BY createdAt, id")
+    suspend fun forPayment(paymentId: String): List<PaymentAssignmentEntity>
+
+    @Query("SELECT * FROM payment_assignments WHERE accountId = :accountId OR fromAccountId = :accountId ORDER BY createdAt, id")
+    fun observeForAccount(accountId: String): Flow<List<PaymentAssignmentEntity>>
+
+    @Query("SELECT * FROM payment_assignments WHERE id = :id")
+    suspend fun get(id: String): PaymentAssignmentEntity?
+
+    @Query("UPDATE payment_assignments SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(event: PaymentAssignmentEntity)
+}
+
 // ---------- Cola durable de sincronización (F3) ----------
 
 /**
@@ -695,10 +994,13 @@ interface QuoteVersionDao {
         JobEntity::class, JobQuoteEntity::class,
         JobActivityEntity::class, JobMaterialEntity::class,
         ReportEntity::class, ReportJobEntity::class, ReportVersionEntity::class,
+        CollectionAccountEntity::class, CollectionAccountItemEntity::class,
+        CollectionAccountJobEntity::class, CollectionAccountQuoteEntity::class,
+        CollectionMethodEntity::class, PaymentEntity::class, PaymentAssignmentEntity::class,
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -716,6 +1018,13 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reportDao(): ReportDao
     abstract fun reportJobDao(): ReportJobDao
     abstract fun reportVersionDao(): ReportVersionDao
+    abstract fun collectionAccountDao(): CollectionAccountDao
+    abstract fun collectionAccountItemDao(): CollectionAccountItemDao
+    abstract fun collectionAccountJobDao(): CollectionAccountJobDao
+    abstract fun collectionAccountQuoteDao(): CollectionAccountQuoteDao
+    abstract fun collectionMethodDao(): CollectionMethodDao
+    abstract fun paymentDao(): PaymentDao
+    abstract fun paymentAssignmentDao(): PaymentAssignmentDao
     abstract fun syncDao(): SyncDao
 
     companion object {
@@ -943,13 +1252,105 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Migración v6→v7 (F6): Cuentas de Cobro con líneas y vínculos a
+         * Trabajos/Cotizaciones, Métodos de Cobro del Usuario y Pagos
+         * append-only con sus eventos auditados de asignación.
+         */
+        // Interna (no privada): la prueba de migración la ejerce directamente.
+        internal val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `collection_accounts` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `clientId` TEXT NOT NULL, `profileId` TEXT NOT NULL,
+                        `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL,
+                        `currency` TEXT NOT NULL, `gross` TEXT NOT NULL,
+                        `totalRetained` TEXT NOT NULL, `net` TEXT NOT NULL,
+                        `appliedAmount` TEXT NOT NULL, `balance` TEXT NOT NULL,
+                        `issuedAt` INTEGER NOT NULL, `dueDateEpochDay` INTEGER,
+                        `conditions` TEXT NOT NULL, `clientSnapshotJson` TEXT NOT NULL,
+                        `profileSnapshotJson` TEXT NOT NULL, `retentionsSnapshotJson` TEXT NOT NULL,
+                        `clientNameSnapshot` TEXT NOT NULL, `archived` INTEGER NOT NULL,
+                        `officialNumber` TEXT,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_accounts_userId` ON `collection_accounts` (`userId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_accounts_clientId` ON `collection_accounts` (`clientId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_accounts_profileId` ON `collection_accounts` (`profileId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_collection_accounts_provisionalNumber` ON `collection_accounts` (`provisionalNumber`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `collection_account_items` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `accountId` TEXT NOT NULL,
+                        `position` INTEGER NOT NULL, `conceptType` TEXT NOT NULL,
+                        `description` TEXT NOT NULL, `quantity` TEXT NOT NULL,
+                        `unit` TEXT NOT NULL, `unitPrice` TEXT NOT NULL,
+                        `lineTotal` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_account_items_accountId` ON `collection_account_items` (`accountId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `collection_account_jobs` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `accountId` TEXT NOT NULL,
+                        `jobId` TEXT NOT NULL, `position` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_account_jobs_accountId` ON `collection_account_jobs` (`accountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_account_jobs_jobId` ON `collection_account_jobs` (`jobId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `collection_account_quotes` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `accountId` TEXT NOT NULL,
+                        `quoteId` TEXT NOT NULL, `position` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_account_quotes_accountId` ON `collection_account_quotes` (`accountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_account_quotes_quoteId` ON `collection_account_quotes` (`quoteId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `collection_methods` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `name` TEXT NOT NULL, `detail` TEXT NOT NULL,
+                        `archived` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_collection_methods_userId` ON `collection_methods` (`userId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `payments` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `clientId` TEXT NOT NULL, `collectionMethodId` TEXT,
+                        `amount` TEXT NOT NULL, `paidAtEpochDay` INTEGER NOT NULL,
+                        `reference` TEXT NOT NULL, `notes` TEXT NOT NULL,
+                        `appliedAmount` TEXT NOT NULL, `unassignedAmount` TEXT NOT NULL,
+                        `assignedAccountId` TEXT, `assignmentStatus` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payments_userId` ON `payments` (`userId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payments_clientId` ON `payments` (`clientId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payments_assignedAccountId` ON `payments` (`assignedAccountId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `payment_assignments` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `paymentId` TEXT NOT NULL, `action` TEXT NOT NULL,
+                        `accountId` TEXT NOT NULL, `fromAccountId` TEXT,
+                        `amount` TEXT NOT NULL, `releasedAmount` TEXT,
+                        `reason` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_assignments_paymentId` ON `payment_assignments` (`paymentId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_assignments_accountId` ON `payment_assignments` (`accountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_assignments_userId` ON `payment_assignments` (`userId`)")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "cotixgo.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build().also { instance = it }
             }
     }

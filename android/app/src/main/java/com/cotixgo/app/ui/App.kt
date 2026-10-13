@@ -47,6 +47,12 @@ object Routes {
     const val REPORT_EDIT = "reports/{id}/edit"
     const val REPORT_DETAIL = "reports/{id}"
     const val REPORT_VERSION = "reports/{id}/version/{v}"
+    const val COLLECTIONS = "collections"
+    const val COLLECTION_NEW = "collections/new"
+    const val COLLECTION_EDIT = "collections/{id}/edit"
+    const val COLLECTION_DETAIL = "collections/{id}"
+    const val PAYMENT_NEW = "payments/new"
+    const val PAYMENT_DETAIL = "payments/{id}"
     const val SETTINGS = "settings"
     const val SERVICES = "services"
     const val RETENTIONS = "retentions"
@@ -76,6 +82,9 @@ object Routes {
     fun reportEdit(id: String) = "reports/$id/edit"
     fun reportDetail(id: String) = "reports/$id"
     fun reportVersion(id: String, v: Int) = "reports/$id/version/$v"
+    fun collectionEdit(id: String) = "collections/$id/edit"
+    fun collectionDetail(id: String) = "collections/$id"
+    fun paymentDetail(id: String) = "payments/$id"
 }
 
 @Composable
@@ -105,10 +114,13 @@ private fun CotixGoNavHost(
     val services by vm.services.collectAsStateWithLifecycle()
     val jobs by vm.jobs.collectAsStateWithLifecycle()
     val reports by vm.reports.collectAsStateWithLifecycle()
+    val collectionAccounts by vm.collectionAccounts.collectAsStateWithLifecycle()
+    val collectionMethods by vm.collectionMethods.collectAsStateWithLifecycle()
+    val payments by vm.payments.collectAsStateWithLifecycle()
     val currentRoute = backStack?.destination?.route
     val showBar = currentRoute == Routes.DASHBOARD || currentRoute == Routes.CLIENTS ||
         currentRoute == Routes.QUOTES || currentRoute == Routes.JOBS ||
-        currentRoute == Routes.REPORTS
+        currentRoute == Routes.REPORTS || currentRoute == Routes.COLLECTIONS
 
     Scaffold(
         bottomBar = {
@@ -168,6 +180,17 @@ private fun CotixGoNavHost(
                         },
                         icon = { Text("▣") },
                         label = { Text("Informes") },
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == Routes.COLLECTIONS,
+                        onClick = {
+                            nav.navigate(Routes.COLLECTIONS) {
+                                popUpTo(Routes.DASHBOARD)
+                                launchSingleTop = true
+                            }
+                        },
+                        icon = { Text("$") },
+                        label = { Text("Cobros") },
                     )
                 }
             }
@@ -563,6 +586,157 @@ private fun CotixGoNavHost(
                 ReportVersionScreen(
                     snapshot = versions.firstOrNull { it.version == v }
                         ?.let { com.cotixgo.app.data.SnapshotJson.decodeReport(it.snapshotJson) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.COLLECTIONS) {
+                CollectionsScreen(
+                    accounts = collectionAccounts,
+                    payments = payments,
+                    methods = collectionMethods,
+                    clients = clients,
+                    accountsById = collectionAccounts.associateBy { it.id },
+                    onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
+                    onOpenPayment = { nav.navigate(Routes.paymentDetail(it)) },
+                    onNewAccount = { nav.navigate(Routes.COLLECTION_NEW) },
+                    onNewPayment = { nav.navigate(Routes.PAYMENT_NEW) },
+                    onSaveMethod = { input, id -> vm.saveCollectionMethod(input, id) {} },
+                    onSetMethodArchived = { id, archived -> vm.setCollectionMethodArchived(id, archived) },
+                )
+            }
+            composable(Routes.COLLECTION_NEW) {
+                val allJobLinks by vm.observeAllCollectionAccountJobs()
+                    .collectAsStateWithLifecycle(emptyList())
+                val allQuoteLinks by vm.observeAllCollectionAccountQuotes()
+                    .collectAsStateWithLifecycle(emptyList())
+                CollectionAccountEditorScreen(
+                    initial = null,
+                    initialItems = emptyList(),
+                    initialJobIds = emptyList(),
+                    initialQuoteIds = emptyList(),
+                    clients = clients,
+                    profile = profiles.firstOrNull(),
+                    user = user,
+                    jobs = jobs,
+                    quotes = quotes,
+                    takenJobIds = allJobLinks.map { it.jobId }.toSet(),
+                    takenQuoteIds = allQuoteLinks.map { it.quoteId }.toSet(),
+                    retentions = retentions,
+                    initialRetentions = emptyList(),
+                    onSave = { input ->
+                        vm.saveCollectionAccount(input, null) { newId ->
+                            if (newId != null) {
+                                nav.navigate(Routes.collectionDetail(newId)) {
+                                    popUpTo(Routes.COLLECTIONS)
+                                }
+                            }
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.COLLECTION_EDIT,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val account by vm.observeCollectionAccount(id).collectAsStateWithLifecycle(null)
+                val items by vm.observeCollectionAccountItems(id).collectAsStateWithLifecycle(emptyList())
+                val jobLinks by vm.observeCollectionAccountJobs(id).collectAsStateWithLifecycle(emptyList())
+                val quoteLinks by vm.observeCollectionAccountQuotes(id).collectAsStateWithLifecycle(emptyList())
+                val allJobLinks by vm.observeAllCollectionAccountJobs()
+                    .collectAsStateWithLifecycle(emptyList())
+                val allQuoteLinks by vm.observeAllCollectionAccountQuotes()
+                    .collectAsStateWithLifecycle(emptyList())
+                val acc = account ?: return@composable
+                val retNames = com.cotixgo.app.data.SnapshotJson.decodeRetentions(acc.retentionsSnapshotJson)
+                    .map { it.name }
+                CollectionAccountEditorScreen(
+                    initial = acc,
+                    initialItems = items,
+                    initialJobIds = jobLinks.map { it.jobId },
+                    initialQuoteIds = quoteLinks.map { it.quoteId },
+                    clients = clients,
+                    profile = profiles.firstOrNull { it.id == acc.profileId } ?: profiles.firstOrNull(),
+                    user = user,
+                    jobs = jobs,
+                    quotes = quotes,
+                    takenJobIds = allJobLinks.filter { it.accountId != id }.map { it.jobId }.toSet(),
+                    takenQuoteIds = allQuoteLinks.filter { it.accountId != id }.map { it.quoteId }.toSet(),
+                    retentions = retentions,
+                    initialRetentions = retNames,
+                    onSave = { input ->
+                        vm.saveCollectionAccount(input, id) { nav.popBackStack() }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.COLLECTION_DETAIL,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val account by vm.observeCollectionAccount(id).collectAsStateWithLifecycle(null)
+                val items by vm.observeCollectionAccountItems(id).collectAsStateWithLifecycle(emptyList())
+                val jobLinks by vm.observeCollectionAccountJobs(id).collectAsStateWithLifecycle(emptyList())
+                val quoteLinks by vm.observeCollectionAccountQuotes(id).collectAsStateWithLifecycle(emptyList())
+                val assignments by vm.observeAccountAssignments(id).collectAsStateWithLifecycle(emptyList())
+                CollectionAccountDetailScreen(
+                    account = account,
+                    items = items,
+                    jobLinks = jobLinks,
+                    quoteLinks = quoteLinks,
+                    jobs = jobs,
+                    quotes = quotes,
+                    assignments = assignments,
+                    payments = payments,
+                    onEdit = { nav.navigate(Routes.collectionEdit(id)) },
+                    onCancelAccount = { vm.cancelCollectionAccount(id) {} },
+                    onSetArchived = { archived -> vm.setCollectionAccountArchived(id, archived) },
+                    onOpenJob = { nav.navigate(Routes.jobDetail(it)) },
+                    onOpenQuote = { nav.navigate(Routes.quoteDetail(it)) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.PAYMENT_NEW) {
+                PaymentEditorScreen(
+                    clients = clients,
+                    accounts = collectionAccounts,
+                    methods = collectionMethods,
+                    onSave = { input ->
+                        vm.savePayment(input) { ok ->
+                            if (ok) nav.popBackStack()
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.PAYMENT_DETAIL,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val payment by vm.observePayment(id).collectAsStateWithLifecycle(null)
+                val assignments by vm.observePaymentAssignments(id).collectAsStateWithLifecycle(emptyList())
+                val accountsById = collectionAccounts.associateBy { it.id }
+                PaymentDetailScreen(
+                    payment = payment,
+                    clientName = clients.firstOrNull { it.id == payment?.clientId }?.name ?: "",
+                    methodName = collectionMethods.firstOrNull { it.id == payment?.collectionMethodId }?.name,
+                    account = payment?.assignedAccountId?.let { accountsById[it] },
+                    receivableAccounts = collectionAccounts.filter {
+                        it.clientId == payment?.clientId && !it.archived &&
+                            it.id != payment?.assignedAccountId &&
+                            it.status in setOf("PENDIENTE", "PARCIAL") &&
+                            it.balance.toDoubleOrNull()?.let { b -> b > 0 } == true
+                    },
+                    assignments = assignments,
+                    accountsById = accountsById,
+                    onAssign = { accountId, amount, reason ->
+                        vm.assignPayment(id, accountId, amount, reason) {}
+                    },
+                    onUnassign = { reason -> vm.unassignPayment(id, reason) {} },
+                    onReassign = { toId, reason -> vm.reassignPayment(id, toId, reason) {} },
                     onBack = { nav.popBackStack() },
                 )
             }

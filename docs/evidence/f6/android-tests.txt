@@ -1,0 +1,53 @@
+Evidencia F6 — Cuentas de Cobro, Métodos de Cobro y Pagos — Pruebas Android
+==========================================================================
+Fecha: 13/10/2026
+JDK: 21 (JAVA_HOME=C:\Program Files\Java\jdk-21)
+Dispositivo: emulador Pixel_8 (AVD) API 36
+Datos: 100% sintéticos
+
+1) Unitarias JVM — JAVA_HOME=jdk-21 ./gradlew :app:testDebugUnitTest
+   29 tests, 0 failures — BUILD SUCCESSFUL
+   Incluye DomainTest F6: ciclo de la Cuenta (editable solo PENDIENTE
+   sin pagos; cancelable solo PENDIENTE sin pagos; PARCIAL/PAGADA
+   derivados; recepción de pagos solo en PENDIENTE/PARCIAL) y
+   derivación de estados de Cuenta y de asignación del Pago
+   (UNASSIGNED/PARTIAL_ASSIGNED/ASSIGNED).
+
+2) Instrumentadas — ./gradlew :app:connectedDebugAndroidTest
+   Finished 71 tests on Pixel_8(AVD) - 16 … (0 failed) — BUILD SUCCESSFUL
+   (tras la corrección post-revisión del PR #13)
+
+   Cobertura F6:
+   - MigrationTest.migrate6To7: base real v6 con datos previos
+     (usuario, cliente, cotización, trabajo, informe y operaciones de
+     cola pendientes); tras migrar se verifica la supervivencia de las
+     filas, la existencia de las 7 tablas nuevas F6
+     (collection_accounts, collection_account_items,
+     collection_account_jobs, collection_account_quotes,
+     collection_methods, payments, payment_assignments) con sus
+     índices, y la inserción/consulta de filas F6 sobre la base
+     migrada.
+   - CollectionRepositoryTest (nueva, 6 tests): creación PENDIENTE con
+     CC-PEND-XXXX, totales del motor F2 y encolado durable en la misma
+     transacción; asociaciones sin mezcla Trabajo/Cotización, mismo
+     Cliente+Perfil, solo Cotización APROBADA, doble vínculo bloqueado
+     y liberado al cancelar, edición solo en PENDIENTE sin pagos;
+     pago directo con aplicación recortada al saldo (excedente
+     UNASSIGNED) e inmutabilidad con pagos; pagos sin asignar +
+     assign/reassign/unassign con motivo y eventos append-only
+     auditados (3 eventos, releasedAmount/amount conservados);
+     validaciones de pago (importe, Cliente, Método, Cuenta de otro
+     Cliente) y Métodos de Cobro (nombre requerido, archivable);
+     bindAccount (post-revisión PR #13): datos F6 creados bajo el usuario
+     local anónimo quedan reasignados a la identidad canónica — Cuentas,
+     Métodos y Pagos visibles por observeForUser, relaciones conservadas
+     y cola reescrita con el userId canónico.
+   - Regresión completa F1–F5 en verde (MigrationTest, Quote/Job/
+     Report repositories, SyncE2eTest, JobFormScreenTest).
+
+3) Ensamblado — ./gradlew :app:assembleDebug :app:assembleRelease
+   BUILD SUCCESSFUL (ambos APK generados).
+
+Pendiente declarado: la verificación de Gradle Sync dentro de Android
+Studio con JDK 21 sigue siendo responsabilidad del titular; las
+verificaciones se ejecutaron por CLI con JAVA_HOME apuntando al JDK 21.

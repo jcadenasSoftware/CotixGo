@@ -3,25 +3,33 @@ package com.cotixgo.app.data
 import androidx.room.withTransaction
 import com.cotixgo.app.core.CalcLine
 import com.cotixgo.app.core.ClientInput
+import com.cotixgo.app.core.CollectionAccountStatus
+import com.cotixgo.app.core.CollectionAccountTransitions
 import com.cotixgo.app.core.ConceptType
 import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.JobTransitions
 import com.cotixgo.app.core.JobActivityStatus
+import com.cotixgo.app.core.PaymentAssignmentAction
+import com.cotixgo.app.core.PaymentAssignmentStatus
 import com.cotixgo.app.core.QuoteCalc
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.core.QuoteTransitions
 import com.cotixgo.app.core.ReportStatus
 import com.cotixgo.app.core.ReportTransitions
 import com.cotixgo.app.core.RetentionSpec
+import com.cotixgo.app.core.deriveAssignmentStatus
+import com.cotixgo.app.core.deriveCollectionStatus
 import com.cotixgo.app.core.effectiveQuoteStatus
 import com.cotixgo.app.core.expiryEpochDay
 import com.cotixgo.app.core.newProvisionalNumber
 import com.cotixgo.app.core.nowEpochMillis
 import com.cotixgo.app.core.toMoney
 import com.cotixgo.app.core.toQty
+import com.cotixgo.app.core.validateCollectionMethod
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import java.math.BigDecimal
 import java.time.LocalDate
 
 class AppRepository(private val db: AppDatabase, private val sync: SyncRepository? = null) {
@@ -981,6 +989,551 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         sb.append('\n')
         return sb.toString()
     }
+
+    // ---------- Cuentas de Cobro, Métodos de Cobro y Pagos (F6) ----------
+
+    fun observeCollectionAccounts(userId: String): Flow<List<CollectionAccountEntity>> =
+        db.collectionAccountDao().observeForUser(userId)
+
+    fun observeCollectionAccountsForClient(clientId: String): Flow<List<CollectionAccountEntity>> =
+        db.collectionAccountDao().observeForClient(clientId)
+
+    fun observeCollectionAccount(id: String): Flow<CollectionAccountEntity?> =
+        db.collectionAccountDao().observeOne(id)
+
+    fun observeCollectionAccountItems(accountId: String): Flow<List<CollectionAccountItemEntity>> =
+        db.collectionAccountItemDao().observeForAccount(accountId)
+
+    fun observeCollectionAccountJobs(accountId: String): Flow<List<CollectionAccountJobEntity>> =
+        db.collectionAccountJobDao().observeForAccount(accountId)
+
+    fun observeCollectionAccountQuotes(accountId: String): Flow<List<CollectionAccountQuoteEntity>> =
+        db.collectionAccountQuoteDao().observeForAccount(accountId)
+
+    fun observeAllCollectionAccountJobs(): Flow<List<CollectionAccountJobEntity>> =
+        db.collectionAccountJobDao().observeAll()
+
+    fun observeAllCollectionAccountQuotes(): Flow<List<CollectionAccountQuoteEntity>> =
+        db.collectionAccountQuoteDao().observeAll()
+
+    fun observeCollectionMethods(userId: String): Flow<List<CollectionMethodEntity>> =
+        db.collectionMethodDao().observeForUser(userId)
+
+    fun observePayments(userId: String): Flow<List<PaymentEntity>> =
+        db.paymentDao().observeForUser(userId)
+
+    fun observePaymentsForAccount(accountId: String): Flow<List<PaymentEntity>> =
+        db.paymentDao().observeForAccount(accountId)
+
+    fun observePayment(id: String): Flow<PaymentEntity?> = db.paymentDao().observeOne(id)
+
+    fun observePaymentAssignments(paymentId: String): Flow<List<PaymentAssignmentEntity>> =
+        db.paymentAssignmentDao().observeForPayment(paymentId)
+
+    fun observeAccountAssignments(accountId: String): Flow<List<PaymentAssignmentEntity>> =
+        db.paymentAssignmentDao().observeForAccount(accountId)
+
+    suspend fun getCollectionAccountItems(accountId: String): List<CollectionAccountItemEntity> =
+        db.collectionAccountItemDao().forAccount(accountId)
+
+    suspend fun getCollectionAccountJobIds(accountId: String): List<String> =
+        db.collectionAccountJobDao().forAccount(accountId).map { it.jobId }
+
+    suspend fun getCollectionAccountQuoteIds(accountId: String): List<String> =
+        db.collectionAccountQuoteDao().forAccount(accountId).map { it.quoteId }
+
+    /** Número provisional único entre las Cuentas de Cobro del usuario. */
+    private suspend fun uniqueCollectionProvisionalNumber(): String {
+        var candidate = newProvisionalNumber("CC")
+        while (db.collectionAccountDao().provisionalNumberExists(candidate)) {
+            candidate = newProvisionalNumber("CC")
+        }
+        return candidate
+    }
+
+    /** True si el origen ya pertenece a otra Cuenta no cancelada. */
+    private suspend fun jobTakenByOtherAccount(jobId: String, selfId: String?): Boolean =
+        db.collectionAccountJobDao().forJob(jobId)
+            .filter { it.accountId != selfId }
+            .mapNotNull { db.collectionAccountDao().get(it.accountId) }
+            .any { it.status != CollectionAccountStatus.CANCELADA.name }
+
+    private suspend fun quoteTakenByOtherAccount(quoteId: String, selfId: String?): Boolean =
+        db.collectionAccountQuoteDao().forQuote(quoteId)
+            .filter { it.accountId != selfId }
+            .mapNotNull { db.collectionAccountDao().get(it.accountId) }
+            .any { it.status != CollectionAccountStatus.CANCELADA.name }
+
+    /**
+     * Crea o edita una Cuenta de Cobro (docs/03 §6). Nace en PENDIENTE con
+     * `CC-PEND-XXXX`; editable solo en PENDIENTE y sin pagos aplicados.
+     * Reutiliza el motor de cálculo F2: mismas líneas tipadas
+     * SERVICIO/MATERIAL/OTRO, retenciones configuradas y redondeo; sin
+     * impuestos ni descuentos. Los snapshots de Cliente, Perfil y
+     * retenciones se capturan en cada guardado permitido y quedan
+     * inmutables junto con líneas y totales tras el primer pago aplicado.
+     * Nunca mezcla Trabajos y Cotizaciones; todos los orígenes comparten
+     * Cliente y Perfil; solo Cotizaciones APROBADA son elegibles y cada
+     * origen pertenece a lo sumo a una Cuenta no cancelada.
+     */
+    suspend fun saveCollectionAccount(input: CollectionAccountInput, existingId: String? = null): String? {
+        val user = requireUser()
+        if (input.items.isEmpty()) return null
+        if (input.items.any { it.description.isBlank() }) return null
+        if (input.jobIds.isNotEmpty() && input.quoteIds.isNotEmpty()) return null // nunca mezclar
+        if (input.jobIds.toSet().size != input.jobIds.size
+            || input.quoteIds.toSet().size != input.quoteIds.size
+        ) return null
+        val client = db.clientDao().get(input.clientId) ?: return null
+        val profile = db.profileDao().get(input.profileId) ?: return null
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.collectionAccountDao().get(it) }
+        if (existing != null) {
+            val st = CollectionAccountStatus.valueOf(existing.status)
+            if (!CollectionAccountTransitions.isEditable(st, existing.appliedAmount.toMoney())) {
+                return null // con pagos aplicados (o cancelada): líneas/totales/snapshots inmutables
+            }
+        }
+        for (jobId in input.jobIds) {
+            val job = db.jobDao().get(jobId) ?: return null
+            if (job.clientId != client.id || job.profileId != profile.id) return null
+            if (jobTakenByOtherAccount(jobId, existing?.id)) return null
+        }
+        for (quoteId in input.quoteIds) {
+            val quote = db.quoteDao().get(quoteId) ?: return null
+            if (quote.clientId != client.id || quote.profileId != profile.id) return null
+            if (quote.status != QuoteStatus.APROBADA.name) return null // elegibilidad F6
+            if (quoteTakenByOtherAccount(quoteId, existing?.id)) return null
+        }
+
+        val calc = QuoteCalc.compute(
+            input.items.map { CalcLine(it.conceptType, it.quantity.toQty(), it.unitPrice.toMoney()) },
+            input.retentions.map { RetentionSpec(it.name, it.ratePercent.toQty(), it.appliesTo) },
+        )
+        val applied = existing?.appliedAmount?.toMoney() ?: BigDecimal.ZERO.setScale(2)
+        val accountId = existing?.id ?: Ids.new()
+        val account = CollectionAccountEntity(
+            id = accountId,
+            userId = existing?.userId ?: user.id,
+            clientId = client.id,
+            profileId = profile.id,
+            provisionalNumber = existing?.provisionalNumber ?: uniqueCollectionProvisionalNumber(),
+            status = existing?.status ?: CollectionAccountStatus.PENDIENTE.name,
+            currency = input.currency.uppercase(),
+            gross = QuoteCalc.format(calc.gross),
+            totalRetained = QuoteCalc.format(calc.totalRetained),
+            net = QuoteCalc.format(calc.net),
+            appliedAmount = QuoteCalc.format(applied),
+            balance = QuoteCalc.format(calc.net.subtract(applied)),
+            issuedAt = existing?.issuedAt ?: now,
+            dueDateEpochDay = input.dueDateEpochDay,
+            conditions = input.conditions.trim(),
+            clientSnapshotJson = SnapshotJson.encodeClient(
+                ClientSnapshot(client.id, client.name, client.type, client.phone, client.email, client.address, client.notes),
+            ),
+            profileSnapshotJson = SnapshotJson.encodeProfile(
+                ProfileSnapshot(profile.id, profile.businessName, profile.description, profile.commercialInfo, profile.logoRef),
+            ),
+            retentionsSnapshotJson = SnapshotJson.encodeRetentions(
+                calc.retentions.map {
+                    AppliedRetentionSnapshot(
+                        name = it.name,
+                        ratePercent = it.ratePercent.stripTrailingZeros().toPlainString(),
+                        appliesTo = it.appliesTo.sorted().map(ConceptType::name),
+                        base = QuoteCalc.format(it.base),
+                        amount = QuoteCalc.format(it.amount),
+                    )
+                },
+            ),
+            clientNameSnapshot = client.name,
+            archived = existing?.archived ?: false,
+            officialNumber = existing?.officialNumber,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        val itemEntities = input.items.mapIndexed { i, l ->
+            CollectionAccountItemEntity(
+                id = Ids.new(), accountId = accountId, position = i + 1,
+                conceptType = l.conceptType.name, description = l.description.trim(),
+                quantity = l.quantity.trim(), unit = l.unit.trim(),
+                unitPrice = QuoteCalc.format(l.unitPrice.toMoney()),
+                lineTotal = QuoteCalc.format(calc.lineTotals[i]),
+                createdAt = now,
+            )
+        }
+        val jobLinks = input.jobIds.mapIndexed { i, jobId ->
+            CollectionAccountJobEntity(
+                id = Ids.new(), accountId = accountId, jobId = jobId,
+                position = i + 1, createdAt = now,
+            )
+        }
+        val quoteLinks = input.quoteIds.mapIndexed { i, quoteId ->
+            CollectionAccountQuoteEntity(
+                id = Ids.new(), accountId = accountId, quoteId = quoteId,
+                position = i + 1, createdAt = now,
+            )
+        }
+        // Una sola transacción: documento, líneas, vínculos y operación.
+        db.withTransaction {
+            db.collectionAccountDao().upsert(account)
+            db.collectionAccountItemDao().deleteForAccount(accountId)
+            db.collectionAccountItemDao().upsertAll(itemEntities)
+            db.collectionAccountJobDao().deleteForAccount(accountId)
+            db.collectionAccountJobDao().upsertAll(jobLinks)
+            db.collectionAccountQuoteDao().deleteForAccount(accountId)
+            db.collectionAccountQuoteDao().upsertAll(quoteLinks)
+            sync?.enqueue(
+                EntityTypes.COLLECTION_ACCOUNT, accountId,
+                SyncPayloads.collectionAccount(
+                    account, itemEntities,
+                    jobLinks.map { it.jobId }, quoteLinks.map { it.quoteId },
+                ),
+                existing?.serverVersion ?: 0,
+            )
+        }
+        return accountId
+    }
+
+    /**
+     * Cancela la Cuenta: solo sin pagos aplicados (docs/03 §6). La
+     * cancelación libera las asociaciones (dejan de bloquear).
+     */
+    suspend fun cancelCollectionAccount(id: String): Boolean {
+        val account = db.collectionAccountDao().get(id) ?: return false
+        val st = CollectionAccountStatus.valueOf(account.status)
+        if (!CollectionAccountTransitions.canCancel(st, account.appliedAmount.toMoney())) return false
+        val updated = account.copy(
+            status = CollectionAccountStatus.CANCELADA.name,
+            updatedAt = nowEpochMillis(),
+            pendingSync = true,
+        )
+        db.withTransaction {
+            db.collectionAccountDao().upsert(updated)
+            sync?.enqueue(
+                EntityTypes.COLLECTION_ACCOUNT, id, collectionAccountPayload(updated),
+                account.serverVersion,
+            )
+        }
+        return true
+    }
+
+    suspend fun setCollectionAccountArchived(id: String, archived: Boolean) {
+        val account = db.collectionAccountDao().get(id) ?: return
+        val updated = account.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.collectionAccountDao().upsert(updated)
+            sync?.enqueue(
+                EntityTypes.COLLECTION_ACCOUNT, id, collectionAccountPayload(updated),
+                account.serverVersion,
+            )
+        }
+    }
+
+    /** Payload completo del documento: líneas y vínculos viajan dentro. */
+    private suspend fun collectionAccountPayload(account: CollectionAccountEntity) =
+        SyncPayloads.collectionAccount(
+            account,
+            db.collectionAccountItemDao().forAccount(account.id),
+            db.collectionAccountJobDao().forAccount(account.id).map { it.jobId },
+            db.collectionAccountQuoteDao().forAccount(account.id).map { it.quoteId },
+        )
+
+    // --- Métodos de Cobro (globales por Titular, sin predeterminados) ---
+
+    suspend fun saveCollectionMethod(input: CollectionMethodInput, existingId: String? = null): String? {
+        if (validateCollectionMethod(input.name) != null) return null
+        val user = requireUser()
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.collectionMethodDao().get(it) }
+        val method = CollectionMethodEntity(
+            id = existing?.id ?: Ids.new(),
+            userId = existing?.userId ?: user.id,
+            name = input.name.trim(),
+            detail = input.detail.trim(),
+            archived = existing?.archived ?: false,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        db.withTransaction {
+            db.collectionMethodDao().upsert(method)
+            sync?.enqueue(EntityTypes.COLLECTION_METHOD, method.id,
+                SyncPayloads.collectionMethod(method), existing?.serverVersion ?: 0)
+        }
+        return method.id
+    }
+
+    suspend fun setCollectionMethodArchived(id: String, archived: Boolean) {
+        val method = db.collectionMethodDao().get(id) ?: return
+        val updated = method.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.collectionMethodDao().upsert(updated)
+            sync?.enqueue(EntityTypes.COLLECTION_METHOD, updated.id,
+                SyncPayloads.collectionMethod(updated), method.serverVersion)
+        }
+    }
+
+    // --- Pagos (append-only) ---
+
+    /**
+     * Registra un Pago recibido: contra una Cuenta individual o sin
+     * asignar vinculado al Cliente (docs/03 §6). Si se indica `accountId`,
+     * la aplicación inicial se registra como el primer evento
+     * `payment_assignment` auditado en la misma transacción — una sola
+     * vía de aplicación, igual que cualquier `assign` posterior.
+     * El pago nunca se edita ni se elimina.
+     */
+    suspend fun savePayment(input: PaymentInput): String? {
+        val user = requireUser()
+        val client = db.clientDao().get(input.clientId) ?: return null
+        if (input.collectionMethodId != null
+            && db.collectionMethodDao().get(input.collectionMethodId) == null
+        ) return null
+        val amount = input.amount.toMoney()
+        if (amount.signum() <= 0) return null
+        val target = input.accountId?.let { db.collectionAccountDao().get(it) }
+        if (input.accountId != null) {
+            if (target == null || target.clientId != client.id) return null
+            val st = CollectionAccountStatus.valueOf(target.status)
+            if (!CollectionAccountTransitions.canReceivePayments(st)
+                || target.balance.toMoney().signum() <= 0
+            ) return null
+        }
+        val now = nowEpochMillis()
+        val payment = PaymentEntity(
+            id = Ids.new(),
+            userId = user.id,
+            clientId = client.id,
+            collectionMethodId = input.collectionMethodId,
+            amount = QuoteCalc.format(amount),
+            paidAtEpochDay = input.paidAtEpochDay,
+            reference = input.reference.trim(),
+            notes = input.notes.trim(),
+            appliedAmount = "0.00",
+            unassignedAmount = QuoteCalc.format(amount),
+            assignedAccountId = null,
+            assignmentStatus = PaymentAssignmentStatus.UNASSIGNED.name,
+            createdAt = now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = 0,
+        )
+        db.withTransaction {
+            db.paymentDao().upsert(payment)
+            sync?.enqueue(EntityTypes.PAYMENT, payment.id, SyncPayloads.payment(payment), 0)
+            if (target != null) {
+                applyAssignLocked(
+                    payment, target, amount,
+                    input.initialAssignReason.ifBlank { "Aplicación inicial del pago" },
+                    now,
+                )
+            }
+        }
+        return payment.id
+    }
+
+    /**
+     * Asigna dinero sin asignar de un Pago a una Cuenta: aplica solo lo
+     * necesario (min de lo pedido, el remanente y el saldo); el excedente
+     * queda UNASSIGNED en el mismo Pago. Devuelve null si aplicó o el
+     * motivo del rechazo.
+     */
+    suspend fun assignPayment(paymentId: String, accountId: String, requested: String, reason: String): String? =
+        db.withTransaction {
+            if (reason.isBlank()) return@withTransaction "La asignación requiere un motivo."
+            val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
+            val account = db.collectionAccountDao().get(accountId) ?: return@withTransaction "Cuenta no encontrada."
+            if (applyAssignLocked(payment, account, requested.toMoney(), reason, nowEpochMillis()) == null) {
+                return@withTransaction "La asignación no aplicó: sin remanente, cuenta cerrada o destino inválido."
+            }
+            null
+        }
+
+    /**
+     * Retira la aplicación vigente del Pago (con motivo): el dinero vuelve
+     * a UNASSIGNED dentro del mismo Pago y el saldo de la Cuenta se
+     * restaura. Evento auditado append-only; no edita ni elimina nada.
+     */
+    suspend fun unassignPayment(paymentId: String, reason: String): String? =
+        db.withTransaction {
+            if (reason.isBlank()) return@withTransaction "La operación requiere un motivo."
+            val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
+            val accountId = payment.assignedAccountId
+                ?: return@withTransaction "El pago no tiene dinero aplicado."
+            val released = payment.appliedAmount.toMoney()
+            if (released.signum() <= 0) return@withTransaction "El pago no tiene dinero aplicado."
+            val account = db.collectionAccountDao().get(accountId)
+                ?: return@withTransaction "Cuenta destino no encontrada."
+            val now = nowEpochMillis()
+            val event = PaymentAssignmentEntity(
+                id = Ids.new(), userId = payment.userId, paymentId = payment.id,
+                action = PaymentAssignmentAction.UNASSIGN.name, accountId = accountId,
+                amount = QuoteCalc.format(released), reason = reason.trim(),
+                createdAt = now, updatedAt = now,
+            )
+            val payUnassigned = payment.amount.toMoney()
+            db.paymentDao().upsert(
+                payment.copy(
+                    appliedAmount = "0.00", unassignedAmount = QuoteCalc.format(payUnassigned),
+                    assignedAccountId = null,
+                    assignmentStatus = PaymentAssignmentStatus.UNASSIGNED.name,
+                    updatedAt = now,
+                ),
+            )
+            val accApplied = account.appliedAmount.toMoney().subtract(released)
+            db.collectionAccountDao().upsert(
+                account.copy(
+                    appliedAmount = QuoteCalc.format(accApplied),
+                    balance = QuoteCalc.format(account.net.toMoney().subtract(accApplied)),
+                    status = deriveCollectionStatus(false, accApplied, account.net.toMoney()).name,
+                    updatedAt = now,
+                ),
+            )
+            db.paymentAssignmentDao().upsert(event)
+            sync?.enqueue(EntityTypes.PAYMENT_ASSIGNMENT, event.id,
+                SyncPayloads.paymentAssignment(event), 0)
+            null
+        }
+
+    /**
+     * Reasigna la aplicación vigente del Pago a otra Cuenta del mismo
+     * Cliente (con motivo): libera de la origen y aplica al destino solo
+     * hasta su saldo pendiente; el excedente queda UNASSIGNED en el mismo
+     * Pago. Un solo evento auditado, atómico.
+     */
+    suspend fun reassignPayment(paymentId: String, toAccountId: String, reason: String): String? =
+        db.withTransaction {
+            if (reason.isBlank()) return@withTransaction "La reasignación requiere un motivo."
+            val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
+            val fromId = payment.assignedAccountId
+                ?: return@withTransaction "El pago no tiene dinero aplicado; usa asignar."
+            if (fromId == toAccountId) return@withTransaction "El pago ya está aplicado a esa cuenta."
+            val released = payment.appliedAmount.toMoney()
+            val from = db.collectionAccountDao().get(fromId)
+                ?: return@withTransaction "Cuenta origen no encontrada."
+            val to = db.collectionAccountDao().get(toAccountId)
+                ?: return@withTransaction "Cuenta destino no encontrada."
+            if (to.clientId != payment.clientId) {
+                return@withTransaction "La cuenta destino pertenece a otro cliente."
+            }
+            if (!CollectionAccountTransitions.canReceivePayments(
+                    CollectionAccountStatus.valueOf(to.status),
+                )
+            ) {
+                return@withTransaction "La cuenta destino no puede recibir pagos."
+            }
+            val toBalance = to.balance.toMoney()
+            val appliedTo = released.min(toBalance)
+            if (appliedTo.signum() <= 0) {
+                return@withTransaction "La cuenta destino no tiene saldo pendiente."
+            }
+            val now = nowEpochMillis()
+            val event = PaymentAssignmentEntity(
+                id = Ids.new(), userId = payment.userId, paymentId = payment.id,
+                action = PaymentAssignmentAction.REASSIGN.name, accountId = toAccountId,
+                fromAccountId = fromId, amount = QuoteCalc.format(appliedTo),
+                releasedAmount = QuoteCalc.format(released), reason = reason.trim(),
+                createdAt = now, updatedAt = now,
+            )
+            val newApplied = appliedTo
+            val newUnassigned = payment.amount.toMoney().subtract(newApplied)
+            db.paymentDao().upsert(
+                payment.copy(
+                    appliedAmount = QuoteCalc.format(newApplied),
+                    unassignedAmount = QuoteCalc.format(newUnassigned),
+                    assignedAccountId = if (newApplied.signum() > 0) toAccountId else null,
+                    assignmentStatus = deriveAssignmentStatus(newApplied, newUnassigned).name,
+                    updatedAt = now,
+                ),
+            )
+            val fromApplied = from.appliedAmount.toMoney().subtract(released)
+            db.collectionAccountDao().upsert(
+                from.copy(
+                    appliedAmount = QuoteCalc.format(fromApplied),
+                    balance = QuoteCalc.format(from.net.toMoney().subtract(fromApplied)),
+                    status = deriveCollectionStatus(false, fromApplied, from.net.toMoney()).name,
+                    updatedAt = now,
+                ),
+            )
+            val toApplied = to.appliedAmount.toMoney().add(appliedTo)
+            db.collectionAccountDao().upsert(
+                to.copy(
+                    appliedAmount = QuoteCalc.format(toApplied),
+                    balance = QuoteCalc.format(to.net.toMoney().subtract(toApplied)),
+                    status = deriveCollectionStatus(false, toApplied, to.net.toMoney()).name,
+                    updatedAt = now,
+                ),
+            )
+            db.paymentAssignmentDao().upsert(event)
+            sync?.enqueue(EntityTypes.PAYMENT_ASSIGNMENT, event.id,
+                SyncPayloads.paymentAssignment(event), 0)
+            null
+        }
+
+    /**
+     * Núcleo de aplicación compartido (creación con destino y `assign`):
+     * valida remanente, cuenta receptora, mismo Cliente y unicidad de
+     * documento destino; registra el evento auditado y actualiza los
+     * importes derivados de Pago y Cuenta en la misma transacción.
+     * Los campos derivados NO se encolan como operación propia: el
+     * servidor recalcula los mismos valores al aplicar el evento y los
+     * entrega por pull (una sola fuente de verdad, sin doble escritura).
+     */
+    private suspend fun applyAssignLocked(
+        payment: PaymentEntity,
+        account: CollectionAccountEntity,
+        requested: BigDecimal,
+        reason: String,
+        now: Long,
+    ): PaymentAssignmentEntity? {
+        val unassigned = payment.unassignedAmount.toMoney()
+        if (unassigned.signum() <= 0) return null
+        if (payment.assignedAccountId != null && payment.assignedAccountId != account.id) return null
+        if (payment.clientId != account.clientId) return null
+        if (!CollectionAccountTransitions.canReceivePayments(
+                CollectionAccountStatus.valueOf(account.status),
+            )
+        ) return null
+        val balance = account.balance.toMoney()
+        val applied = requested.min(unassigned).min(balance)
+        if (applied.signum() <= 0) return null
+        val event = PaymentAssignmentEntity(
+            id = Ids.new(), userId = payment.userId, paymentId = payment.id,
+            action = PaymentAssignmentAction.ASSIGN.name, accountId = account.id,
+            amount = QuoteCalc.format(applied), reason = reason.trim(),
+            createdAt = now, updatedAt = now,
+        )
+        val newApplied = payment.appliedAmount.toMoney().add(applied)
+        val newUnassigned = payment.amount.toMoney().subtract(newApplied)
+        db.paymentDao().upsert(
+            payment.copy(
+                appliedAmount = QuoteCalc.format(newApplied),
+                unassignedAmount = QuoteCalc.format(newUnassigned),
+                assignedAccountId = account.id,
+                assignmentStatus = deriveAssignmentStatus(newApplied, newUnassigned).name,
+                updatedAt = now,
+            ),
+        )
+        val accApplied = account.appliedAmount.toMoney().add(applied)
+        db.collectionAccountDao().upsert(
+            account.copy(
+                appliedAmount = QuoteCalc.format(accApplied),
+                balance = QuoteCalc.format(account.net.toMoney().subtract(accApplied)),
+                status = deriveCollectionStatus(
+                    account.status == CollectionAccountStatus.CANCELADA.name,
+                    accApplied, account.net.toMoney(),
+                ).name,
+                updatedAt = now,
+            ),
+        )
+        db.paymentAssignmentDao().upsert(event)
+        sync?.enqueue(EntityTypes.PAYMENT_ASSIGNMENT, event.id,
+            SyncPayloads.paymentAssignment(event), 0)
+        return event
+    }
 }
 
 // ---------- Entradas de dominio para F2 ----------
@@ -1058,4 +1611,52 @@ data class ReportInput(
         com.cotixgo.app.core.ReportDestination.CLIENTE,
     val content: String = "",
     val jobIds: List<String> = emptyList(),
+)
+
+// ---------- Entradas de dominio para F6 ----------
+
+data class CollectionItemInput(
+    val conceptType: ConceptType,
+    val description: String,
+    val quantity: String,
+    val unit: String = "",
+    val unitPrice: String,
+)
+
+/**
+ * Entrada de Cuenta de Cobro: Trabajos O Cotizaciones (nunca ambos),
+ * retenciones configuradas en F2 como [RetentionInput] y campos opcionales
+ * (`dueDateEpochDay`, `conditions`).
+ */
+data class CollectionAccountInput(
+    val clientId: String,
+    val profileId: String,
+    val currency: String,
+    val items: List<CollectionItemInput>,
+    val retentions: List<RetentionInput> = emptyList(),
+    val jobIds: List<String> = emptyList(),
+    val quoteIds: List<String> = emptyList(),
+    val dueDateEpochDay: Long? = null,
+    val conditions: String = "",
+)
+
+data class CollectionMethodInput(
+    val name: String,
+    val detail: String = "",
+)
+
+/**
+ * Entrada de Pago: `accountId` opcional — si se indica, la aplicación
+ * inicial se registra como evento `assign` auditado en la misma
+ * transacción; el excedente queda UNASSIGNED en el mismo Pago.
+ */
+data class PaymentInput(
+    val clientId: String,
+    val amount: String,
+    val paidAtEpochDay: Long,
+    val collectionMethodId: String? = null,
+    val reference: String = "",
+    val notes: String = "",
+    val accountId: String? = null,
+    val initialAssignReason: String = "",
 )

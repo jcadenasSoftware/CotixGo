@@ -172,3 +172,56 @@ object ReportTransitions {
 
     fun isEditable(status: ReportStatus): Boolean = status == ReportStatus.BORRADOR
 }
+
+// ---------- Cuentas de Cobro, Métodos de Cobro y Pagos (F6) ----------
+
+/**
+ * Estados aprobados de la Cuenta de Cobro (docs/03 §6): nace PENDIENTE;
+ * PARCIAL y PAGADA se derivan de los pagos aplicados (nunca las envía el
+ * usuario directamente) y CANCELADA solo se alcanza sin pagos aplicados.
+ */
+enum class CollectionAccountStatus { PENDIENTE, PARCIAL, PAGADA, CANCELADA }
+
+/** Estado de asignación del Pago (docs/02 §24): todo, parte o nada aplicado. */
+enum class PaymentAssignmentStatus { UNASSIGNED, PARTIAL_ASSIGNED, ASSIGNED }
+
+/** Operaciones auditadas de asignación aprobadas para F6. */
+enum class PaymentAssignmentAction { ASSIGN, UNASSIGN, REASSIGN }
+
+/**
+ * Estado derivado de la Cuenta: PARCIAL/PAGADA emergen del dinero aplicado
+ * frente al neto; CANCELADA es terminal y nunca deriva de importes.
+ */
+fun deriveCollectionStatus(cancelled: Boolean, applied: java.math.BigDecimal, net: java.math.BigDecimal): CollectionAccountStatus =
+    when {
+        cancelled -> CollectionAccountStatus.CANCELADA
+        applied.signum() <= 0 -> CollectionAccountStatus.PENDIENTE
+        applied.compareTo(net) >= 0 -> CollectionAccountStatus.PAGADA
+        else -> CollectionAccountStatus.PARCIAL
+    }
+
+/** Estado derivado del Pago según el remanente sin asignar. */
+fun deriveAssignmentStatus(applied: java.math.BigDecimal, unassigned: java.math.BigDecimal): PaymentAssignmentStatus =
+    when {
+        applied.signum() <= 0 -> PaymentAssignmentStatus.UNASSIGNED
+        unassigned.signum() <= 0 -> PaymentAssignmentStatus.ASSIGNED
+        else -> PaymentAssignmentStatus.PARTIAL_ASSIGNED
+    }
+
+object CollectionAccountTransitions {
+    /** Editable solo en PENDIENTE y sin pagos aplicados (docs/03 §6). */
+    fun isEditable(status: CollectionAccountStatus, applied: java.math.BigDecimal): Boolean =
+        status == CollectionAccountStatus.PENDIENTE && applied.signum() <= 0
+
+    /** Cancelable solo desde PENDIENTE y sin pagos aplicados (docs/03 §6). */
+    fun canCancel(status: CollectionAccountStatus, applied: java.math.BigDecimal): Boolean =
+        status == CollectionAccountStatus.PENDIENTE && applied.signum() <= 0
+
+    /** Puede recibir aplicaciones de pago (saldo vivo y no cancelada). */
+    fun canReceivePayments(status: CollectionAccountStatus): Boolean =
+        status == CollectionAccountStatus.PENDIENTE || status == CollectionAccountStatus.PARCIAL
+}
+
+/** Validación mínima de Método de Cobro: `name` obligatorio, `detail` opcional. */
+fun validateCollectionMethod(name: String): String? =
+    if (name.isBlank()) "El nombre del método de cobro es obligatorio." else null
