@@ -391,11 +391,10 @@ private fun CotixGoNavHost(
                     },
                     preselectedClientId = preClient,
                     preselectedQuoteId = preQuote,
-                    onSave = { input ->
-                        vm.saveJob(input, null) { id ->
-                            if (id != null) nav.navigate(Routes.jobDetail(id)) {
-                                popUpTo(Routes.JOBS)
-                            } else nav.popBackStack()
+                    onSave = { input, onDone -> vm.saveJob(input, null, onDone) },
+                    onSaved = { id ->
+                        nav.navigate(Routes.jobDetail(id)) {
+                            popUpTo(Routes.JOBS)
                         }
                     },
                     onBack = { nav.popBackStack() },
@@ -407,16 +406,23 @@ private fun CotixGoNavHost(
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val job by vm.observeJob(id).collectAsStateWithLifecycle(null)
-                JobFormScreen(
-                    initial = job,
-                    clients = clients,
-                    profile = profiles.firstOrNull { it.id == job?.profileId } ?: profiles.firstOrNull(),
-                    linkableQuotes = emptyList(),
-                    onSave = { input ->
-                        vm.saveJob(input, id) { nav.popBackStack() }
-                    },
-                    onBack = { nav.popBackStack() },
-                )
+                // No componer el formulario hasta cargar el Trabajo: una
+                // primera composición vacía no es un estado definitivo.
+                if (job == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    JobFormScreen(
+                        initial = job,
+                        clients = clients,
+                        profile = profiles.firstOrNull { it.id == job?.profileId } ?: profiles.firstOrNull(),
+                        linkableQuotes = emptyList(),
+                        onSave = { input, onDone -> vm.saveJob(input, id, onDone) },
+                        onSaved = { nav.popBackStack() },
+                        onBack = { nav.popBackStack() },
+                    )
+                }
             }
             composable(
                 Routes.JOB_DETAIL,
