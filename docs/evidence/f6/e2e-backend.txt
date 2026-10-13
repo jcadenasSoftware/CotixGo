@@ -4,7 +4,7 @@ Fecha: 13/10/2026
 Entorno: php -S 0.0.0.0:8080 -t backend/public -c backend/dev.ini + MariaDB 127.0.0.1:3306 cotixgo_dev
 Datos: 100% sintéticos
 Comando: php -c backend/dev.ini backend/tests/e2e.php http://localhost:8080
-Resultado: 123 passed, 0 failed (tras la corrección post-revisión del PR #13)
+Resultado: 126 passed, 0 failed (tras la segunda corrección post-revisión del PR #13)
 
 Casos F6 ejecutados (sección final de backend/tests/e2e.php):
 
@@ -31,6 +31,9 @@ Casos F6 ejecutados (sección final de backend/tests/e2e.php):
   PASS f6_cc_pagada_no_cancelable             Cancelación con pagos aplicados → REJECTED INVALID_TRANSITION
   PASS f6_cc_pagada_linea_alterada_REJECTED   Operación fabricada: mismo conteo de líneas con contenido alterado → REJECTED INVALID_TRANSITION
   PASS f6_cc_pagada_archivado_APPLIED         Archivado permitido sobre Cuenta con pagos (solo `archived` cambia) → APPLIED
+  PASS f6_cc_pagada_nombre_alterado_REJECTED  Operación fabricada: clientNameSnapshot alterado → REJECTED INVALID_TRANSITION
+  PASS f6_cc_pagada_identidad_APPLIED         id/userId/createdAt fabricados → APPLIED con normalización a valores persistidos
+  PASS f6_cc_pagada_identidad_intacta         Pull confirma id, userId (titular) y createdAt canónicos — sin corrupción
   PASS f6_cc3_created                         Segunda Cuenta PENDIENTE para reasignación
   PASS f6_reassign_applied                    Reasignación: libera 114 de la primera Cuenta, aplica 50 en la segunda
   PASS f6_reassign_saldos                     Saldos derivados: Pago 50/100 UNASSIGNED, origen vuelve PENDIENTE, destino PAGADA
@@ -43,9 +46,15 @@ Casos F6 ejecutados (sección final de backend/tests/e2e.php):
   PASS f6_audit_events_registrados            audit_events registra PAYMENT_ASSIGN / PAYMENT_UNASSIGN / PAYMENT_REASSIGN
 
 Los 90 casos F3–F5 previos se mantienen en verde (regresión completa).
-Post-revisión PR #13: la comparación de `items` en la rama inmutable era
-degenerada (strval sobre arrays asociativos → igualdad de conteo);
-corregida a comparación estructural y verificada con los dos casos nuevos.
+Post-revisión PR #13 (1ª corrección): la comparación de `items` en la
+rama inmutable era degenerada (strval sobre arrays asociativos → igualdad
+de conteo); corregida a comparación estructural.
+Post-revisión PR #13 (2ª corrección): `clientNameSnapshot` se añadió a la
+lista estricta de campos protegidos y `id`/`userId`/`createdAt` se
+restauran desde lo persistido en la rama inmutable — el payload no puede
+reasignar identidad, titular ni creación (el user_id de la fila ya es
+autoritativo y nunca lo toca updateEntity). `archived` sigue siendo el
+único cambio permitido. Verificado con los tres casos nuevos.
 Nota: la primera corrida detectó un defecto real corregido antes de esta
 evidencia — el estado derivado de la Cuenta se escribía en la columna
 meta pero no en el payload; corregido en applyPaymentAssignment y

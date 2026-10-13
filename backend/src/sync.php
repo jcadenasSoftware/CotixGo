@@ -820,7 +820,7 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         foreach (['clientId', 'profileId', 'provisionalNumber', 'currency',
                   'gross', 'totalRetained', 'net', 'issuedAt', 'dueDateEpochDay',
                   'conditions', 'clientSnapshotJson', 'profileSnapshotJson',
-                  'retentionsSnapshotJson'] as $f) {
+                  'retentionsSnapshotJson', 'clientNameSnapshot'] as $f) {
             if (($prevData[$f] ?? null) !== ($payload[$f] ?? null)) {
                 return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                     'La cuenta con pagos aplicados (o cancelada) es inmutable; solo puede archivarse.',
@@ -840,6 +840,12 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         $payload['status'] = $oldStatus;
         $payload['appliedAmount'] = $prevData['appliedAmount'] ?? '0.00';
         $payload['balance'] = $prevData['balance'] ?? $payload['net'];
+        // Identidad, titular y creación tampoco puede cambiarlas el payload:
+        // se restauran desde lo persistido (el user_id de la fila ya es
+        // autoritativo y nunca lo toca updateEntity).
+        $payload['id'] = $prevData['id'] ?? $entityId;
+        $payload['userId'] = $prevData['userId'] ?? $userId;
+        $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
         updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
             $oldStatus, $current['official_number']);
         audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'UPDATE',

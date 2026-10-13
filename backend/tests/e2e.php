@@ -934,6 +934,33 @@ check('f6_cc_pagada_linea_alterada_REJECTED', ($r['results'][0]['status'] ?? '')
 check('f6_cc_pagada_archivado_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
     json_encode($r));
 
+// Snapshot del nombre de Cliente también es inmutable (revisión PR #13):
+// misma estructura persistida, solo clientNameSnapshot alterado → REJECTED.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000076'), $cc1, 'PAGADA', 3,
+        ['appliedAmount' => '114.00', 'balance' => '0.00', 'archived' => true,
+         'clientNameSnapshot' => 'Nombre Alterado'])], $token);
+check('f6_cc_pagada_nombre_alterado_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Identidad fabricada (id/userId/createdAt distintos): el servidor los
+// restaura desde lo persistido — no hay corrupción ni cambio de titular.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $ccop($u('c2000078'), $cc1, 'PAGADA', 3,
+        ['appliedAmount' => '114.00', 'balance' => '0.00', 'archived' => true,
+         'id' => 'cc-fabricado', 'userId' => 'otro-titular', 'createdAt' => 1])], $token);
+check('f6_cc_pagada_identidad_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId5 = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId5[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+$ccRow5 = $byId5["collection_account:$cc1"] ?? [];
+check('f6_cc_pagada_identidad_intacta', ($ccRow5['id'] ?? '') === $cc1
+    && ($ccRow5['userId'] ?? '') === $userId
+    && ($ccRow5['createdAt'] ?? null) === $now
+    && ($ccRow5['status'] ?? '') === 'PAGADA'
+    && ($ccRow5['archived'] ?? false) === true, json_encode($ccRow5));
+
 // Segunda Cuenta ($cc3) sin origen para reasignarle 36.
 $cc3 = $u('c2000091');
 [$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
