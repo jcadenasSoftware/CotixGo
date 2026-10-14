@@ -5,18 +5,38 @@ Entorno: JDK 21 (C:\Program Files\Java\jdk-21), Gradle wrapper 8.11.1, AGP 8.9.1
 Emulador: Pixel_8 (AVD), Android 16
 Datos: 100% sintéticos
 
-Comandos ejecutados:
+Comandos ejecutados (HEAD ddecf30):
   gradlew compileDebugKotlin compileDebugAndroidTestKotlin testDebugUnitTest
   gradlew connectedDebugAndroidTest
   gradlew assembleDebug assembleRelease
 
 Resultados reales:
+
   - testDebugUnitTest:        34 tests, 0 fallos (DomainTest con matriz de
                               ConsolidatedTransitions, reserva compartida
                               efectivo−aplicado−reembolsado y paymentIsLive;
                               más regresión ApiErrorParseTest, CalcVectorTest,
                               QuoteDomainTest).
-  - connectedDebugAndroidTest: 81 tests, 0 fallos — suite completa:
+
+  - Instrumentadas (81/81): el resultado autoritativo de la suite completa
+    provino de una ejecución DIRECTA de la instrumentación sobre el
+    emulador, no de la tarea de Gradle:
+
+      adb install app-debug.apk app-debug-androidTest.apk
+      adb shell am instrument -w \
+        com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+      → INSTRUMENTATION_STATUS: numtests=81
+      → INSTRUMENTATION_CODE: -1  (OK (81 tests))
+
+    Contexto: la corrida `gradlew connectedDebugAndroidTest`
+    multi-dispositivo (emulador + teléfono físico M2003J15SC) se abortó
+    porque el teléfono quedó inactivo ~45 min a media suite
+    (comportamiento del dispositivo/MIUI, no un fallo de tests); el XML
+    de resultados del emulador dentro de esa misma corrida ya marcaba
+    81 tests con 0 fallos. En una corrida filtrada previa por clase, las
+    5 pruebas UI nuevas pasaron también en el teléfono físico.
+
+    Contenido de la suite:
       * PaymentDetailScreenTest (M4, nuevo): corrección bajo el piso de
         reembolsados, anulación rechazada y reembolso sobre el disponible
         muestran el mensaje del repositorio con el diálogo abierto en
@@ -40,6 +60,7 @@ Resultados reales:
       * Regresión: CollectionRepositoryTest, JobRepositoryTest,
         JobFormScreenTest, QuoteRepositoryTest, ReportRepositoryTest,
         SyncE2eTest — todas verdes.
+
   - assembleDebug:    BUILD SUCCESSFUL (app-debug.apk)
   - assembleRelease:  BUILD SUCCESSFUL (app-release.apk, minificado)
 

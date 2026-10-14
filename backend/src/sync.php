@@ -754,8 +754,13 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
     // declarados (comparados contra el payload persistido del origen),
     // Cotización solo en estado persistido APROBADA, y un origen en a lo
     // sumo una Cuenta no cancelada. Los orígenes se leen FOR UPDATE para
-    // serializar la comprobación de reuso entre altas concurrentes.
-    foreach ($jobIds as $jobId) {
+    // serializar la comprobación de reuso entre altas concurrentes, en
+    // orden canónico (id ascendente): dos altas que declaren el mismo
+    // conjunto en distinto orden adquirirían los locks cruzados y se
+    // interbloquearían. El orden declarado del payload no se altera.
+    $jobIdsSorted = $jobIds;
+    sort($jobIdsSorted);
+    foreach ($jobIdsSorted as $jobId) {
         $job = entityRowForUpdate($pdo, 'job', $jobId);
         if ($job === null) {
             return result($opId, 'REJECTED', 'DEPENDENCY', "Falta el trabajo $jobId referenciado.");
@@ -774,7 +779,9 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
                 'El trabajo ya pertenece a otra cuenta de cobro no cancelada.');
         }
     }
-    foreach ($quoteIds as $quoteId) {
+    $quoteIdsSorted = $quoteIds;
+    sort($quoteIdsSorted);
+    foreach ($quoteIdsSorted as $quoteId) {
         $quote = entityRowForUpdate($pdo, 'quote', $quoteId);
         if ($quote === null) {
             return result($opId, 'REJECTED', 'DEPENDENCY', "Falta la cotización $quoteId referenciada.");

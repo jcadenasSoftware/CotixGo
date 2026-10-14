@@ -76,9 +76,12 @@ $clienteId = $uid('client');
 $perfilId = $uid('profile');
 $acc = fn(string $n) => $uid("acc-$n");
 $accounts = [];
-foreach (['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'] as $n) {
+foreach (['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n'] as $n) {
     $accounts[$n] = $acc($n);
 }
+// Trabajos para el escenario de locks de orígenes (orden canónico).
+$job1Id = $uid('job-j1');
+$job2Id = $uid('job-j2');
 
 $ops = [
     ['operation_id' => $uid('op-profile'), 'entity_type' => 'profile', 'entity_id' => $perfilId,
@@ -90,6 +93,19 @@ $ops = [
      'payload' => ['id' => $clienteId, 'userId' => $userId, 'type' => 'EMPRESA',
         'name' => 'Cliente Race', 'createdAt' => $now, 'updatedAt' => $now]],
 ];
+// Trabajos compartidos por dos altas de Cuenta con el mismo conjunto de
+// orígenes declarado en orden distinto (escenario de orden de bloqueo).
+foreach ([$job1Id, $job2Id] as $jid) {
+    $ops[] = ['operation_id' => $uid('op-' . $jid), 'entity_type' => 'job',
+        'entity_id' => $jid, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $jid, 'userId' => $userId, 'clientId' => $clienteId,
+            'profileId' => $perfilId,
+            'provisionalNumber' => 'TR-PEND-' . strtoupper(substr($jid, -3)),
+            'status' => 'BORRADOR', 'startDateEpochDay' => 21000,
+            'estimatedDateEpochDay' => 21007, 'executionAddress' => '',
+            'notes' => 'trabajo sintético race', 'clientNameSnapshot' => 'Cliente Race',
+            'createdAt' => $now, 'updatedAt' => $now]];
+}
 foreach ($accounts as $id) {
     $ops[] = ['operation_id' => $uid('op-' . $id), 'entity_type' => 'collection_account',
         'entity_id' => $id, 'type' => 'upsert', 'base_server_version' => 0,
@@ -186,22 +202,41 @@ function beginWinnerTx(PDO $pdo, string $userId, string $consId, string $provisi
         ->execute(['collection_account', $lockAccountId]);
 }
 
-/** Espera (condición, no temporización) a que la sentencia FOR UPDATE del
- * trabajador quede registrada en el processlist: es su estado de espera por
- * el lock que retenemos. */
-function waitForWorkerBlocked(PDO $pdo): bool
+/**
+ * Espera (condición, no temporización) a que el trabajador quede bloqueado
+ * en un lock de fila que retenemos. Criterio verificable en dos muestreos
+ * consecutivos de PROCESSLIST (sin privilegio PROCESS — INNODB_TRX no es
+ * accesible para este usuario):
+ *  1. El hilo NO es esta conexión (`ID <> CONNECTION_ID()` — la consulta
+ *     observadora contiene el literal 'FOR UPDATE' y se auto-coincidiría;
+ *     sin esta exclusión la barrera es trivialmente cierta).
+ *  2. Es del mismo usuario de base (la conexión del servidor local usa la
+ *     misma cuenta), con la sentencia FOR UPDATE sobre `entities` en
+ *     vuelo — la forma de todos los locks de los handlers.
+ *  3. El MISMO hilo persiste ejecutando ese FOR UPDATE en dos muestreos
+ *     separados por ~200 ms: un FOR UPDATE de una fila es instantáneo si
+ *     no espera — persistir demuestra que su transacción está abierta y
+ *     realmente bloqueada en el lock retenido, no solo pasando por él.
+ * Devuelve los IDs de hilo detectados (diagnóstico y, p. ej., aborto de la
+ * espera en el escenario de fallo transitorio). */
+function waitForWorkerBlocked(PDO $pdo, int $limitIters = 150): array
 {
-    for ($i = 0; $i < 150; $i++) {
-        $n = (int) $pdo->query(
-            "SELECT COUNT(*) FROM information_schema.PROCESSLIST
-             WHERE INFO LIKE '%FOR UPDATE%'"
-        )->fetchColumn();
-        if ($n > 0) {
-            return true;
+    $seen = [];
+    for ($i = 0; $i < $limitIters; $i++) {
+        $ids = array_map('intval', $pdo->query(
+            "SELECT ID FROM information_schema.PROCESSLIST
+             WHERE ID <> CONNECTION_ID()
+               AND USER = SUBSTRING_INDEX(USER(), '@', 1)
+               AND INFO LIKE '%entities%FOR UPDATE%'"
+        )->fetchAll(PDO::FETCH_COLUMN));
+        $persistent = array_values(array_intersect($ids, $seen));
+        if ($persistent !== []) {
+            return $persistent;
         }
+        $seen = $ids;
         usleep(200_000);
     }
-    return false;
+    return [];
 }
 
 /** Lanza el trabajador que ejecuta el push real por HTTP. */
@@ -262,8 +297,8 @@ beginWinnerTx($pdo, $userId, $cons1, 'CONS-PEND-RA1', [$accounts['b'], $accounts
 $cons2 = $uid('cons-2');
 $w = spawnWorker($base, $token, $device,
     [consOp($uid('op-cons2'), $cons2, $userId, $clienteId, [$accounts['b'], $accounts['c']], $now)]);
-$blocked = waitForWorkerBlocked($pdo);
-check('race1_worker_blocked_on_member', $blocked, 'el push no apareció esperando FOR UPDATE');
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race1_worker_blocked_on_member', $blockedThreads !== [], 'el push no apareció esperando FOR UPDATE');
 $pdo->commit();
 [$res, $err] = finishWorker($w);
 check('race1_second_consolidated_REJECTED',
@@ -295,8 +330,8 @@ $w = spawnWorker($base, $token, $device,
         'consolidatedId' => null, 'fromAccountId' => null, 'fromConsolidatedId' => null,
         'amount' => '10.00', 'releasedAmount' => '0.00', 'reason' => 'Asignación race',
         'createdAt' => $now, 'updatedAt' => $now]]]);
-$blocked = waitForWorkerBlocked($pdo);
-check('race2_worker_blocked_on_member', $blocked, 'el push no apareció esperando FOR UPDATE');
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race2_worker_blocked_on_member', $blockedThreads !== [], 'el push no apareció esperando FOR UPDATE');
 $pdo->commit();
 [$res, $err] = finishWorker($w);
 check('race2_direct_assign_REJECTED',
@@ -321,8 +356,8 @@ $w = spawnWorker($base, $token, $device,
         'consolidatedId' => null, 'fromAccountId' => null, 'fromConsolidatedId' => null,
         'amount' => '0.00', 'releasedAmount' => '0.00', 'reason' => 'Retiro race',
         'createdAt' => $now, 'updatedAt' => $now]]]);
-$blocked = waitForWorkerBlocked($pdo);
-check('race3_worker_blocked_on_member', $blocked, 'el push no apareció esperando FOR UPDATE');
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race3_worker_blocked_on_member', $blockedThreads !== [], 'el push no apareció esperando FOR UPDATE');
 $pdo->commit();
 [$res, $err] = finishWorker($w);
 check('race3_unassign_member_REJECTED',
@@ -345,8 +380,8 @@ $w = spawnWorker($base, $token, $device,
       'payload' => ['id' => $uid('annul-k'), 'userId' => $userId, 'paymentId' => $payK,
         'kind' => 'ANNULMENT', 'reason' => 'Anulación race',
         'createdAt' => $now, 'updatedAt' => $now]]]);
-$blocked = waitForWorkerBlocked($pdo);
-check('race5_worker_blocked_on_member', $blocked, 'el push no apareció esperando FOR UPDATE');
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race5_worker_blocked_on_member', $blockedThreads !== [], 'el push no apareció esperando FOR UPDATE');
 $pdo->commit();
 [$res, $err] = finishWorker($w);
 check('race5_annulment_member_REJECTED',
@@ -367,8 +402,8 @@ $pdo->prepare('SELECT id FROM entities WHERE entity_type = ? AND id = ? FOR UPDA
 $cons5 = $uid('cons-5');
 $w = spawnWorker($base, $token, $device,
     [consOp($uid('op-cons5'), $cons5, $userId, $clienteId, [$accounts['i'], $accounts['j']], $now)]);
-$blocked = waitForWorkerBlocked($pdo);
-check('race4_worker_blocked_on_member', $blocked, 'el push no apareció esperando FOR UPDATE');
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race4_worker_blocked_on_member', $blockedThreads !== [], 'el push no apareció esperando FOR UPDATE');
 $pdo->rollBack();
 [$res, $err] = finishWorker($w);
 check('race4_no_membership_APPLIED',
@@ -378,6 +413,111 @@ $byId = pullById($base, $token);
 check('race4_consolidated_created',
     ($byId["consolidated_collection:$cons5"]['payload']['status'] ?? '') === 'PENDIENTE',
     json_encode($byId["consolidated_collection:$cons5"] ?? []));
+
+// ==========  Escenario 6: orden canónico de locks de orígenes  ==========
+// El orquestador retiene solo el lock de job-j1. El trabajador declara la
+// Cuenta con orígenes [job-j2, job-j1] — el orden inverso al canónico.
+// Con locking ordenado (id ascendente) el trabajador se bloquea en j1 SIN
+// retener j2; con el orden declarado retendría j2 esperando j1 — y nuestro
+// lock de j2 provocaría un interbloqueo real (InnoDB mataría a alguien).
+$acc6 = $uid('acc-w');
+$acc6Op = ['operation_id' => $uid('op-acc6'), 'entity_type' => 'collection_account',
+    'entity_id' => $acc6, 'type' => 'upsert', 'base_server_version' => 0,
+    'payload' => ['id' => $acc6, 'userId' => $userId, 'clientId' => $clienteId,
+        'profileId' => $perfilId, 'provisionalNumber' => 'CC-PEND-W06',
+        'status' => 'PENDIENTE', 'currency' => 'COP',
+        'jobIds' => [$job2Id, $job1Id], 'quoteIds' => [],
+        'items' => [['id' => $acc6 . '-i', 'position' => 1, 'conceptType' => 'SERVICIO',
+            'description' => 'Servicio race6', 'quantity' => '1', 'unit' => '',
+            'unitPrice' => '50.00', 'lineTotal' => '50.00']],
+        'gross' => '50.00', 'totalRetained' => '0.00', 'net' => '50.00',
+        'balance' => '50.00', 'issuedAt' => '2025-01-01', 'dueDateEpochDay' => null,
+        'conditions' => '', 'clientSnapshotJson' => '{}', 'profileSnapshotJson' => '{}',
+        'retentionsSnapshotJson' => '[]', 'clientNameSnapshot' => 'Cliente Race',
+        'createdAt' => $now, 'updatedAt' => $now]];
+$pdo->beginTransaction();
+$pdo->prepare('SELECT id FROM entities WHERE entity_type = ? AND id = ? FOR UPDATE')
+    ->execute(['job', $job1Id]);
+$w = spawnWorker($base, $token, $device, [$acc6Op]);
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race6_worker_blocked_on_sorted_origin', $blockedThreads !== [],
+    'el alta no apareció esperando el lock del primer origen ordenado');
+// Bajo locking ordenado el trabajador no retiene j2: nuestro lock de j2
+// debe adquirirse sin interbloqueo (bajo orden declarado provocaría un
+// deadlock — InnoDB abortaría esta conexión o la del trabajador).
+$j2Locked = true;
+try {
+    $pdo->prepare('SELECT id FROM entities WHERE entity_type = ? AND id = ? FOR UPDATE')
+        ->execute(['job', $job2Id]);
+} catch (Throwable $e) {
+    $j2Locked = false;
+}
+check('race6_no_deadlock_j2_acquired', $j2Locked,
+    'j2 no pudo bloquearse: el trabajador lo retenía esperando j1 (orden no canónico)');
+$pdo->commit();
+[$res, $err] = finishWorker($w);
+check('race6_reversed_order_APPLIED',
+    ($res['results'][0]['status'] ?? '') === 'APPLIED', json_encode($res) . $err);
+$byId = pullById($base, $token);
+check('race6_account_created', isset($byId["collection_account:$acc6"]),
+    'la cuenta declarada con orígenes invertidos no quedó persistida');
+
+// ==========  Escenario 7 (N6): fallo transitorio sin memoización  ==========
+// El trabajador queda bloqueado en el lock del miembro m (ganadora:
+// Consolidado C7 {m,n} a medio confirmar). Abortamos SU consulta con
+// KILL QUERY — mismo usuario de base, permitido sin SUPER — produciendo
+// un INTERNAL_ERROR transitorio real dentro de la transacción de la
+// operación. La regla vigente: solo los resultados definitivos
+// (APPLIED/REJECTED de negocio) se memorizan en processed_operations; un
+// error interno hace rollback ANTES de la memorización y el mismo
+// operation_id debe poder reintentarse y reevaluar el estado vigente.
+$cons7 = $uid('cons-7');
+beginWinnerTx($pdo, $userId, $cons7, 'CONS-PEND-RA7',
+    [$accounts['m'], $accounts['n']], $accounts['m']);
+$cons7w = $uid('cons-7w');
+$op7 = consOp($uid('op-cons7w'), $cons7w, $userId, $clienteId,
+    [$accounts['m'], $accounts['n']], $now);
+$op7Id = $op7['operation_id'];
+$w = spawnWorker($base, $token, $device, [$op7]);
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race7_worker_blocked_on_member', $blockedThreads !== [],
+    'el push no apareció esperando FOR UPDATE');
+if ($blockedThreads !== []) {
+    // Aborto transitorio real: la sentencia en LOCK WAIT del trabajador.
+    $pdo->exec('KILL QUERY ' . $blockedThreads[0]);
+}
+$pdo->commit();
+[$res, $err] = finishWorker($w);
+check('race7_first_attempt_INTERNAL_ERROR',
+    ($res['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($res['results'][0]['code'] ?? '') === 'INTERNAL_ERROR',
+    json_encode($res) . $err);
+// Regla auditada: el INTERNAL_ERROR transitorio NO quedó memorizado —
+// el rollback anterior a la memorización retiró cualquier rastro.
+$memo = (int) $pdo->query(
+    'SELECT COUNT(*) FROM processed_operations WHERE operation_id = ' . $pdo->quote($op7Id)
+)->fetchColumn();
+check('race7_no_memo_for_transient', $memo === 0,
+    "processed_operations tiene $memo filas para $op7Id");
+// Reintento con el MISMO operation_id + payload: debe reevaluar el estado
+// vigente (Consolidado ya confirmado) y resolver sobre él — un rechazo de
+// negocio distinto al INTERNAL_ERROR, no un replay de la falla transitoria.
+[, $r] = http($base, 'POST', '/sync/push',
+    ['device_id' => $device, 'operations' => [$op7]], $token);
+check('race7_retry_reevaluates_business_rejection',
+    ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR',
+    json_encode($r));
+$byId = pullById($base, $token);
+$consWithM = [];
+foreach ($byId as $key => $ch) {
+    if (str_starts_with($key, 'consolidated_collection:')
+        && in_array($accounts['m'], $ch['payload']['accountIds'] ?? [], true)) {
+        $consWithM[] = $key;
+    }
+}
+check('race7_single_active_membership', $consWithM === ["consolidated_collection:$cons7"],
+    json_encode($consWithM));
 
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

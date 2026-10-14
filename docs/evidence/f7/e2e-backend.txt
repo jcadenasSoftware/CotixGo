@@ -4,7 +4,7 @@ Fecha: 13/10/2026
 Entorno: php -S 127.0.0.1:8080 -t backend/public -c backend/dev.ini + MariaDB 127.0.0.1:3306 cotixgo_dev
 Datos: 100% sintéticos
 Comando: php -c backend/dev.ini backend/tests/e2e.php http://127.0.0.1:8080
-Resultado: 191 passed, 0 failed (tras corrección de la revisión del PR #15)
+Resultado: 195 passed, 0 failed (tras correcciones de las revisiones del PR #15)
 
 Casos F7 ejecutados (sección final de backend/tests/e2e.php):
 
@@ -63,7 +63,7 @@ Casos F7 ejecutados (sección final de backend/tests/e2e.php):
   PASS f7_cons_reuse_after_cancel
   PASS f7_audit_events_registrados
 
-Casos M2 añadidos tras la revisión (identidad canónica con payloads
+Casos M2 añadidos tras la primera revisión (identidad canónica con payloads
 fabricados — id/userId/createdAt forjados rechazados y verificados por
 /sync/pull sobre el estado persistido):
 
@@ -79,7 +79,16 @@ fabricados — id/userId/createdAt forjados rechazados y verificados por
   PASS m2_adj_canonical_identity
   PASS m2_ref_canonical_identity
 
-  (Los 191 casos incluyen la regresión completa F3–F6 más los casos F7
+Casos N3 añadidos tras la segunda revisión (política `createdAt`: el instante
+DECLARADO por el cliente es dato de negocio offline y se conserva; solo el
+caso vacío se completa con la hora del servidor):
+
+  PASS m2_pay_declared_ts_APPLIED
+  PASS m2_pay_createdAt_declared_preserved
+  PASS m2_cons_declared_ts_APPLIED
+  PASS m2_cons_createdAt_declared_preserved
+
+  (Los 195 casos incluyen la regresión completa F3–F6 más los casos F7
   de arriba: elegibilidad y composición del Consolidado, numeración CONS-
   idempotente, doble vínculo, conflicto por versión base, congelamiento
   de Cuenta miembro, asignación a Consolidado con excedente UNASSIGNED,
@@ -88,12 +97,17 @@ fabricados — id/userId/createdAt forjados rechazados y verificados por
   liberación de membresías al cancelar, auditoría de eventos e identidad
   canónica ante payloads fabricados.)
 
-Concurrencia determinista (corrección M1) — backend/tests/race.php +
-race_worker.php, dos procesos/conexiones compitiendo por la misma
-Cuenta; la espera se detecta por PROCESSLIST (condición, no tiempo):
+Concurrencia determinista — backend/tests/race.php + race_worker.php:
+dos procesos/conexiones compiten por la misma Cuenta/origen. La barrera
+verifica espera REAL: un hilo ajeno a la observadora (ID<>CONNECTION_ID),
+del mismo usuario de base, cuya sentencia FOR UPDATE sobre `entities`
+persiste en dos muestreos consecutivos de PROCESSLIST (~200 ms) — un FOR
+UPDATE de una fila es instantáneo si no espera, persistir demuestra que su
+transacción está abierta y bloqueada en el lock retenido. Sin sleeps fijos
+como condición de éxito (el poll tiene límite con error diagnóstico).
 
   Comando: php -c backend/dev.ini backend/tests/race.php http://127.0.0.1:8080
-  Resultado: 18 passed, 0 failed
+  Resultado: 27 passed, 0 failed
 
   PASS race_register
   PASS race_seed_applied
@@ -113,3 +127,29 @@ Cuenta; la espera se detecta por PROCESSLIST (condición, no tiempo):
   PASS race4_worker_blocked_on_member        (control: sin membresía real)
   PASS race4_no_membership_APPLIED
   PASS race4_consolidated_created
+  PASS race6_worker_blocked_on_sorted_origin (N2: orígenes declarados [j2,j1])
+  PASS race6_no_deadlock_j2_acquired         (el trabajador espera j1 sin
+                                              retener j2 → el orquestador
+                                              bloquea j2 sin interbloqueo)
+  PASS race6_reversed_order_APPLIED
+  PASS race6_account_created
+  PASS race7_worker_blocked_on_member        (N6: fallo transitorio real)
+  PASS race7_first_attempt_INTERNAL_ERROR    (KILL QUERY sobre la espera del
+                                              trabajador — mismo usuario,
+                                              sin SUPER)
+  PASS race7_no_memo_for_transient           (rollback anterior a la
+                                              memorización: 0 filas en
+                                              processed_operations)
+  PASS race7_retry_reevaluates_business_rejection  (mismo operation_id
+                                              reevalúa → VALIDATION_ERROR,
+                                              no replay del INTERNAL_ERROR)
+  PASS race7_single_active_membership
+
+Verificación negativa ejecutada (regresión del guardia): con
+`accountInActiveConsolidated` anulado temporalmente (simulando la
+revalidación post-lock ausente), race.php produjo exactamente los fallos
+de invariante esperados — doble membresía, asignación directa a miembro,
+retiro y liberación por anulación sobre fondos de miembro, y el retry de
+race7 aplicando en vez de rechazar (17 passed, 10 failed) — confirmando
+que los assertions detectan la ausencia de la revalidación bajo bloqueo.
+Restaurado el código: 27/27.

@@ -1588,4 +1588,40 @@ check('m2_ref_canonical_identity', ($m2refP['id'] ?? '') === $m2ref
     && trim((string) ($m2refP['createdAt'] ?? '')) !== '',
     json_encode([$m2refP['id'] ?? null, $m2refP['userId'] ?? null]));
 
+// Política de `createdAt` (revisión PR #15, N3): el instante DECLARADO por
+// el cliente es un dato de negocio (creación offline) que el servidor no
+// infiere ni reescribe — se conserva tal cual en creación; solo el caso
+// vacío se completa con la hora del servidor. Verificado por pull.
+$declaredTs = '2025-06-15T10:30:00Z';
+$m2pay2 = $u('e4000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('e4000010'), 'entity_type' => 'payment',
+        'entity_id' => $m2pay2, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $m2pay2, 'userId' => $userId, 'clientId' => $clienteId,
+            'collectionMethodId' => null, 'amount' => '7.50', 'paidAtEpochDay' => 21002,
+            'reference' => '', 'notes' => '', 'createdAt' => $declaredTs,
+            'updatedAt' => $now]]]], $token);
+check('m2_pay_declared_ts_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('m2_pay_createdAt_declared_preserved',
+    ($byId["payment:$m2pay2"]['payload']['createdAt'] ?? null) === $declaredTs,
+    json_encode($byId["payment:$m2pay2"]['payload']['createdAt'] ?? null));
+
+// Consolidado con createdAt declarado: se conserva igual (entidad F7).
+$m2c = $u('e4000011'); $m2d = $u('e4000012'); $m2cons2 = $u('e4000013');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        $mkAcc($u('e4000020'), $m2c, '10.00')[0],
+        $mkAcc($u('e4000021'), $m2d, '12.00')[0],
+        $consOp($u('e4000022'), $m2cons2, 'PENDIENTE', [$m2c, $m2d], 0,
+            ['createdAt' => $declaredTs])[0],
+    ]], $token);
+check('m2_cons_declared_ts_APPLIED', ($r['results'][2]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('m2_cons_createdAt_declared_preserved',
+    ($byId["consolidated_collection:$m2cons2"]['payload']['createdAt'] ?? null) === $declaredTs,
+    json_encode($byId["consolidated_collection:$m2cons2"]['payload']['createdAt'] ?? null));
+
 echo "\n$pass passed, $fail failed\n";
