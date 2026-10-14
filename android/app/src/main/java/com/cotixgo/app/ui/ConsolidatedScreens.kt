@@ -63,7 +63,7 @@ fun ConsolidatedEditorScreen(
     clients: List<ClientEntity>,
     accounts: List<CollectionAccountEntity>,
     memberAccountIds: Set<String>,
-    onSave: (ConsolidatedInput) -> Unit,
+    onSave: (ConsolidatedInput, (String?) -> Unit) -> Unit,
     onBack: () -> Unit,
 ) {
     var clientId by remember { mutableStateOf(initial?.clientId ?: "") }
@@ -176,13 +176,20 @@ fun ConsolidatedEditorScreen(
                             selected.size < 2 -> error = "El consolidado requiere al menos dos cuentas."
                             else -> {
                                 error = null
+                                // Null = rechazado por elegibilidad/estado: el
+                                // usuario permanece en el editor con el aviso.
                                 onSave(
                                     ConsolidatedInput(
                                         clientId = clientId,
                                         accountIds = selected.toList(),
                                         currency = currency,
                                     ),
-                                )
+                                ) { savedId ->
+                                    if (savedId == null) {
+                                        error = "No se pudo guardar el consolidado: " +
+                                            "revisa que las cuentas sigan elegibles."
+                                    }
+                                }
                             }
                         }
                     }) { Text("Guardar") }
@@ -207,7 +214,7 @@ fun ConsolidatedDetailScreen(
     memberAccounts: List<CollectionAccountEntity>,
     payments: List<PaymentEntity>,
     onEdit: () -> Unit,
-    onCancelConsolidated: () -> Unit,
+    onCancelConsolidated: ((Boolean) -> Unit) -> Unit,
     onSetArchived: (Boolean) -> Unit,
     onOpenAccount: (String) -> Unit,
     onOpenPayment: (String) -> Unit,
@@ -225,18 +232,34 @@ fun ConsolidatedDetailScreen(
     val editable = status == CollectionAccountStatus.PENDIENTE &&
         consolidated.appliedAmount.toMoney().signum() <= 0
     var confirmCancel by remember { mutableStateOf(false) }
+    var cancelError by remember { mutableStateOf<String?>(null) }
 
     if (confirmCancel) {
         AlertDialog(
-            onDismissRequest = { confirmCancel = false },
+            onDismissRequest = { confirmCancel = false; cancelError = null },
             title = { Text("Cancelar consolidado") },
-            text = { Text("La cancelación libera las cuentas miembro y conserva la membresía histórica. No se puede deshacer.") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("La cancelación libera las cuentas miembro y conserva la membresía histórica. No se puede deshacer.")
+                    cancelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
             confirmButton = {
-                Button(onClick = { confirmCancel = false; onCancelConsolidated() }) {
+                Button(onClick = {
+                    onCancelConsolidated { ok ->
+                        if (ok) { confirmCancel = false; cancelError = null }
+                        else {
+                            cancelError = "No se pudo cancelar: solo un consolidado " +
+                                "PENDIENTE sin pagos aplicados puede cancelarse."
+                        }
+                    }
+                }) {
                     Text("Cancelar consolidado")
                 }
             },
-            dismissButton = { TextButton(onClick = { confirmCancel = false }) { Text("Volver") } },
+            dismissButton = {
+                TextButton(onClick = { confirmCancel = false; cancelError = null }) { Text("Volver") }
+            },
         )
     }
 

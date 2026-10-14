@@ -4,7 +4,7 @@ Fecha: 13/10/2026
 Entorno: php -S 127.0.0.1:8080 -t backend/public -c backend/dev.ini + MariaDB 127.0.0.1:3306 cotixgo_dev
 Datos: 100% sintéticos
 Comando: php -c backend/dev.ini backend/tests/e2e.php http://127.0.0.1:8080
-Resultado: 180 passed, 0 failed
+Resultado: 191 passed, 0 failed (tras corrección de la revisión del PR #15)
 
 Casos F7 ejecutados (sección final de backend/tests/e2e.php):
 
@@ -63,10 +63,53 @@ Casos F7 ejecutados (sección final de backend/tests/e2e.php):
   PASS f7_cons_reuse_after_cancel
   PASS f7_audit_events_registrados
 
-  (Los 180 casos incluyen la regresión completa F3–F6 más los casos F7
+Casos M2 añadidos tras la revisión (identidad canónica con payloads
+fabricados — id/userId/createdAt forjados rechazados y verificados por
+/sync/pull sobre el estado persistido):
+
+  PASS m2_cc_create_forged_APPLIED
+  PASS m2_cc_create_canonical_identity
+  PASS m2_cc_edit_forged_APPLIED
+  PASS m2_cc_edit_canonical_identity
+  PASS m2_cons_create_forged_APPLIED
+  PASS m2_cons_create_canonical_identity
+  PASS m2_pay_create_forged_APPLIED
+  PASS m2_pay_create_canonical_identity
+  PASS m2_adj_ref_forged_APPLIED
+  PASS m2_adj_canonical_identity
+  PASS m2_ref_canonical_identity
+
+  (Los 191 casos incluyen la regresión completa F3–F6 más los casos F7
   de arriba: elegibilidad y composición del Consolidado, numeración CONS-
   idempotente, doble vínculo, conflicto por versión base, congelamiento
   de Cuenta miembro, asignación a Consolidado con excedente UNASSIGNED,
   corrección al alza/a la baja LIFO con piso de reembolsados, anulación
   terminal con replay memorizado, reserva compartida de Reembolsos,
-  liberación de membresías al cancelar y auditoría de eventos.)
+  liberación de membresías al cancelar, auditoría de eventos e identidad
+  canónica ante payloads fabricados.)
+
+Concurrencia determinista (corrección M1) — backend/tests/race.php +
+race_worker.php, dos procesos/conexiones compitiendo por la misma
+Cuenta; la espera se detecta por PROCESSLIST (condición, no tiempo):
+
+  Comando: php -c backend/dev.ini backend/tests/race.php http://127.0.0.1:8080
+  Resultado: 18 passed, 0 failed
+
+  PASS race_register
+  PASS race_seed_applied
+  PASS race_payments_seeded
+  PASS race1_worker_blocked_on_member        (Consolidado-vs-Consolidado)
+  PASS race1_second_consolidated_REJECTED
+  PASS race1_single_active_membership
+  PASS race2_worker_blocked_on_member        (asignación directa-vs-membresía)
+  PASS race2_direct_assign_REJECTED
+  PASS race2_payment_still_unassigned
+  PASS race3_worker_blocked_on_member        (retiro-vs-membresía)
+  PASS race3_unassign_member_REJECTED
+  PASS race3_payment_keeps_applied
+  PASS race5_worker_blocked_on_member        (anulación-vs-membresía)
+  PASS race5_annulment_member_REJECTED
+  PASS race5_payment_keeps_applied
+  PASS race4_worker_blocked_on_member        (control: sin membresía real)
+  PASS race4_no_membership_APPLIED
+  PASS race4_consolidated_created

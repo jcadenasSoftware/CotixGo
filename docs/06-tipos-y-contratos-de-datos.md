@@ -1,6 +1,6 @@
 # CotixGo — Tipos y contratos de datos
 
-**Versión:** 1.9  
+**Versión:** 1.10  
 **Estado:** Convenciones conceptuales para alinear el modelo; no constituye DDL ni esquema de API final.
 
 ## 1. Propósito

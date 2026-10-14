@@ -1,6 +1,6 @@
 # CotixGo — Anexo de decisiones aprobadas y revisión de brechas
 
-**Versión:** 1.16  
+**Versión:** 1.17  
 **Estado:** Registro de decisiones aprobadas en el contexto del proyecto y revisión documental  
 **Alcance:** Complementa `01-reglas-de-negocio-v0.2.md` y señala ajustes necesarios en el borrador `02-modelo-de-datos.md`.
 

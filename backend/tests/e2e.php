@@ -1485,4 +1485,107 @@ $aud7 = (int) $pdo->query(
 )->fetchColumn();
 check('f7_audit_events_registrados', $aud7 >= 5, (string) $aud7);
 
+// =====================  M2 (revisión PR #15): identidad canónica  =====================
+// El payload no puede suplantar `id` (queda el entity_id del sobre) ni
+// `userId` (titular autenticado); `createdAt` se conserva si el cliente lo
+// declara y se completa con la hora del servidor si falta. En edición
+// PENDIENTE se restauran desde lo persistido. Se verifica por pull: los
+// valores almacenados son exactamente los que se propagan a los clientes.
+$pullById = function () use ($base, $token) {
+    [$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+    $m = [];
+    foreach ($r['changes'] ?? [] as $ch) {
+        $m[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch;
+    }
+    return $m;
+};
+
+// Cuenta PENDIENTE creada con identidad fabricada → APPLIED con canónicos.
+$m2acc = $u('e1000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkAcc($u('e1000010'), $m2acc, '10.00', 0, 'PENDIENTE',
+        ['id' => 'FORGED-ACC-ID', 'userId' => 'forged-user', 'createdAt' => ''])], $token);
+check('m2_cc_create_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2accP = $byId["collection_account:$m2acc"]['payload'] ?? [];
+check('m2_cc_create_canonical_identity', ($m2accP['id'] ?? '') === $m2acc
+    && ($m2accP['userId'] ?? '') === $userId
+    && trim((string) ($m2accP['createdAt'] ?? '')) !== '',
+    json_encode([$m2accP['id'] ?? null, $m2accP['userId'] ?? null]));
+
+// Edición PENDIENTE con identidad fabricada → se restauran los persistidos.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkAcc($u('e1000020'), $m2acc, '10.00', 1, 'PENDIENTE',
+        ['id' => 'FORGED-ACC-ID', 'userId' => 'forged-user',
+         'createdAt' => '1999-01-01T00:00:00Z', 'conditions' => 'Editada'])], $token);
+check('m2_cc_edit_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2accP = $byId["collection_account:$m2acc"]['payload'] ?? [];
+check('m2_cc_edit_canonical_identity', ($m2accP['id'] ?? '') === $m2acc
+    && ($m2accP['userId'] ?? '') === $userId
+    && ($m2accP['createdAt'] ?? '') !== '1999-01-01T00:00:00Z',
+    json_encode([$m2accP['id'] ?? null, $m2accP['userId'] ?? null, $m2accP['createdAt'] ?? null]));
+
+// Consolidado creado con identidad fabricada → canónicos persistidos.
+$m2a = $u('e2000001'); $m2b = $u('e2000002'); $m2cons = $u('e2000003');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        $mkAcc($u('e2000010'), $m2a, '10.00')[0],
+        $mkAcc($u('e2000011'), $m2b, '12.00')[0],
+        $consOp($u('e2000020'), $m2cons, 'PENDIENTE', [$m2a, $m2b], 0,
+            ['id' => 'FORGED-CONS-ID', 'userId' => 'forged-user', 'createdAt' => ''])[0],
+    ]], $token);
+check('m2_cons_create_forged_APPLIED', ($r['results'][2]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2consP = $byId["consolidated_collection:$m2cons"]['payload'] ?? [];
+check('m2_cons_create_canonical_identity', ($m2consP['id'] ?? '') === $m2cons
+    && ($m2consP['userId'] ?? '') === $userId
+    && trim((string) ($m2consP['createdAt'] ?? '')) !== '',
+    json_encode([$m2consP['id'] ?? null, $m2consP['userId'] ?? null]));
+
+// Pago creado con identidad fabricada → canónicos (misma clase, F6).
+$m2pay = $u('e3000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('e3000010'), 'entity_type' => 'payment',
+        'entity_id' => $m2pay, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => 'FORGED-PAY-ID', 'userId' => 'forged-user', 'clientId' => $clienteId,
+            'collectionMethodId' => null, 'amount' => '25.00', 'paidAtEpochDay' => 21002,
+            'reference' => '', 'notes' => '', 'createdAt' => '', 'updatedAt' => $now]]]], $token);
+check('m2_pay_create_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2payP = $byId["payment:$m2pay"]['payload'] ?? [];
+check('m2_pay_create_canonical_identity', ($m2payP['id'] ?? '') === $m2pay
+    && ($m2payP['userId'] ?? '') === $userId
+    && trim((string) ($m2payP['createdAt'] ?? '')) !== '',
+    json_encode([$m2payP['id'] ?? null, $m2payP['userId'] ?? null]));
+
+// Ajuste (CORRECTION al alza) y Reembolso con identidad fabricada → canónicos.
+$m2adj = $u('e3000002'); $m2ref = $u('e3000003');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $u('e3000020'), 'entity_type' => 'payment_adjustment',
+         'entity_id' => $m2adj, 'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => 'FORGED-ADJ-ID', 'userId' => 'forged-user', 'paymentId' => $m2pay,
+            'kind' => 'CORRECTION', 'reason' => 'Ajuste M2', 'newEffectiveAmount' => '30.00',
+            'createdAt' => '', 'updatedAt' => $now]],
+        ['operation_id' => $u('e3000030'), 'entity_type' => 'payment_refund',
+         'entity_id' => $m2ref, 'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => 'FORGED-REF-ID', 'userId' => 'forged-user', 'paymentId' => $m2pay,
+            'amount' => '5.00', 'refundedAtEpochDay' => 21002, 'collectionMethodId' => null,
+            'reason' => 'Reembolso M2', 'createdAt' => '', 'updatedAt' => $now]],
+    ]], $token);
+check('m2_adj_ref_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][1]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2adjP = $byId["payment_adjustment:$m2adj"]['payload'] ?? [];
+$m2refP = $byId["payment_refund:$m2ref"]['payload'] ?? [];
+check('m2_adj_canonical_identity', ($m2adjP['id'] ?? '') === $m2adj
+    && ($m2adjP['userId'] ?? '') === $userId
+    && trim((string) ($m2adjP['createdAt'] ?? '')) !== '',
+    json_encode([$m2adjP['id'] ?? null, $m2adjP['userId'] ?? null]));
+check('m2_ref_canonical_identity', ($m2refP['id'] ?? '') === $m2ref
+    && ($m2refP['userId'] ?? '') === $userId
+    && trim((string) ($m2refP['createdAt'] ?? '')) !== '',
+    json_encode([$m2refP['id'] ?? null, $m2refP['userId'] ?? null]));
+
 echo "\n$pass passed, $fail failed\n";

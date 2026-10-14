@@ -1,6 +1,6 @@
 # CotixGo — Instrucción global y planificación inicial para Devin
 
-**Versión:** 3.2  
+**Versión:** 3.3  
 **Estado:** Planificación Android-first (fases F1–F8) aprobada por el titular. La implementación avanza por fases; cada fase requiere aprobación explícita del titular antes de implementarse. F1–F5 están implementadas e integradas en `main` (F5 por el merge `b424c3f`, PR #9 — Informes en Android con sincronización, solo datos sintéticos; ver `03` §6 y `05` §5.3), junto con el correctivo de edición de Trabajo (merge `0df9c87`, PR #10). La verificación de Gradle Sync dentro de Android Studio con JDK 21 sigue pendiente para el titular: las verificaciones se han ejecutado por CLI. Las decisiones de alcance de F6 (Cuenta de Cobro, Métodos de Cobro y pagos esenciales) fueron aprobadas para planificación el 13/10/2026 (`03` §6) y su implementación local fue autorizada y completada el mismo día con datos sintéticos (elecciones técnicas en `05` §5.4, evidencia en `evidence/f6/`); F6 quedó integrada en `main` por el merge `22da7b0` (PR #13). F7 (Consolidado de Cuentas, `payment_adjustments` y Reembolsos) fue implementada en local el 13/10/2026 con datos sintéticos tras la autorización de etapa del titular — reglas aprobadas en la ficha F7 (`03` §6), elecciones técnicas en `05` §5.5, evidencia en `evidence/f7/` — y queda en revisión del titular vía PR. Sin despliegue remoto ni datos reales.
 **Responsabilidad:** El usuario define y aprueba el producto; Devin prepara el plan y, después de su aprobación, implementa; el usuario y el equipo revisan cada entrega.
 

@@ -621,13 +621,14 @@ private fun CotixGoNavHost(
                     clients = clients,
                     accounts = collectionAccounts,
                     memberAccountIds = activeMemberships.keys,
-                    onSave = { input ->
+                    onSave = { input, done ->
                         vm.saveConsolidated(input, null) { newId ->
                             if (newId != null) {
                                 nav.navigate(Routes.consolidatedDetail(newId)) {
                                     popUpTo(Routes.COLLECTIONS)
                                 }
                             }
+                            done(newId)
                         }
                     },
                     onBack = { nav.popBackStack() },
@@ -648,8 +649,11 @@ private fun CotixGoNavHost(
                     accounts = collectionAccounts,
                     memberAccountIds = activeMemberships
                         .filter { it.value != id }.keys,
-                    onSave = { input ->
-                        vm.saveConsolidated(input, id) { nav.popBackStack() }
+                    onSave = { input, done ->
+                        vm.saveConsolidated(input, id) { newId ->
+                            if (newId != null) nav.popBackStack()
+                            done(newId)
+                        }
                     },
                     onBack = { nav.popBackStack() },
                 )
@@ -670,7 +674,7 @@ private fun CotixGoNavHost(
                         .mapNotNull { accountsById[it.accountId] },
                     payments = consPayments,
                     onEdit = { nav.navigate(Routes.consolidatedEdit(id)) },
-                    onCancelConsolidated = { vm.cancelConsolidated(id) {} },
+                    onCancelConsolidated = { done -> vm.cancelConsolidated(id, done) },
                     onSetArchived = { archived -> vm.setConsolidatedArchived(id, archived) },
                     onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
                     onOpenPayment = { nav.navigate(Routes.paymentDetail(it)) },
@@ -825,17 +829,17 @@ private fun CotixGoNavHost(
                     accountsById = accountsById,
                     consolidatedsById = consById,
                     methods = collectionMethods,
-                    onAssign = { kind, targetId, amount, reason ->
-                        vm.assignPaymentToTarget(id, kind, targetId, amount, reason) {}
+                    onAssign = { kind, targetId, amount, reason, done ->
+                        vm.assignPaymentToTarget(id, kind, targetId, amount, reason, done)
                     },
-                    onUnassign = { reason -> vm.unassignPayment(id, reason) {} },
-                    onReassign = { kind, targetId, reason ->
-                        vm.reassignPaymentToTarget(id, kind, targetId, reason) {}
+                    onUnassign = { reason, done -> vm.unassignPayment(id, reason, done) },
+                    onReassign = { kind, targetId, reason, done ->
+                        vm.reassignPaymentToTarget(id, kind, targetId, reason, done)
                     },
-                    onCorrect = { eff, reason -> vm.correctPayment(id, eff, reason) {} },
-                    onAnnul = { reason -> vm.annulPayment(id, reason) {} },
-                    onRefund = { amt, day, mId, reason ->
-                        vm.refundPayment(id, amt, day, mId, reason) {}
+                    onCorrect = { eff, reason, done -> vm.correctPayment(id, eff, reason, done) },
+                    onAnnul = { reason, done -> vm.annulPayment(id, reason, done) },
+                    onRefund = { amt, day, mId, reason, done ->
+                        vm.refundPayment(id, amt, day, mId, reason, done)
                     },
                     onBack = { nav.popBackStack() },
                 )

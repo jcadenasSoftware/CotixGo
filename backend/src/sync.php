@@ -753,9 +753,10 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
     // Validación de orígenes con datos persistidos: mismo Cliente/Perfil
     // declarados (comparados contra el payload persistido del origen),
     // Cotización solo en estado persistido APROBADA, y un origen en a lo
-    // sumo una Cuenta no cancelada.
+    // sumo una Cuenta no cancelada. Los orígenes se leen FOR UPDATE para
+    // serializar la comprobación de reuso entre altas concurrentes.
     foreach ($jobIds as $jobId) {
-        $job = entityRow($pdo, 'job', $jobId);
+        $job = entityRowForUpdate($pdo, 'job', $jobId);
         if ($job === null) {
             return result($opId, 'REJECTED', 'DEPENDENCY', "Falta el trabajo $jobId referenciado.");
         }
@@ -774,7 +775,7 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         }
     }
     foreach ($quoteIds as $quoteId) {
-        $quote = entityRow($pdo, 'quote', $quoteId);
+        $quote = entityRowForUpdate($pdo, 'quote', $quoteId);
         if ($quote === null) {
             return result($opId, 'REJECTED', 'DEPENDENCY', "Falta la cotización $quoteId referenciada.");
         }
@@ -808,10 +809,13 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         }
         // Importes derivados: el servidor conserva el neto declarado pero
         // recalcula aplicado/saldo/estado desde sus propios datos — nunca
-        // confía en los importes del payload.
+        // confía en los importes del payload. La identidad se normaliza con
+        // valores canónicos (F7, revisión M2): id del sobre, titular
+        // autenticado y createdAt declarado (o del servidor si falta).
         $payload['appliedAmount'] = '0.00';
         $payload['balance'] = (string) ($payload['net'] ?? '0');
         $payload['status'] = 'PENDIENTE';
+        $payload = normalizeIdentityCreate($payload, $entityId, $userId);
         $official = ensureOfficialNumber($pdo, $userId, $entityId, 'CC');
         insertEntity($pdo, 'collection_account', $entityId, $userId, $payload, 'PENDIENTE', $official);
         audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'CREATE',
@@ -825,15 +829,27 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
             (int) $current['server_version'], serverState($current));
     }
 
-    $oldStatus = (string) $current['status'];
-    $prevData = json_decode($current['payload'], true) ?: [];
+    // La fila se bloquea antes de cualquier decisión sobre membresía: ordena
+    // la espera contra altas/ediciones concurrentes del Consolidado, que ya
+    // bloquean a sus miembros en applyConsolidatedCollection, y la base se
+    // revalida contra la versión bloqueada (la lectura inicial del despacho
+    // puede quedar obsoleta si un competidor confirmó durante la espera).
+    $locked = entityRowForUpdate($pdo, 'collection_account', $entityId);
+    if ($locked === null) {
+        return result($opId, 'REJECTED', 'DEPENDENCY', 'La cuenta de cobro ya no existe.');
+    }
+    if ($base !== (int) $locked['server_version']) {
+        return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+            'La cuenta de cobro cambió desde la versión conocida por el dispositivo.',
+            (int) $locked['server_version'], serverState($locked));
+    }
+    $oldStatus = (string) $locked['status'];
+    $prevData = json_decode($locked['payload'], true) ?: [];
 
     // F7: una Cuenta miembro de un Consolidado activo conserva intactas sus
     // líneas, totales y asociaciones (el Consolidado tomó su saldo); solo
-    // `archived` puede cambiar. La fila se bloquea primero para ordenar la
-    // espera contra altas/ediciones concurrentes del Consolidado, que ya
-    // bloquean a sus miembros en applyConsolidatedCollection.
-    entityRowForUpdate($pdo, 'collection_account', $entityId);
+    // `archived` puede cambiar. La membresía se consulta tras bloquear la
+    // fila para observar el estado vigente del servidor.
     if (accountInActiveConsolidated($pdo, $userId, $entityId)) {
         foreach (['clientId', 'profileId', 'provisionalNumber', 'currency',
                   'gross', 'totalRetained', 'net', 'issuedAt', 'dueDateEpochDay',
@@ -843,7 +859,7 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
             if (($prevData[$f] ?? null) !== ($payload[$f] ?? null)) {
                 return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                     'La cuenta pertenece a un consolidado activo; retírala del consolidado antes de editarla.',
-                    (int) $current['server_version'], serverState($current));
+                    (int) $locked['server_version'], serverState($locked));
             }
         }
         $norm = fn($v) => array_values(array_map('strval', (array) ($v ?? [])));
@@ -852,7 +868,7 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
             || $norm($prevData['quoteIds'] ?? []) != $norm($payload['quoteIds'] ?? [])) {
             return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                 'La cuenta pertenece a un consolidado activo; retírala del consolidado antes de editarla.',
-                (int) $current['server_version'], serverState($current));
+                (int) $locked['server_version'], serverState($locked));
         }
         $payload['status'] = $oldStatus;
         $payload['appliedAmount'] = $prevData['appliedAmount'] ?? '0.00';
@@ -860,11 +876,11 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         $payload['id'] = $prevData['id'] ?? $entityId;
         $payload['userId'] = $prevData['userId'] ?? $userId;
         $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
-        updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
-            $oldStatus, $current['official_number']);
+        updateEntity($pdo, 'collection_account', $entityId, $locked, $payload,
+            $oldStatus, $locked['official_number']);
         audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'UPDATE',
             ['archived' => (bool) ($payload['archived'] ?? false)]);
-        return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+        return result($opId, 'APPLIED', null, null, (int) $locked['server_version'] + 1);
     }
 
     // Inmutable tras pagos aplicados o cancelada: solo `archived` puede
@@ -874,7 +890,7 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         if ($newStatus !== $oldStatus) {
             return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                 "La cuenta está $oldStatus y no admite la transición declarada.",
-                (int) $current['server_version'], serverState($current));
+                (int) $locked['server_version'], serverState($locked));
         }
         foreach (['clientId', 'profileId', 'provisionalNumber', 'currency',
                   'gross', 'totalRetained', 'net', 'issuedAt', 'dueDateEpochDay',
@@ -883,7 +899,7 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
             if (($prevData[$f] ?? null) !== ($payload[$f] ?? null)) {
                 return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                     'La cuenta con pagos aplicados (o cancelada) es inmutable; solo puede archivarse.',
-                    (int) $current['server_version'], serverState($current));
+                    (int) $locked['server_version'], serverState($locked));
             }
         }
         // items se compara estructuralmente (contenido completo de cada
@@ -894,7 +910,7 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
             || $norm($prevData['quoteIds'] ?? []) != $norm($payload['quoteIds'] ?? [])) {
             return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                 'La cuenta con pagos aplicados (o cancelada) es inmutable; solo puede archivarse.',
-                (int) $current['server_version'], serverState($current));
+                (int) $locked['server_version'], serverState($locked));
         }
         $payload['status'] = $oldStatus;
         $payload['appliedAmount'] = $prevData['appliedAmount'] ?? '0.00';
@@ -905,11 +921,11 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         $payload['id'] = $prevData['id'] ?? $entityId;
         $payload['userId'] = $prevData['userId'] ?? $userId;
         $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
-        updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
-            $oldStatus, $current['official_number']);
+        updateEntity($pdo, 'collection_account', $entityId, $locked, $payload,
+            $oldStatus, $locked['official_number']);
         audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'UPDATE',
             ['archived' => (bool) ($payload['archived'] ?? false)]);
-        return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+        return result($opId, 'APPLIED', null, null, (int) $locked['server_version'] + 1);
     }
 
     // Persistida en PENDIENTE: edición libre o cancelación (solo sin pagos
@@ -919,19 +935,19 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
         if ($applied > 0) {
             return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                 'Solo se puede cancelar una cuenta sin pagos aplicados.',
-                (int) $current['server_version'], serverState($current));
+                (int) $locked['server_version'], serverState($locked));
         }
         $payload['status'] = 'CANCELADA';
-        updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
-            'CANCELADA', $current['official_number']);
+        updateEntity($pdo, 'collection_account', $entityId, $locked, $payload,
+            'CANCELADA', $locked['official_number']);
         audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'TRANSITION',
             ['from' => 'PENDIENTE', 'to' => 'CANCELADA']);
-        return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+        return result($opId, 'APPLIED', null, null, (int) $locked['server_version'] + 1);
     }
     if ($newStatus !== 'PENDIENTE') {
         return result($opId, 'REJECTED', 'INVALID_TRANSITION',
             'PARCIAL y PAGADA las deriva el servidor desde los pagos aplicados.',
-            (int) $current['server_version'], serverState($current));
+            (int) $locked['server_version'], serverState($locked));
     }
     $payload['appliedAmount'] = $prevData['appliedAmount'] ?? '0.00';
     $payload['balance'] = (string) ($payload['net'] ?? $prevData['net'] ?? '0');
@@ -940,10 +956,11 @@ function applyCollectionAccount(PDO $pdo, string $userId, string $deviceId, stri
     $payload['id'] = $prevData['id'] ?? $entityId;
     $payload['userId'] = $prevData['userId'] ?? $userId;
     $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
-    updateEntity($pdo, 'collection_account', $entityId, $current, $payload,
-        'PENDIENTE', $current['official_number']);
-    audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'UPDATE');
-    return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+    updateEntity($pdo, 'collection_account', $entityId, $locked, $payload,
+        'PENDIENTE', $locked['official_number']);
+    audit($pdo, $userId, $deviceId, $opId, 'collection_account', $entityId, 'UPDATE',
+        ['status' => 'PENDIENTE']);
+    return result($opId, 'APPLIED', null, null, (int) $locked['server_version'] + 1);
 }
 
 /** ¿El origen ya está ligado a otra Cuenta no cancelada del usuario? */
@@ -1021,10 +1038,33 @@ function applyPayment(PDO $pdo, string $userId, string $deviceId, string $opId,
     $payload['assignedConsolidatedId'] = null;
     $payload['assignedTargetType'] = null;
     $payload['assignmentStatus'] = 'UNASSIGNED';
+    // Identidad canónica en creación (revisión PR #15, M2): id del sobre y
+    // titular autenticado pisan el payload; createdAt conserva el valor
+    // declarado por el cliente o se completa con la hora del servidor.
+    $payload = normalizeIdentityCreate($payload, $entityId, $userId);
     insertEntity($pdo, 'payment', $entityId, $userId, $payload, 'UNASSIGNED');
     audit($pdo, $userId, $deviceId, $opId, 'payment', $entityId, 'CREATE',
         ['amount' => (string) ($payload['amount'] ?? '')]);
     return result($opId, 'APPLIED', null, null, 1);
+}
+
+/**
+ * Identidad canónica en creación (decisión F7, docs/03 §6): el `id` y el
+ * `userId` del payload se reemplazan siempre por el entity_id del sobre y el
+ * usuario autenticado — el payload jamás redefine la identidad ni el titular.
+ * `createdAt` conserva el valor declarado por el cliente cuando existe (es el
+ * instante de creación offline, un dato de negocio que el servidor no infiere
+ * ni reescribe); solo si el cliente no lo envió se completa con la hora del
+ * servidor. En edición se usa el valor persistido (ver rutas de UPDATE).
+ */
+function normalizeIdentityCreate(array $payload, string $entityId, string $userId): array
+{
+    $payload['id'] = $entityId;
+    $payload['userId'] = $userId;
+    if (trim((string) ($payload['createdAt'] ?? '')) === '') {
+        $payload['createdAt'] = nowUtc();
+    }
+    return $payload;
 }
 
 /**
@@ -1138,17 +1178,65 @@ function applyPaymentAssignment(PDO $pdo, string $userId, string $deviceId, stri
     }
     $targetEntityType = $targetType === 'account' ? 'collection_account' : 'consolidated_collection';
 
-    // Bloqueos atómicos: el Pago y el destino se leen FOR UPDATE.
+    // Origen de una reasignación: se parsea antes de los bloqueos para
+    // rechazar lo inválido sin esperar y para ordenar el conjunto de filas.
+    $fromType = null;
+    $fromId = null;
+    $fromEntityType = null;
+    if ($action === 'reassign') {
+        $fromAccountId = (string) ($payload['fromAccountId'] ?? '');
+        $fromConsolidatedId = (string) ($payload['fromConsolidatedId'] ?? '');
+        $fromType = $fromConsolidatedId !== '' ? 'consolidated' : 'account';
+        $fromId = $fromType === 'account' ? $fromAccountId : $fromConsolidatedId;
+        if ($fromId === '') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La reasignación requiere el origen desde el que liberar.');
+        }
+        if ($fromType === $targetType && $fromId === $targetId) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Origen y destino son el mismo.');
+        }
+        $fromEntityType = $fromType === 'account' ? 'collection_account' : 'consolidated_collection';
+    }
+
+    // Bloqueos atómicos: el Pago primero y después el conjunto
+    // destino+origen en orden canónico (entity_type, id) — serializa las
+    // operaciones que compiten por las mismas Cuentas contra las altas y
+    // ediciones del Consolidado (que bloquean a sus miembros ordenadas) y
+    // evita interbloqueos entre reasignaciones en sentidos opuestos. Los
+    // chequeos de membresía se ejecutan solo después, ya con locks propios,
+    // y bajo READ COMMITTED observan el estado vigente del servidor.
     $payment = entityRowForUpdate($pdo, 'payment', (string) ($payload['paymentId'] ?? ''));
     if ($payment === null || $payment['user_id'] !== $userId) {
         return result($opId, 'REJECTED', 'DEPENDENCY', 'El pago referenciado no existe.');
     }
-    $target = entityRowForUpdate($pdo, $targetEntityType, $targetId);
+    $lockSet = [[$targetEntityType, $targetId]];
+    if ($fromEntityType !== null) {
+        $lockSet[] = [$fromEntityType, $fromId];
+    }
+    usort($lockSet, fn(array $a, array $b) => strcmp($a[0] . "\0" . $a[1], $b[0] . "\0" . $b[1]));
+    $lockedRows = [];
+    foreach ($lockSet as [$lockType, $lockId]) {
+        $lockedRows[$lockType . ':' . $lockId] = entityRowForUpdate($pdo, $lockType, $lockId);
+    }
+    $target = $lockedRows[$targetEntityType . ':' . $targetId];
     if ($target === null) {
         return result($opId, 'REJECTED', 'DEPENDENCY', 'El destino referenciado no existe.');
     }
     if ($target['user_id'] !== $userId) {
         return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', 'El destino pertenece a otra cuenta.');
+    }
+    $fromRow = null;
+    $fromData = null;
+    if ($fromEntityType !== null) {
+        $fromRow = $lockedRows[$fromEntityType . ':' . $fromId];
+        if ($fromRow === null) {
+            return result($opId, 'REJECTED', 'DEPENDENCY', 'El origen no existe.');
+        }
+        if ($fromRow['user_id'] !== $userId) {
+            return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY', 'El origen pertenece a otra cuenta.');
+        }
+        $fromData = json_decode($fromRow['payload'], true) ?: [];
     }
     $p = json_decode($payment['payload'], true) ?: [];
     $t = json_decode($target['payload'], true) ?: [];
@@ -1198,10 +1286,6 @@ function applyPaymentAssignment(PDO $pdo, string $userId, string $deviceId, stri
 
     $appliedNow = 0;
     $releasedNow = 0;
-    $fromRow = null;
-    $fromData = null;
-    $fromType = null;
-    $fromId = null;
 
     if ($action === 'assign') {
         if ($pAssignedId !== null
@@ -1232,26 +1316,12 @@ function applyPaymentAssignment(PDO $pdo, string $userId, string $deviceId, stri
                 'El pago no tiene dinero aplicado a este destino.');
         }
         $releasedNow = $pApplied;
-    } else { // reassign
-        $fromAccountId = (string) ($payload['fromAccountId'] ?? '');
-        $fromConsolidatedId = (string) ($payload['fromConsolidatedId'] ?? '');
-        $fromType = $fromConsolidatedId !== '' ? 'consolidated' : 'account';
-        $fromId = $fromType === 'account' ? $fromAccountId : $fromConsolidatedId;
-        if ($fromId === '' || $pAssignedType !== $fromType
+    } else { // reassign — origen ya bloqueado en el conjunto canónico
+        if ($pAssignedType !== $fromType
             || $pAssignedId !== $fromId || $pApplied <= 0) {
             return result($opId, 'REJECTED', 'VALIDATION_ERROR',
                 'El pago no está aplicado al origen indicado.');
         }
-        if ($fromType === $targetType && $fromId === $targetId) {
-            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
-                'Origen y destino son el mismo.');
-        }
-        $fromEntityType = $fromType === 'account' ? 'collection_account' : 'consolidated_collection';
-        $fromRow = entityRowForUpdate($pdo, $fromEntityType, $fromId);
-        if ($fromRow === null) {
-            return result($opId, 'REJECTED', 'DEPENDENCY', 'El origen no existe.');
-        }
-        $fromData = json_decode($fromRow['payload'], true) ?: [];
         if (!$targetReceivable) {
             return result($opId, 'REJECTED', 'VALIDATION_ERROR',
                 $memberOfConsolidated
@@ -1299,6 +1369,7 @@ function applyPaymentAssignment(PDO $pdo, string $userId, string $deviceId, stri
     $payload['consolidatedId'] = $targetType === 'consolidated' ? $targetId : null;
     $payload['amount'] = fromCents($appliedNow);
     $payload['releasedAmount'] = fromCents($releasedNow);
+    $payload = normalizeIdentityCreate($payload, $entityId, $userId);
     insertEntity($pdo, 'payment_assignment', $entityId, $userId, $payload);
     audit($pdo, $userId, $deviceId, $opId, 'payment_assignment', $entityId,
         'PAYMENT_' . strtoupper($action),
@@ -1342,7 +1413,6 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
                 'El consolidado cambió desde la versión conocida por el dispositivo.',
                 (int) $current['server_version'], serverState($current));
         }
-        entityRowForUpdate($pdo, 'consolidated_collection', $entityId);
     } elseif ($base !== 0) {
         return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
             'La entidad no existe en el servidor pero la base no es cero.', 0, null);
@@ -1354,18 +1424,29 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
     // Tras pagos aplicados o cancelado el Consolidado es inmutable salvo
     // `archived`; el estado derivado lo gobierna el servidor. Las Cuentas
     // declaradas no se revalidan aquí: la membresía ya quedó fijada y la
-    // comparación estructural impide alterarla.
+    // comparación estructural impide alterarla. La fila propia se bloquea y
+    // la base/estado se revalidan con la versión bloqueada — la lectura
+    // inicial del despacho pudo quedar obsoleta durante la espera.
     if ($oldStatus !== null && in_array($oldStatus, ['PARCIAL', 'PAGADA', 'CANCELADA'], true)) {
+        $locked = entityRowForUpdate($pdo, 'consolidated_collection', $entityId);
+        if ($locked === null || $base !== (int) $locked['server_version']) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'El consolidado cambió desde la versión conocida por el dispositivo.',
+                (int) ($locked['server_version'] ?? $current['server_version']),
+                $locked === null ? serverState($current) : serverState($locked));
+        }
+        $oldStatus = (string) $locked['status'];
+        $prevData = json_decode($locked['payload'], true) ?: [];
         if ($newStatus !== $oldStatus) {
             return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                 "El consolidado está $oldStatus y no admite la transición declarada.",
-                (int) $current['server_version'], serverState($current));
+                (int) $locked['server_version'], serverState($locked));
         }
         foreach (['clientId', 'currency', 'provisionalNumber', 'clientNameSnapshot'] as $f) {
             if (($prevData[$f] ?? null) !== ($payload[$f] ?? null)) {
                 return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                     'El consolidado con pagos aplicados (o cancelado) es inmutable; solo puede archivarse.',
-                    (int) $current['server_version'], serverState($current));
+                    (int) $locked['server_version'], serverState($locked));
             }
         }
         $normSorted = function ($v) {
@@ -1376,7 +1457,7 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
         if ($normSorted($prevData['accountIds'] ?? []) != $normSorted($payload['accountIds'] ?? [])) {
             return result($opId, 'REJECTED', 'INVALID_TRANSITION',
                 'El consolidado con pagos aplicados (o cancelado) es inmutable; solo puede archivarse.',
-                (int) $current['server_version'], serverState($current));
+                (int) $locked['server_version'], serverState($locked));
         }
         $payload['status'] = $oldStatus;
         $payload['accountIds'] = $prevData['accountIds'] ?? [];
@@ -1387,28 +1468,40 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
         $payload['id'] = $prevData['id'] ?? $entityId;
         $payload['userId'] = $prevData['userId'] ?? $userId;
         $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
-        updateEntity($pdo, 'consolidated_collection', $entityId, $current, $payload,
-            $oldStatus, $current['official_number']);
+        updateEntity($pdo, 'consolidated_collection', $entityId, $locked, $payload,
+            $oldStatus, $locked['official_number']);
         audit($pdo, $userId, $deviceId, $opId, 'consolidated_collection', $entityId, 'UPDATE',
             ['archived' => (bool) ($payload['archived'] ?? false)]);
-        return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+        return result($opId, 'APPLIED', null, null, (int) $locked['server_version'] + 1);
     }
 
     // Persistido en PENDIENTE y destino CANCELADA: solo sin pagos aplicados
     // (garantizado: un pago lo derivaría a PARCIAL/PAGADA). La cancelación
     // libera las Cuentas conservando la membresía histórica del documento.
+    // La fila propia se bloquea y se revalida la base con ella.
     if ($oldStatus === 'PENDIENTE' && $newStatus === 'CANCELADA') {
+        $locked = entityRowForUpdate($pdo, 'consolidated_collection', $entityId);
+        if ($locked === null || $base !== (int) $locked['server_version']) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'El consolidado cambió desde la versión conocida por el dispositivo.',
+                (int) ($locked['server_version'] ?? $current['server_version']),
+                $locked === null ? serverState($current) : serverState($locked));
+        }
+        $prevData = json_decode($locked['payload'], true) ?: [];
         $payload['status'] = 'CANCELADA';
         $payload['accountIds'] = $prevData['accountIds'] ?? [];
         $payload['members'] = $prevData['members'] ?? [];
         $payload['totalAmount'] = $prevData['totalAmount'] ?? '0.00';
         $payload['appliedAmount'] = $prevData['appliedAmount'] ?? '0.00';
         $payload['balance'] = $prevData['balance'] ?? '0.00';
-        updateEntity($pdo, 'consolidated_collection', $entityId, $current, $payload,
-            'CANCELADA', $current['official_number']);
+        $payload['id'] = $prevData['id'] ?? $entityId;
+        $payload['userId'] = $prevData['userId'] ?? $userId;
+        $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
+        updateEntity($pdo, 'consolidated_collection', $entityId, $locked, $payload,
+            'CANCELADA', $locked['official_number']);
         audit($pdo, $userId, $deviceId, $opId, 'consolidated_collection', $entityId, 'TRANSITION',
             ['from' => 'PENDIENTE', 'to' => 'CANCELADA']);
-        return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+        return result($opId, 'APPLIED', null, null, (int) $locked['server_version'] + 1);
     }
     if ($newStatus !== 'PENDIENTE') {
         return result($opId, 'REJECTED', 'INVALID_TRANSITION',
@@ -1418,8 +1511,11 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
     // Creación y edición en PENDIENTE: las filas miembro se bloquean
     // FOR UPDATE en orden estable (serializa contra altas/ediciones de
     // otros Consolidados y contra ediciones de la propia Cuenta, evitando
-    // interbloqueos), y la elegibilidad se valida con datos persistidos:
-    // no cancelada, saldo > 0, mismo Cliente y moneda, sin doble vínculo.
+    // interbloqueos); la fila propia del Consolidado se bloquea después —
+    // orden canónico collection_account antes que consolidated_collection —
+    // y la base/estado se revalidan con la versión bloqueada. La elegibilidad
+    // se valida con datos persistidos vigentes: no cancelada, saldo > 0,
+    // mismo Cliente y moneda, sin doble vínculo.
     sort($accountIds);
     $members = [];
     foreach ($accountIds as $accountId) {
@@ -1432,6 +1528,22 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
                 'La cuenta referenciada pertenece a otra cuenta.');
         }
         $members[$accountId] = $row;
+    }
+
+    if ($current !== null) {
+        $lockedSelf = entityRowForUpdate($pdo, 'consolidated_collection', $entityId);
+        if ($lockedSelf === null || $base !== (int) $lockedSelf['server_version']) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'El consolidado cambió desde la versión conocida por el dispositivo.',
+                (int) ($lockedSelf['server_version'] ?? $current['server_version']),
+                $lockedSelf === null ? serverState($current) : serverState($lockedSelf));
+        }
+        if ((string) $lockedSelf['status'] !== 'PENDIENTE') {
+            return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                'El consolidado ya no está pendiente y su membresía no puede editarse.',
+                (int) $lockedSelf['server_version'], serverState($lockedSelf));
+        }
+        $prevData = json_decode($lockedSelf['payload'], true) ?: [];
     }
 
     $totalCents = 0;
@@ -1476,6 +1588,7 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
         $payload['appliedAmount'] = '0.00';
         $payload['balance'] = fromCents($totalCents);
         $payload['status'] = 'PENDIENTE';
+        $payload = normalizeIdentityCreate($payload, $entityId, $userId);
         $official = ensureOfficialNumber($pdo, $userId, $entityId, 'CONS');
         insertEntity($pdo, 'consolidated_collection', $entityId, $userId, $payload, 'PENDIENTE', $official);
         audit($pdo, $userId, $deviceId, $opId, 'consolidated_collection', $entityId, 'CREATE',
@@ -1484,7 +1597,8 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
     }
 
     // Edición en PENDIENTE: la membresía se recalcula desde los saldos
-    // persistidos actuales de las Cuentas elegidas.
+    // persistidos actuales de las Cuentas elegidas; identidad, titular y
+    // creación se restauran desde la fila bloqueada del Consolidado.
     $payload['accountIds'] = $accountIds;
     $payload['members'] = $memberSnapshots;
     $payload['totalAmount'] = fromCents($totalCents);
@@ -1494,11 +1608,11 @@ function applyConsolidatedCollection(PDO $pdo, string $userId, string $deviceId,
     $payload['id'] = $prevData['id'] ?? $entityId;
     $payload['userId'] = $prevData['userId'] ?? $userId;
     $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
-    updateEntity($pdo, 'consolidated_collection', $entityId, $current, $payload,
-        'PENDIENTE', $current['official_number']);
+    updateEntity($pdo, 'consolidated_collection', $entityId, $lockedSelf, $payload,
+        'PENDIENTE', $lockedSelf['official_number']);
     audit($pdo, $userId, $deviceId, $opId, 'consolidated_collection', $entityId, 'UPDATE',
         ['accounts' => count($accountIds)]);
-    return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+    return result($opId, 'APPLIED', null, null, (int) $lockedSelf['server_version'] + 1);
 }
 
 /**
@@ -1577,12 +1691,6 @@ function applyPaymentAdjustment(PDO $pdo, string $userId, string $deviceId, stri
                 $releasedFromId = $releasedFromType === 'consolidated'
                     ? ($p['assignedConsolidatedId'] ?? null)
                     : ($p['assignedAccountId'] ?? null);
-                if ($releasedFromType === 'account' && $releasedFromId !== null
-                    && accountInActiveConsolidated($pdo, $userId, (string) $releasedFromId)) {
-                    return result($opId, 'REJECTED', 'VALIDATION_ERROR',
-                        'La corrección liberaría fondos de una cuenta dentro de un consolidado activo; '
-                        . 'retírala del consolidado antes de corregir.');
-                }
             }
         }
         // Al alza el incremento queda UNASSIGNED: applied no cambia.
@@ -1596,24 +1704,31 @@ function applyPaymentAdjustment(PDO $pdo, string $userId, string $deviceId, stri
             $releasedFromId = $releasedFromType === 'consolidated'
                 ? ($p['assignedConsolidatedId'] ?? null)
                 : ($p['assignedAccountId'] ?? null);
-            if ($releasedFromType === 'account' && $releasedFromId !== null
-                && accountInActiveConsolidated($pdo, $userId, (string) $releasedFromId)) {
-                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
-                    'La anulación liberaría fondos de una cuenta dentro de un consolidado activo; '
-                    . 'retírala del consolidado antes de anular.');
-            }
         }
         $newEffective = $pRefunded;
         $newApplied = 0;
     }
 
-    // Libera el destino vigente dentro de la misma transacción.
+    // Libera el destino vigente dentro de la misma transacción. La fila se
+    // bloquea ANTES del chequeo de membresía: serializa la decisión contra
+    // el alta/edición del Consolidado (que bloquea a sus miembros) y el
+    // chequeo observa el estado vigente.
     if ($releasedNow > 0 && $releasedFromId !== null) {
         $fromEntityType = $releasedFromType === 'account'
             ? 'collection_account' : 'consolidated_collection';
         $fromRow = entityRowForUpdate($pdo, $fromEntityType, (string) $releasedFromId);
         if ($fromRow === null) {
             return result($opId, 'REJECTED', 'DEPENDENCY', 'El destino aplicado no existe.');
+        }
+        if ($fromRow['user_id'] !== $userId) {
+            return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
+                'El destino aplicado pertenece a otra cuenta.');
+        }
+        if ($releasedFromType === 'account'
+            && accountInActiveConsolidated($pdo, $userId, (string) $releasedFromId)) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'La operación liberaría fondos de una cuenta dentro de un consolidado activo; '
+                . 'retírala del consolidado antes de ajustar el pago.');
         }
         $fromData = json_decode($fromRow['payload'], true) ?: [];
         $fTotal = $releasedFromType === 'account'
@@ -1644,6 +1759,7 @@ function applyPaymentAdjustment(PDO $pdo, string $userId, string $deviceId, stri
     $payload['releasedAmount'] = fromCents($releasedNow);
     $payload['releasedFromType'] = $releasedFromType;
     $payload['releasedFromId'] = $releasedFromId;
+    $payload = normalizeIdentityCreate($payload, $entityId, $userId);
     insertEntity($pdo, 'payment_adjustment', $entityId, $userId, $payload);
     audit($pdo, $userId, $deviceId, $opId, 'payment_adjustment', $entityId,
         $kind === 'CORRECTION' ? 'PAYMENT_CORRECTION' : 'PAYMENT_ANNULMENT',
@@ -1720,7 +1836,8 @@ function applyPaymentRefund(PDO $pdo, string $userId, string $deviceId, string $
     updateEntity($pdo, 'payment', (string) $payload['paymentId'], $payment, $p,
         $p['assignmentStatus']);
 
-    insertEntity($pdo, 'payment_refund', $entityId, $userId, $payload);
+    insertEntity($pdo, 'payment_refund', $entityId, $userId,
+        normalizeIdentityCreate($payload, $entityId, $userId));
     audit($pdo, $userId, $deviceId, $opId, 'payment_refund', $entityId, 'PAYMENT_REFUND',
         ['payment_id' => (string) $payload['paymentId'],
          'amount' => fromCents($amount),

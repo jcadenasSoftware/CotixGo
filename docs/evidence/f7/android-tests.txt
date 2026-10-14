@@ -16,7 +16,13 @@ Resultados reales:
                               efectivo−aplicado−reembolsado y paymentIsLive;
                               más regresión ApiErrorParseTest, CalcVectorTest,
                               QuoteDomainTest).
-  - connectedDebugAndroidTest: 76 tests, 0 fallos — suite completa:
+  - connectedDebugAndroidTest: 81 tests, 0 fallos — suite completa:
+      * PaymentDetailScreenTest (M4, nuevo): corrección bajo el piso de
+        reembolsados, anulación rechazada y reembolso sobre el disponible
+        muestran el mensaje del repositorio con el diálogo abierto en
+        contexto; la operación aceptada cierra el diálogo.
+      * ConsolidatedDetailScreenTest (M4, nuevo): cancelación rechazada
+        muestra el motivo dentro del diálogo.
       * ConsolidatedRepositoryTest (F7, nuevo): elegibilidad/composición/
         membresía única activa, congelamiento de Cuenta miembro, pago a
         Consolidado sin reparto entre Cuentas, corrección al alza→UNASSIGNED

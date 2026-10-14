@@ -1043,12 +1043,12 @@ fun PaymentDetailScreen(
     accountsById: Map<String, CollectionAccountEntity>,
     consolidatedsById: Map<String, ConsolidatedCollectionEntity>,
     methods: List<CollectionMethodEntity>,
-    onAssign: (PaymentTargetKind, String, String, String) -> Unit,
-    onUnassign: (String) -> Unit,
-    onReassign: (PaymentTargetKind, String, String) -> Unit,
-    onCorrect: (String, String) -> Unit,
-    onAnnul: (String) -> Unit,
-    onRefund: (String, Long, String?, String) -> Unit,
+    onAssign: (PaymentTargetKind, String, String, String, (String?) -> Unit) -> Unit,
+    onUnassign: (String, (String?) -> Unit) -> Unit,
+    onReassign: (PaymentTargetKind, String, String, (String?) -> Unit) -> Unit,
+    onCorrect: (String, String, (String?) -> Unit) -> Unit,
+    onAnnul: (String, (String?) -> Unit) -> Unit,
+    onRefund: (String, Long, String?, String, (String?) -> Unit) -> Unit,
     onBack: () -> Unit,
 ) {
     if (payment == null) {
@@ -1187,24 +1187,31 @@ fun PaymentDetailScreen(
             },
             confirmButton = {
                 Button(onClick = {
+                    // Resultado del repositorio: null = aplicada (se cierra el
+                    // diálogo); mensaje = rechazo por regla de saldo/estado (se
+                    // muestra y el usuario permanece en el diálogo).
+                    val finish: (String?) -> Unit = { err ->
+                        if (err == null) { dialog = null; dialogError = null }
+                        else dialogError = err
+                    }
                     when {
                         reason.isBlank() -> dialogError = "El motivo es obligatorio."
-                        kind == "unassign" -> onUnassign(reason.trim())
-                        kind == "annul" -> onAnnul(reason.trim())
+                        kind == "unassign" -> onUnassign(reason.trim(), finish)
+                        kind == "annul" -> onAnnul(reason.trim(), finish)
                         kind == "assign" || kind == "reassign" -> {
                             when {
                                 targetId == null -> dialogError = "Elige el destino."
                                 kind == "assign" && amountText.toMoney().signum() <= 0 ->
                                     dialogError = "Importe inválido."
                                 kind == "assign" ->
-                                    onAssign(targetKind, targetId!!, amountText, reason.trim())
-                                else -> onReassign(targetKind, targetId!!, reason.trim())
+                                    onAssign(targetKind, targetId!!, amountText, reason.trim(), finish)
+                                else -> onReassign(targetKind, targetId!!, reason.trim(), finish)
                             }
                         }
                         kind == "correct" -> {
                             if (amountText.toMoney().signum() < 0) {
                                 dialogError = "Importe inválido."
-                            } else onCorrect(amountText, reason.trim())
+                            } else onCorrect(amountText, reason.trim(), finish)
                         }
                         else -> {
                             // refund
@@ -1212,7 +1219,7 @@ fun PaymentDetailScreen(
                             when {
                                 amountText.toMoney().signum() <= 0 -> dialogError = "Importe inválido."
                                 day == null -> dialogError = "Fecha inválida."
-                                else -> onRefund(amountText, day, refundMethodId, reason.trim())
+                                else -> onRefund(amountText, day, refundMethodId, reason.trim(), finish)
                             }
                         }
                     }

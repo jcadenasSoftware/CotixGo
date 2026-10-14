@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v1.5
+## Documento de diseño v1.6
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
