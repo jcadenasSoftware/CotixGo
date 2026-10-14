@@ -285,6 +285,8 @@ Los estados de herramientas contemplados son:
 - fuera de servicio.  
 La funcionalidad completa de mantenimiento de herramientas puede incorporarse posteriormente; el modelo debe poder crecer sin obligar a implementarla ahora.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANElEQVR4nO3OUQmAABBAsSdYxKbXxlpGEAOIFfwTYUuwZWa2ag8AgL841uquzq8nAAC8dj05VAYO3phhoQAAAABJRU5ErkJggg==)  
+Alcance aprobado en la ficha F8 (`03` §6): el catálogo de Materiales con existencias es global por Usuario/Titular y es una capacidad distinta del catálogo de servicios por Perfil (que se reutiliza sin ampliación). Mínimos de Material: nombre y unidad requeridos; descripción opcional. La condición `NUEVO`/`USADO` es una dimensión del stock del mismo material, no dos materiales separados. Los movimientos append-only son la fuente de verdad del stock; el servidor mantiene el saldo derivado/proyectado atómicamente y este puede reconstruirse desde los movimientos. Herramientas queda pospuesto fuera de F8, sin número de fase ni alcance asignado.
+
 **15. Compras**  
 Una Compra representa la adquisición real de materiales.  
 Puede contener:  
@@ -300,6 +302,8 @@ Una compra confirmada genera una entrada de inventario.
 Los costos históricos deben conservarse.  
 Si el mismo material se compra posteriormente a un precio diferente, la compra anterior no debe ser sobrescrita.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OQQmAABRAsSd49m4v6wg/pwmMYQVvImwJtszMXp0BAPAX91pt1fH1BACA164Hoq8EQMMPmF8AAAAASUVORK5CYII=)  
+Especificación aprobada en la ficha F8 (`03` §6): fecha requerida; al menos una línea para confirmar — cada línea identifica Material, cantidad, unidad y precio unitario; proveedor/lugar y referencia opcionales; total derivado por el servidor; moneda global del Usuario/Titular sin elección por Compra. Numeración `COM-PEND-XXXX` → `COM-AAAAMM-NNN` idempotente en el primer registro aceptado por el servidor sobre el mismo `entity_id`. Una Compra `ANULADA` es terminal y no puede reactivarse; el archivado se mantiene separado de la anulación y anular una Compra confirmada registra movimientos inversos.
+
 **16. Consumo de inventario**  
 El consumo de inventario ocurre por la **ejecución real del Trabajo**, no por la creación ni por la aprobación de la cotización.  
 Por ejemplo:  
@@ -313,6 +317,8 @@ El inventario solamente debe disminuir en:
    
 No en 100 m ni en 92 m.  
 ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAnEAAAACCAYAAAA3pIp+AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAANUlEQVR4nO3OQQmAABRAsSeYxKS/kJkED6bwYAVvImwJtszMVu0BAPAXx1rd1fn1BACA164HHDwF+DpPyKwAAAAASUVORK5CYII=)  
+Alcance aprobado en la ficha F8 (`03` §6): solo los consumos nuevos registrados en el Trabajo pueden vincularse a un Material inventariado; los registros descriptivos históricos de F4 se conservan intactos y sin reinterpretación retroactiva. Los sobrantes se registran como entrada manual explicable con origen `SOBRANTE`, que puede referenciar un Trabajo; no hay flujo automático desde el Trabajo.
+
 **17. Cuenta de Cobro**  
 En CotixGo se utilizará oficialmente el término colombiano:  
 ***Cuenta de Cobro***  
@@ -1014,3 +1020,4 @@ Este documento no constituye todavía el modelo físico de base de datos, el con
 | v0.2 (enmienda 5) | 13/10/2026 | 17: mínimos de Métodos de Cobro de la ficha F6; 17.3: ciclo de vida, campos mínimos, numeración `CC-` y elegibilidad de Cotización pendiente de la ficha F6; 31: restricción de asociaciones de un solo tipo con a lo sumo una Cuenta no cancelada por origen; 31.5: división F6/F7, Pagos y asignaciones como eventos append-only con validación de saldo en servidor y limitación de F6 para datos reales. | Formalización de las reglas de Cuenta de Cobro, Métodos de Cobro y Pagos aprobadas por el titular en la planificación de F6 (`03` §6). | Aprobado. |
 | v0.2 (enmienda 6) | 13/10/2026 | 17.3: elegibilidad de Cotización aprobada — en F6 solo Cotizaciones `APROBADA` son elegibles como origen de Cuenta de Cobro, validado con el estado persistido por el backend (`03` §6). | Aprobación de la decisión pendiente `03` §4.9 por el titular. | Aprobado. |
 | v0.2 (enmienda 6) | 13/10/2026 | 31.1: especificación del Consolidado de la ficha F7 (elegibilidad, composición, ciclo derivado, anti-doble-vínculo, numeración `CONS-`); 31.2: remanente de reembolso `efectivo − aplicado − reembolsado`, reserva compartida e irreversibilidad; 31.4: diseño confirmado de `payment_adjustments` (`CORRECTION` LIFO con piso; `ANNULMENT` terminal con piso e invariante); 31.5: la implementación de F7 sigue sin autorización. | Formalización de las reglas de Consolidado, ajustes/anulación y Reembolsos aprobadas por el titular en la ficha F7 (`03` §6). | Aprobado. |
+| v0.2 (enmienda 7) | 14/10/2026 | 14: alcance F8 del catálogo de Materiales (global por titular, mínimos, `NUEVO`/`USADO` como dimensión de stock, movimientos como fuente de verdad con saldo proyectado, Herramientas pospuesto); 15: especificación de Compra de la ficha F8 (mínimos, numeración `COM-`, moneda global, `ANULADA` terminal con archivado separado); 16: alcance F8 del consumo (vínculo solo en consumos nuevos, `SOBRANTE` manual). La implementación de F8 no está autorizada. | Formalización de las reglas de Inventario y Compras aprobadas por el titular en la ficha F8 (`03` §6). | Aprobado. |
