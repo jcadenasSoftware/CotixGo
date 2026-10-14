@@ -315,4 +315,149 @@ class MigrationTest {
             assertEquals(1, c.getInt(0))
         }
     }
+
+    /**
+     * Migración real v7→v8 (F7): crea una base v7 con datos preexistentes
+     * (usuario, cliente, cuenta de cobro, pago con asignación y operación
+     * de cola pendiente), migra y verifica que:
+     *  - las filas F1–F6 sobreviven (pagos, eventos de asignación, cola);
+     *  - el Pago migra con `effectiveAmount` = `amount`, `refundedAmount`
+     *    = 0, `annulled` = 0 y `assignedTargetType` = 'ACCOUNT';
+     *  - el evento de asignación conserva `accountId` y gana
+     *    `targetType` = 'ACCOUNT';
+     *  - las tablas F7 (consolidated_collections, membresía, ajustes y
+     *    reembolsos) quedan creadas con sus índices.
+     */
+    @Test
+    fun migrate7To8_preservesRowsAndCreatesF7Tables() {
+        // Semilla sobre la base v7 real (columnas del esquema exportado 7.json).
+        helper.createDatabase(testDb, 7).apply {
+            execSQL(
+                "INSERT INTO users (id, name, mainCurrency, email, createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('u1', 'Usuario Sintético', 'COP', 'u@synthetic.local', 1, 1, 0, 1)",
+            )
+            execSQL(
+                "INSERT INTO clients (id, userId, type, name, phone, email, address, notes, archived," +
+                    " createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('c1', 'u1', 'PERSONA', 'Cliente Sintético', '', '', '', '', 0, 1, 1, 1, 1)",
+            )
+            execSQL(
+                "INSERT INTO collection_accounts (id, userId, clientId, profileId, provisionalNumber," +
+                    " status, currency, gross, totalRetained, net, appliedAmount, balance, issuedAt," +
+                    " dueDateEpochDay, conditions, clientSnapshotJson, profileSnapshotJson," +
+                    " retentionsSnapshotJson, clientNameSnapshot, archived, officialNumber, createdAt," +
+                    " updatedAt, pendingSync, serverVersion) VALUES ('cc1', 'u1', 'c1', 'p1'," +
+                    " 'CC-PEND-0001', 'PARCIAL', 'COP', '100.00', '0.00', '100.00', '40.00', '60.00'," +
+                    " 1, NULL, '', '', '', '', 'Cliente Sintético', 0, 'CC-202601-001', 1, 1, 1, 5)",
+            )
+            execSQL(
+                "INSERT INTO payments (id, userId, clientId, collectionMethodId, amount, paidAtEpochDay," +
+                    " reference, notes, appliedAmount, unassignedAmount, assignedAccountId," +
+                    " assignmentStatus, createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('pay1', 'u1', 'c1', NULL, '100.00', 21000, 'REF-1', 'pago previo'," +
+                    " '40.00', '60.00', 'cc1', 'PARTIAL_ASSIGNED', 1, 1, 1, 7)",
+            )
+            execSQL(
+                "INSERT INTO payment_assignments (id, userId, paymentId, action, accountId, fromAccountId," +
+                    " amount, releasedAmount, reason, createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('pa1', 'u1', 'pay1', 'ASSIGN', 'cc1', NULL, '40.00', NULL," +
+                    " 'Aplicación inicial', 1, 1, 1, 3)",
+            )
+            // Operación de cola pendiente: debe sobrevivir a la migración.
+            execSQL(
+                "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
+                    " payloadJson, supersedesOpId, deviceId, state, resultJson, resultCode, attempts," +
+                    " createdAt, updatedAt) VALUES ('op-pend', 9, 'payment', 'pay1', 'upsert', 7, '{}'," +
+                    " NULL, 'dev1', 'PENDING', NULL, NULL, 0, 1, 1)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(testDb, 8, true, AppDatabase.MIGRATION_7_8)
+
+        // Filas preexistentes F1–F6 sobreviven intactas tras la migración.
+        db.query(
+            "SELECT amount, effectiveAmount, refundedAmount, annulled, assignedAccountId," +
+                " assignedConsolidatedId, assignedTargetType, assignmentStatus" +
+                " FROM payments WHERE id = 'pay1'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("100.00", c.getString(0))
+            assertEquals("100.00", c.getString(1)) // efectivo = amount recibido
+            assertEquals("0.00", c.getString(2))
+            assertEquals(0, c.getInt(3))
+            assertEquals("cc1", c.getString(4))
+            assertTrue(c.isNull(5))
+            assertEquals("ACCOUNT", c.getString(6))
+            assertEquals("PARTIAL_ASSIGNED", c.getString(7)) // se conserva
+        }
+        db.query(
+            "SELECT accountId, targetType, consolidatedId, amount FROM payment_assignments WHERE id = 'pa1'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("cc1", c.getString(0))
+            assertEquals("ACCOUNT", c.getString(1))
+            assertTrue(c.isNull(2))
+            assertEquals("40.00", c.getString(3))
+        }
+        db.query("SELECT state FROM sync_operations WHERE opId = 'op-pend'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("PENDING", c.getString(0))
+        }
+
+        // Tablas F7 creadas.
+        for (table in listOf(
+            "consolidated_collections", "consolidated_collection_accounts",
+            "payment_adjustments", "payment_refunds",
+        )) {
+            db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", arrayOf(table))
+                .use { c -> assertTrue("tabla $table creada", c.moveToFirst()) }
+        }
+
+        // Índice único de numeración provisional CONS operativo.
+        db.execSQL(
+            "INSERT INTO consolidated_collections (id, userId, clientId, provisionalNumber, status," +
+                " currency, totalAmount, appliedAmount, balance, clientNameSnapshot, archived," +
+                " officialNumber, createdAt, updatedAt, pendingSync, serverVersion) VALUES ('cons1'," +
+                " 'u1', 'c1', 'CONS-PEND-TEST', 'PENDIENTE', 'COP', '60.00', '0.00', '60.00'," +
+                " 'Cliente Sintético', 0, NULL, 1, 1, 1, 0)",
+        )
+        var dupFailed = false
+        try {
+            db.execSQL(
+                "INSERT INTO consolidated_collections (id, userId, clientId, provisionalNumber, status," +
+                    " currency, totalAmount, appliedAmount, balance, clientNameSnapshot, archived," +
+                    " officialNumber, createdAt, updatedAt, pendingSync, serverVersion) VALUES ('cons2'," +
+                    " 'u1', 'c1', 'CONS-PEND-TEST', 'PENDIENTE', 'COP', '30.00', '0.00', '30.00'," +
+                    " 'Cliente Sintético', 0, NULL, 1, 1, 1, 0)",
+            )
+        } catch (e: android.database.sqlite.SQLiteConstraintException) {
+            dupFailed = true
+        }
+        assertTrue("índice único provisionalNumber operativo", dupFailed)
+
+        // Membresía y eventos append-only aceptan filas.
+        db.execSQL(
+            "INSERT INTO consolidated_collection_accounts (id, consolidatedId, accountId, position," +
+                " createdAt) VALUES ('lm1', 'cons1', 'cc1', 1, 1)",
+        )
+        db.execSQL(
+            "INSERT INTO payment_adjustments (id, userId, paymentId, kind, reason, newEffectiveAmount," +
+                " effectiveBefore, effectiveAfter, releasedAmount, releasedFromType, releasedFromId," +
+                " createdAt, updatedAt, pendingSync, serverVersion) VALUES ('adj1', 'u1', 'pay1'," +
+                " 'CORRECTION', 'Ajuste', '80.00', '100.00', '80.00', '20.00', 'ACCOUNT', 'cc1'," +
+                " 1, 1, 1, 0)",
+        )
+        db.execSQL(
+            "INSERT INTO payment_refunds (id, userId, paymentId, amount, refundedAtEpochDay," +
+                " collectionMethodId, reason, createdAt, updatedAt, pendingSync, serverVersion)" +
+                " VALUES ('rf1', 'u1', 'pay1', '10.00', 21001, NULL, 'Devolución', 1, 1, 1, 0)",
+        )
+        db.query("SELECT COUNT(*) FROM consolidated_collection_accounts WHERE consolidatedId = 'cons1'")
+            .use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
+        db.query("SELECT COUNT(*) FROM payment_adjustments WHERE paymentId = 'pay1'")
+            .use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
+        db.query("SELECT COUNT(*) FROM payment_refunds WHERE paymentId = 'pay1'")
+            .use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
+    }
 }

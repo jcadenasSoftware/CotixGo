@@ -43,6 +43,7 @@ import com.cotixgo.app.core.CalcLine
 import com.cotixgo.app.core.CollectionAccountStatus
 import com.cotixgo.app.core.ConceptType
 import com.cotixgo.app.core.PaymentAssignmentStatus
+import com.cotixgo.app.core.PaymentTargetKind
 import com.cotixgo.app.core.QuoteCalc
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.core.RetentionSpec
@@ -55,9 +56,12 @@ import com.cotixgo.app.data.CollectionAccountItemEntity
 import com.cotixgo.app.data.CollectionItemInput
 import com.cotixgo.app.data.CollectionMethodEntity
 import com.cotixgo.app.data.CollectionMethodInput
+import com.cotixgo.app.data.ConsolidatedCollectionEntity
 import com.cotixgo.app.data.JobEntity
+import com.cotixgo.app.data.PaymentAdjustmentEntity
 import com.cotixgo.app.data.PaymentAssignmentEntity
 import com.cotixgo.app.data.PaymentEntity
+import com.cotixgo.app.data.PaymentRefundEntity
 import com.cotixgo.app.data.PaymentInput
 import com.cotixgo.app.data.ProfileEntity
 import com.cotixgo.app.data.QuoteEntity
@@ -88,18 +92,21 @@ private fun parseIsoDay(text: String): Long? =
 @Composable
 fun CollectionsScreen(
     accounts: List<CollectionAccountEntity>,
+    consolidateds: List<ConsolidatedCollectionEntity>,
     payments: List<PaymentEntity>,
     methods: List<CollectionMethodEntity>,
     clients: List<ClientEntity>,
     accountsById: Map<String, CollectionAccountEntity>,
     onOpenAccount: (String) -> Unit,
+    onOpenConsolidated: (String) -> Unit,
     onOpenPayment: (String) -> Unit,
     onNewAccount: () -> Unit,
+    onNewConsolidated: () -> Unit,
     onNewPayment: () -> Unit,
     onSaveMethod: (CollectionMethodInput, String?) -> Unit,
     onSetMethodArchived: (String, Boolean) -> Unit,
 ) {
-    var tab by remember { mutableStateOf(0) } // 0 Cuentas, 1 Pagos, 2 Métodos
+    var tab by remember { mutableStateOf(0) } // 0 Cuentas, 1 Consolidados, 2 Pagos, 3 Métodos
     var methodDialog by remember { mutableStateOf<CollectionMethodEntity?>(null) }
     var newMethod by remember { mutableStateOf(false) }
 
@@ -119,7 +126,8 @@ fun CollectionsScreen(
         floatingActionButton = {
             when (tab) {
                 0 -> Button(onClick = onNewAccount) { Text("+ Cuenta") }
-                1 -> Button(onClick = onNewPayment) { Text("+ Pago") }
+                1 -> Button(onClick = onNewConsolidated) { Text("+ Consolidado") }
+                2 -> Button(onClick = onNewPayment) { Text("+ Pago") }
                 else -> Button(onClick = { newMethod = true }) { Text("+ Método") }
             }
         },
@@ -129,11 +137,11 @@ fun CollectionsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                listOf("Cuentas", "Pagos", "Métodos").forEachIndexed { i, t ->
+                listOf("Cuentas", "Consol.", "Pagos", "Métodos").forEachIndexed { i, t ->
                     SegmentedButton(
                         selected = tab == i,
                         onClick = { tab = i },
-                        shape = SegmentedButtonDefaults.itemShape(index = i, count = 3),
+                        shape = SegmentedButtonDefaults.itemShape(index = i, count = 4),
                     ) { Text(t) }
                 }
             }
@@ -166,32 +174,70 @@ fun CollectionsScreen(
                     }
                 }
                 1 -> {
+                    val visibleCons = consolidateds.filter { !it.archived }
+                    if (visibleCons.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No hay consolidados de cuentas.")
+                        }
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(visibleCons, key = { it.id }) { c ->
+                                Card(onClick = { onOpenConsolidated(c.id) }, modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(16.dp)) {
+                                        Text(
+                                            c.officialNumber ?: c.provisionalNumber,
+                                            style = MaterialTheme.typography.titleMedium,
+                                        )
+                                        Text(c.clientNameSnapshot, style = MaterialTheme.typography.bodySmall)
+                                        Text(
+                                            "${collectionLabel(CollectionAccountStatus.valueOf(c.status))} · " +
+                                                "Saldo ${c.currency} ${c.balance} de ${c.totalAmount}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                2 -> {
                     if (payments.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("No hay pagos registrados.")
                         }
                     } else {
+                        val consById = consolidateds.associateBy { it.id }
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(payments, key = { it.id }) { pay ->
                                 Card(onClick = { onOpenPayment(pay.id) }, modifier = Modifier.fillMaxWidth()) {
                                     Column(Modifier.padding(16.dp)) {
                                         Text(
-                                            "${pay.amount} · ${LocalDate.ofEpochDay(pay.paidAtEpochDay)}",
+                                            "${pay.effectiveAmount.takeIf { it.isNotBlank() } ?: pay.amount} · " +
+                                                LocalDate.ofEpochDay(pay.paidAtEpochDay) +
+                                                if (pay.annulled) " · ANULADO" else "",
                                             style = MaterialTheme.typography.titleMedium,
                                         )
                                         Text(
                                             clients.firstOrNull { it.id == pay.clientId }?.name ?: "",
                                             style = MaterialTheme.typography.bodySmall,
                                         )
-                                        val dest = pay.assignedAccountId?.let { aid ->
-                                            accountsById[aid]?.let { it.officialNumber ?: it.provisionalNumber }
+                                        val dest = when (pay.assignedTargetType) {
+                                            "CONSOLIDATED" -> pay.assignedConsolidatedId?.let { cid ->
+                                                consById[cid]?.let { it.officialNumber ?: it.provisionalNumber }
+                                            }
+                                            else -> pay.assignedAccountId?.let { aid ->
+                                                accountsById[aid]?.let { it.officialNumber ?: it.provisionalNumber }
+                                            }
                                         }
                                         Text(
                                             assignmentLabel(PaymentAssignmentStatus.valueOf(pay.assignmentStatus)) +
                                                 (dest?.let { " · $it" } ?: "") +
                                                 if (pay.unassignedAmount.toMoney().signum() > 0) {
                                                     " · Sin asignar: ${pay.unassignedAmount}"
-                                                } else "",
+                                                } else "" +
+                                                    if (pay.refundedAmount.toMoney().signum() > 0) {
+                                                        " · Reembolsado: ${pay.refundedAmount}"
+                                                    } else "",
                                             style = MaterialTheme.typography.bodySmall,
                                         )
                                     }
@@ -637,11 +683,13 @@ fun CollectionAccountDetailScreen(
     quotes: List<QuoteEntity>,
     assignments: List<PaymentAssignmentEntity>,
     payments: List<PaymentEntity>,
+    activeConsolidated: ConsolidatedCollectionEntity?,
     onEdit: () -> Unit,
     onCancelAccount: () -> Unit,
     onSetArchived: (Boolean) -> Unit,
     onOpenJob: (String) -> Unit,
     onOpenQuote: (String) -> Unit,
+    onOpenConsolidated: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     if (account == null) {
@@ -653,8 +701,11 @@ fun CollectionAccountDetailScreen(
         return
     }
     val status = CollectionAccountStatus.valueOf(account.status)
+    // F7: miembro de un Consolidado activo — edición y cancelación
+    // congeladas; el cobro se hace a través del Consolidado.
     val editable = status == CollectionAccountStatus.PENDIENTE &&
-        account.appliedAmount.toMoney().signum() <= 0
+        account.appliedAmount.toMoney().signum() <= 0 &&
+        activeConsolidated == null
     var confirmCancel by remember { mutableStateOf(false) }
 
     if (confirmCancel) {
@@ -712,6 +763,26 @@ fun CollectionAccountDetailScreen(
                     Text("Neto: ${account.net}", style = MaterialTheme.typography.titleSmall)
                     Text("Aplicado: ${account.appliedAmount} · Saldo: ${account.balance} ${account.currency}",
                         style = MaterialTheme.typography.titleSmall)
+                }
+            }
+            if (activeConsolidated != null) {
+                item {
+                    Card(
+                        onClick = { onOpenConsolidated(activeConsolidated.id) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("Miembro del consolidado", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                activeConsolidated.officialNumber ?: activeConsolidated.provisionalNumber,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                "El cobro se hace a través del consolidado; la cuenta no admite asignación directa.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
             }
             if (jobLinks.isNotEmpty()) {
@@ -786,6 +857,8 @@ fun CollectionAccountDetailScreen(
 fun PaymentEditorScreen(
     clients: List<ClientEntity>,
     accounts: List<CollectionAccountEntity>,
+    consolidateds: List<ConsolidatedCollectionEntity>,
+    memberAccountIds: Set<String>,
     methods: List<CollectionMethodEntity>,
     onSave: (PaymentInput) -> Unit,
     onBack: () -> Unit,
@@ -797,12 +870,21 @@ fun PaymentEditorScreen(
     var reference by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
     var accountId by remember { mutableStateOf<String?>(null) }
+    var consolidatedId by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var clientMenu by remember { mutableStateOf(false) }
     var methodMenu by remember { mutableStateOf(false) }
     var accountMenu by remember { mutableStateOf(false) }
 
+    // Cuentas receptoras directas: no miembros de un Consolidado activo
+    // (anti doble cobro) — esas solo cobran a través de su Consolidado.
     val receivable = accounts.filter {
+        it.clientId == clientId && !it.archived && it.id !in memberAccountIds &&
+            CollectionAccountStatus.valueOf(it.status) in setOf(
+                CollectionAccountStatus.PENDIENTE, CollectionAccountStatus.PARCIAL,
+            ) && it.balance.toMoney().signum() > 0
+    }
+    val receivableCons = consolidateds.filter {
         it.clientId == clientId && !it.archived &&
             CollectionAccountStatus.valueOf(it.status) in setOf(
                 CollectionAccountStatus.PENDIENTE, CollectionAccountStatus.PARCIAL,
@@ -828,7 +910,7 @@ fun PaymentEditorScreen(
                 DropdownMenu(expanded = clientMenu, onDismissRequest = { clientMenu = false }) {
                     clients.filter { !it.archived }.forEach { c ->
                         DropdownMenuItem(text = { Text(c.name) }, onClick = {
-                            clientId = c.id; accountId = null; clientMenu = false
+                            clientId = c.id; accountId = null; consolidatedId = null; clientMenu = false
                         })
                     }
                 }
@@ -863,20 +945,30 @@ fun PaymentEditorScreen(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = clientId.isNotBlank(),
                 ) {
-                    val sel = accounts.firstOrNull { it.id == accountId }
+                    val selA = accounts.firstOrNull { it.id == accountId }
+                    val selC = consolidateds.firstOrNull { it.id == consolidatedId }
                     Text(
-                        sel?.let { "Aplicar a ${it.officialNumber ?: it.provisionalNumber} (saldo ${it.balance})" }
-                            ?: "Sin asignar a cuenta (opcional)",
+                        when {
+                            selA != null -> "Aplicar a ${selA.officialNumber ?: selA.provisionalNumber} (saldo ${selA.balance})"
+                            selC != null -> "Aplicar a consolidado ${selC.officialNumber ?: selC.provisionalNumber} (saldo ${selC.balance})"
+                            else -> "Sin asignar (opcional)"
+                        },
                     )
                 }
                 DropdownMenu(expanded = accountMenu, onDismissRequest = { accountMenu = false }) {
                     DropdownMenuItem(text = { Text("Sin asignar") }, onClick = {
-                        accountId = null; accountMenu = false
+                        accountId = null; consolidatedId = null; accountMenu = false
                     })
+                    receivableCons.forEach { c ->
+                        DropdownMenuItem(
+                            text = { Text("[Consolidado] ${c.officialNumber ?: c.provisionalNumber} · saldo ${c.balance}") },
+                            onClick = { consolidatedId = c.id; accountId = null; accountMenu = false },
+                        )
+                    }
                     receivable.forEach { a ->
                         DropdownMenuItem(
                             text = { Text("${a.officialNumber ?: a.provisionalNumber} · saldo ${a.balance}") },
-                            onClick = { accountId = a.id; accountMenu = false },
+                            onClick = { accountId = a.id; consolidatedId = null; accountMenu = false },
                         )
                     }
                 }
@@ -907,7 +999,10 @@ fun PaymentEditorScreen(
                                     reference = reference,
                                     notes = notes,
                                     accountId = accountId,
-                                    initialAssignReason = if (accountId != null) "Aplicación inicial del pago" else "",
+                                    consolidatedId = consolidatedId,
+                                    initialAssignReason = if (accountId != null || consolidatedId != null) {
+                                        "Aplicación inicial del pago"
+                                    } else "",
                                 ),
                             )
                         }
@@ -919,7 +1014,18 @@ fun PaymentEditorScreen(
     }
 }
 
-// ---------- Detalle de Pago y asignaciones ----------
+// ---------- Detalle de Pago: asignaciones, ajustes y reembolsos ----------
+
+private fun targetName(
+    kind: String?, id: String?,
+    accountsById: Map<String, CollectionAccountEntity>,
+    consolidatedsById: Map<String, ConsolidatedCollectionEntity>,
+): String = when {
+    id == null -> "—"
+    kind == "CONSOLIDATED" ->
+        consolidatedsById[id]?.let { it.officialNumber ?: it.provisionalNumber } ?: id
+    else -> accountsById[id]?.let { it.officialNumber ?: it.provisionalNumber } ?: id
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -928,12 +1034,21 @@ fun PaymentDetailScreen(
     clientName: String,
     methodName: String?,
     account: CollectionAccountEntity?,
+    consolidated: ConsolidatedCollectionEntity?,
     receivableAccounts: List<CollectionAccountEntity>,
+    receivableConsolidateds: List<ConsolidatedCollectionEntity>,
     assignments: List<PaymentAssignmentEntity>,
+    adjustments: List<PaymentAdjustmentEntity>,
+    refunds: List<PaymentRefundEntity>,
     accountsById: Map<String, CollectionAccountEntity>,
-    onAssign: (String, String, String) -> Unit,
-    onUnassign: (String) -> Unit,
-    onReassign: (String, String) -> Unit,
+    consolidatedsById: Map<String, ConsolidatedCollectionEntity>,
+    methods: List<CollectionMethodEntity>,
+    onAssign: (PaymentTargetKind, String, String, String, (String?) -> Unit) -> Unit,
+    onUnassign: (String, (String?) -> Unit) -> Unit,
+    onReassign: (PaymentTargetKind, String, String, (String?) -> Unit) -> Unit,
+    onCorrect: (String, String, (String?) -> Unit) -> Unit,
+    onAnnul: (String, (String?) -> Unit) -> Unit,
+    onRefund: (String, Long, String?, String, (String?) -> Unit) -> Unit,
     onBack: () -> Unit,
 ) {
     if (payment == null) {
@@ -944,52 +1059,123 @@ fun PaymentDetailScreen(
         }
         return
     }
-    var assignDialog by remember { mutableStateOf(false) }
-    var unassignDialog by remember { mutableStateOf(false) }
-    var reassignDialog by remember { mutableStateOf(false) }
+    var dialog by remember { mutableStateOf<String?>(null) } // assign|unassign|reassign|correct|annul|refund
     var dialogError by remember { mutableStateOf<String?>(null) }
 
-    if (assignDialog || reassignDialog || unassignDialog) {
-        val isUnassign = unassignDialog
+    if (dialog != null) {
         var reason by remember { mutableStateOf("") }
         var amountText by remember { mutableStateOf("") }
         var targetId by remember { mutableStateOf<String?>(null) }
+        var targetKind by remember { mutableStateOf(PaymentTargetKind.ACCOUNT) }
+        var refundMethodId by remember { mutableStateOf<String?>(null) }
+        var refundDate by remember { mutableStateOf(LocalDate.now().toString()) }
         var menuOpen by remember { mutableStateOf(false) }
+        var methodMenu by remember { mutableStateOf(false) }
+        val kind = dialog!!
         AlertDialog(
-            onDismissRequest = {
-                assignDialog = false; unassignDialog = false; reassignDialog = false; dialogError = null
-            },
+            onDismissRequest = { dialog = null; dialogError = null },
             title = {
                 Text(
-                    if (isUnassign) "Retirar aplicación"
-                    else if (reassignDialog) "Reasignar a otra cuenta" else "Asignar a cuenta",
+                    when (kind) {
+                        "unassign" -> "Retirar aplicación"
+                        "reassign" -> "Reasignar a otro destino"
+                        "correct" -> "Corregir importe del pago"
+                        "annul" -> "Anular pago"
+                        "refund" -> "Reembolsar"
+                        else -> "Asignar a destino"
+                    },
                 )
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (!isUnassign) {
-                        Box {
-                            OutlinedButton(onClick = { menuOpen = true }, modifier = Modifier.fillMaxWidth()) {
-                                val sel = receivableAccounts.firstOrNull { it.id == targetId }
-                                Text(sel?.let { "${it.officialNumber ?: it.provisionalNumber} · saldo ${it.balance}" }
-                                    ?: "Cuenta destino *")
-                            }
-                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                                receivableAccounts.forEach { a ->
-                                    DropdownMenuItem(
-                                        text = { Text("${a.officialNumber ?: a.provisionalNumber} · saldo ${a.balance}") },
-                                        onClick = { targetId = a.id; menuOpen = false },
+                    when (kind) {
+                        "assign", "reassign" -> {
+                            Box {
+                                OutlinedButton(onClick = { menuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(
+                                        targetId?.let {
+                                            targetName(targetKind.name, it, accountsById, consolidatedsById)
+                                        } ?: "Destino *",
                                     )
                                 }
+                                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                    receivableConsolidateds.forEach { c ->
+                                        DropdownMenuItem(
+                                            text = { Text("[Consolidado] ${c.officialNumber ?: c.provisionalNumber} · saldo ${c.balance}") },
+                                            onClick = {
+                                                targetId = c.id; targetKind = PaymentTargetKind.CONSOLIDATED
+                                                menuOpen = false
+                                            },
+                                        )
+                                    }
+                                    receivableAccounts.forEach { a ->
+                                        DropdownMenuItem(
+                                            text = { Text("${a.officialNumber ?: a.provisionalNumber} · saldo ${a.balance}") },
+                                            onClick = {
+                                                targetId = a.id; targetKind = PaymentTargetKind.ACCOUNT
+                                                menuOpen = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            if (kind == "assign") {
+                                OutlinedTextField(
+                                    value = amountText, onValueChange = { amountText = it },
+                                    label = { Text("Importe a aplicar *") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                )
                             }
                         }
-                        if (assignDialog) {
+                        "correct" -> {
+                            Text(
+                                "El nuevo importe efectivo no puede quedar por debajo de lo ya reembolsado (${payment.refundedAmount}).",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                             OutlinedTextField(
                                 value = amountText, onValueChange = { amountText = it },
-                                label = { Text("Importe a aplicar *") },
+                                label = { Text("Nuevo importe efectivo *") },
                                 modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             )
+                        }
+                        "annul" -> Text(
+                            "La anulación es terminal y una sola vez: libera la aplicación vigente y fija el efectivo al acumulado reembolsado. No se puede deshacer.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        "refund" -> {
+                            Text(
+                                "Disponible (efectivo − aplicado − reembolsado): ${payment.unassignedAmount}. El dinero aplicado requiere retiro previo.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            OutlinedTextField(
+                                value = amountText, onValueChange = { amountText = it },
+                                label = { Text("Importe a reembolsar *") },
+                                modifier = Modifier.fillMaxWidth(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            )
+                            OutlinedTextField(
+                                value = refundDate, onValueChange = { refundDate = it },
+                                label = { Text("Fecha AAAA-MM-DD") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Box {
+                                OutlinedButton(onClick = { methodMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(methods.firstOrNull { it.id == refundMethodId }?.name
+                                        ?: "Método (opcional)")
+                                }
+                                DropdownMenu(expanded = methodMenu, onDismissRequest = { methodMenu = false }) {
+                                    DropdownMenuItem(text = { Text("(sin método)") }, onClick = {
+                                        refundMethodId = null; methodMenu = false
+                                    })
+                                    methods.filter { !it.archived }.forEach { m ->
+                                        DropdownMenuItem(text = { Text(m.name) }, onClick = {
+                                            refundMethodId = m.id; methodMenu = false
+                                        })
+                                    }
+                                }
+                            }
                         }
                     }
                     OutlinedTextField(
@@ -1001,21 +1187,46 @@ fun PaymentDetailScreen(
             },
             confirmButton = {
                 Button(onClick = {
+                    // Resultado del repositorio: null = aplicada (se cierra el
+                    // diálogo); mensaje = rechazo por regla de saldo/estado (se
+                    // muestra y el usuario permanece en el diálogo).
+                    val finish: (String?) -> Unit = { err ->
+                        if (err == null) { dialog = null; dialogError = null }
+                        else dialogError = err
+                    }
                     when {
                         reason.isBlank() -> dialogError = "El motivo es obligatorio."
-                        isUnassign -> onUnassign(reason.trim())
-                        targetId == null -> dialogError = "Elige la cuenta destino."
-                        assignDialog && amountText.toMoney().signum() <= 0 ->
-                            dialogError = "Importe inválido."
-                        assignDialog -> onAssign(targetId!!, amountText, reason.trim())
-                        else -> onReassign(targetId!!, reason.trim())
+                        kind == "unassign" -> onUnassign(reason.trim(), finish)
+                        kind == "annul" -> onAnnul(reason.trim(), finish)
+                        kind == "assign" || kind == "reassign" -> {
+                            when {
+                                targetId == null -> dialogError = "Elige el destino."
+                                kind == "assign" && amountText.toMoney().signum() <= 0 ->
+                                    dialogError = "Importe inválido."
+                                kind == "assign" ->
+                                    onAssign(targetKind, targetId!!, amountText, reason.trim(), finish)
+                                else -> onReassign(targetKind, targetId!!, reason.trim(), finish)
+                            }
+                        }
+                        kind == "correct" -> {
+                            if (amountText.toMoney().signum() < 0) {
+                                dialogError = "Importe inválido."
+                            } else onCorrect(amountText, reason.trim(), finish)
+                        }
+                        else -> {
+                            // refund
+                            val day = parseIsoDay(refundDate)
+                            when {
+                                amountText.toMoney().signum() <= 0 -> dialogError = "Importe inválido."
+                                day == null -> dialogError = "Fecha inválida."
+                                else -> onRefund(amountText, day, refundMethodId, reason.trim(), finish)
+                            }
+                        }
                     }
                 }) { Text("Confirmar") }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    assignDialog = false; unassignDialog = false; reassignDialog = false; dialogError = null
-                }) { Text("Cancelar") }
+                TextButton(onClick = { dialog = null; dialogError = null }) { Text("Cancelar") }
             },
         )
     }
@@ -1023,7 +1234,7 @@ fun PaymentDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Pago ${payment.amount}") },
+                title = { Text("Pago ${payment.effectiveAmount.takeIf { it.isNotBlank() } ?: payment.amount}") },
                 navigationIcon = { TextButton(onClick = onBack) { Text("‹") } },
             )
         },
@@ -1033,8 +1244,11 @@ fun PaymentDetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Text(assignmentLabel(PaymentAssignmentStatus.valueOf(payment.assignmentStatus)),
-                    style = MaterialTheme.typography.titleMedium)
+                Text(
+                    assignmentLabel(PaymentAssignmentStatus.valueOf(payment.assignmentStatus)) +
+                        if (payment.annulled) " · ANULADO" else "",
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 Text("Cliente: $clientName", style = MaterialTheme.typography.bodySmall)
                 Text("Fecha: ${LocalDate.ofEpochDay(payment.paidAtEpochDay)}",
                     style = MaterialTheme.typography.bodySmall)
@@ -1045,25 +1259,37 @@ fun PaymentDetailScreen(
                 if (payment.notes.isNotBlank()) {
                     Text("Notas: ${payment.notes}", style = MaterialTheme.typography.bodySmall)
                 }
+                val eff = payment.effectiveAmount.takeIf { it.isNotBlank() } ?: payment.amount
+                if (eff != payment.amount) {
+                    Text("Importe recibido: ${payment.amount}", style = MaterialTheme.typography.bodySmall)
+                }
                 Text(
-                    "Aplicado: ${payment.appliedAmount} · Sin asignar: ${payment.unassignedAmount}",
+                    "Efectivo: $eff · Aplicado: ${payment.appliedAmount} · " +
+                        "Reembolsado: ${payment.refundedAmount} · Disponible: ${payment.unassignedAmount}",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 account?.let {
                     Text("Aplicado a: ${it.officialNumber ?: it.provisionalNumber}",
                         style = MaterialTheme.typography.bodySmall)
                 }
+                consolidated?.let {
+                    Text("Aplicado a consolidado: ${it.officialNumber ?: it.provisionalNumber}",
+                        style = MaterialTheme.typography.bodySmall)
+                }
             }
             if (assignments.isNotEmpty()) {
                 item { Text("Historial de asignaciones", style = MaterialTheme.typography.titleSmall) }
                 items(assignments.sortedBy { it.createdAt }, key = { it.id }) { ev ->
+                    val destName = targetName(ev.targetType,
+                        if (ev.targetType == "CONSOLIDATED") ev.consolidatedId else ev.accountId,
+                        accountsById, consolidatedsById)
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
                             Text(
                                 when (ev.action) {
-                                    "ASSIGN" -> "Asignado ${ev.amount} a ${accountsById[ev.accountId]?.let { it.officialNumber ?: it.provisionalNumber } ?: ev.accountId}"
-                                    "UNASSIGN" -> "Retirado ${ev.amount} de ${accountsById[ev.accountId]?.let { it.officialNumber ?: it.provisionalNumber } ?: ev.accountId}"
-                                    else -> "Reasignado ${ev.amount} a ${accountsById[ev.accountId]?.let { it.officialNumber ?: it.provisionalNumber } ?: ev.accountId}"
+                                    "ASSIGN" -> "Asignado ${ev.amount} a $destName"
+                                    "UNASSIGN" -> "Retirado ${ev.amount} de $destName"
+                                    else -> "Reasignado ${ev.amount} a $destName"
                                 },
                             )
                             Text(ev.reason, style = MaterialTheme.typography.bodySmall)
@@ -1071,14 +1297,57 @@ fun PaymentDetailScreen(
                     }
                 }
             }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (payment.unassignedAmount.toMoney().signum() > 0 && receivableAccounts.isNotEmpty()) {
-                        OutlinedButton(onClick = { assignDialog = true }) { Text("Asignar") }
+            if (adjustments.isNotEmpty()) {
+                item { Text("Ajustes", style = MaterialTheme.typography.titleSmall) }
+                items(adjustments.sortedBy { it.createdAt }, key = { it.id }) { ev ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                if (ev.kind == "ANNULMENT") {
+                                    "Anulado (efectivo ${ev.effectiveBefore} → ${ev.effectiveAfter})"
+                                } else {
+                                    "Corregido ${ev.effectiveBefore} → ${ev.effectiveAfter}"
+                                } + if (ev.releasedAmount.toMoney().signum() > 0) {
+                                    " · liberado ${ev.releasedAmount}"
+                                } else "",
+                            )
+                            Text(ev.reason, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
-                    if (payment.appliedAmount.toMoney().signum() > 0) {
-                        OutlinedButton(onClick = { unassignDialog = true }) { Text("Retirar") }
-                        OutlinedButton(onClick = { reassignDialog = true }) { Text("Reasignar") }
+                }
+            }
+            if (refunds.isNotEmpty()) {
+                item { Text("Reembolsos", style = MaterialTheme.typography.titleSmall) }
+                items(refunds.sortedBy { it.createdAt }, key = { it.id }) { ev ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("Reembolsado ${ev.amount} · ${LocalDate.ofEpochDay(ev.refundedAtEpochDay)}")
+                            Text(ev.reason, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!payment.annulled) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (payment.unassignedAmount.toMoney().signum() > 0 &&
+                                (receivableAccounts.isNotEmpty() || receivableConsolidateds.isNotEmpty())
+                            ) {
+                                OutlinedButton(onClick = { dialog = "assign" }) { Text("Asignar") }
+                            }
+                            if (payment.appliedAmount.toMoney().signum() > 0) {
+                                OutlinedButton(onClick = { dialog = "unassign" }) { Text("Retirar") }
+                                OutlinedButton(onClick = { dialog = "reassign" }) { Text("Reasignar") }
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { dialog = "correct" }) { Text("Corregir") }
+                            if (payment.unassignedAmount.toMoney().signum() > 0) {
+                                OutlinedButton(onClick = { dialog = "refund" }) { Text("Reembolsar") }
+                            }
+                            OutlinedButton(onClick = { dialog = "annul" }) { Text("Anular") }
+                        }
                     }
                 }
             }

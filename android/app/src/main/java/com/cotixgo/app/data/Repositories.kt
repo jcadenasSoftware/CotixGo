@@ -10,8 +10,11 @@ import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.JobTransitions
 import com.cotixgo.app.core.JobActivityStatus
+import com.cotixgo.app.core.ConsolidatedTransitions
+import com.cotixgo.app.core.PaymentAdjustmentKind
 import com.cotixgo.app.core.PaymentAssignmentAction
 import com.cotixgo.app.core.PaymentAssignmentStatus
+import com.cotixgo.app.core.PaymentTargetKind
 import com.cotixgo.app.core.QuoteCalc
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.core.QuoteTransitions
@@ -1093,6 +1096,12 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             if (!CollectionAccountTransitions.isEditable(st, existing.appliedAmount.toMoney())) {
                 return null // con pagos aplicados (o cancelada): líneas/totales/snapshots inmutables
             }
+            // F7: miembro de un Consolidado activo — la Cuenta queda
+            // congelada (el Consolidado tomó su saldo); solo el archivado
+            // sigue permitido por su vía propia.
+            if (db.consolidatedCollectionAccountDao()
+                    .activeConsolidatedForAccount(existing.id) != null
+            ) return null
         }
         for (jobId in input.jobIds) {
             val job = db.jobDao().get(jobId) ?: return null
@@ -1204,6 +1213,11 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         val account = db.collectionAccountDao().get(id) ?: return false
         val st = CollectionAccountStatus.valueOf(account.status)
         if (!CollectionAccountTransitions.canCancel(st, account.appliedAmount.toMoney())) return false
+        // F7: una Cuenta en un Consolidado activo no se cancela — primero
+        // se retira del Consolidado o se cancela el Consolidado.
+        if (db.consolidatedCollectionAccountDao().activeConsolidatedForAccount(id) != null) {
+            return false
+        }
         val updated = account.copy(
             status = CollectionAccountStatus.CANCELADA.name,
             updatedAt = nowEpochMillis(),
@@ -1279,11 +1293,11 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
     // --- Pagos (append-only) ---
 
     /**
-     * Registra un Pago recibido: contra una Cuenta individual o sin
-     * asignar vinculado al Cliente (docs/03 §6). Si se indica `accountId`,
-     * la aplicación inicial se registra como el primer evento
-     * `payment_assignment` auditado en la misma transacción — una sola
-     * vía de aplicación, igual que cualquier `assign` posterior.
+     * Registra un Pago recibido: contra una Cuenta individual, un
+     * Consolidado o sin asignar vinculado al Cliente (docs/03 §6). Si se
+     * indica destino, la aplicación inicial se registra como el primer
+     * evento `payment_assignment` auditado en la misma transacción — una
+     * sola vía de aplicación, igual que cualquier `assign` posterior.
      * El pago nunca se edita ni se elimina.
      */
     suspend fun savePayment(input: PaymentInput): String? {
@@ -1294,12 +1308,24 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         ) return null
         val amount = input.amount.toMoney()
         if (amount.signum() <= 0) return null
-        val target = input.accountId?.let { db.collectionAccountDao().get(it) }
+        if (input.accountId != null && input.consolidatedId != null) return null
+        val account = input.accountId?.let { db.collectionAccountDao().get(it) }
+        val consolidated = input.consolidatedId?.let { db.consolidatedCollectionDao().get(it) }
         if (input.accountId != null) {
-            if (target == null || target.clientId != client.id) return null
-            val st = CollectionAccountStatus.valueOf(target.status)
+            if (account == null || account.clientId != client.id) return null
+            val st = CollectionAccountStatus.valueOf(account.status)
             if (!CollectionAccountTransitions.canReceivePayments(st)
-                || target.balance.toMoney().signum() <= 0
+                || account.balance.toMoney().signum() <= 0
+            ) return null
+            if (db.consolidatedCollectionAccountDao()
+                    .activeConsolidatedForAccount(account.id) != null
+            ) return null // miembro de Consolidado activo: sin asignación directa
+        }
+        if (input.consolidatedId != null) {
+            if (consolidated == null || consolidated.clientId != client.id) return null
+            val st = CollectionAccountStatus.valueOf(consolidated.status)
+            if (!ConsolidatedTransitions.canReceivePayments(st)
+                || consolidated.balance.toMoney().signum() <= 0
             ) return null
         }
         val now = nowEpochMillis()
@@ -1314,7 +1340,12 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             notes = input.notes.trim(),
             appliedAmount = "0.00",
             unassignedAmount = QuoteCalc.format(amount),
+            effectiveAmount = QuoteCalc.format(amount),
+            refundedAmount = "0.00",
+            annulled = false,
             assignedAccountId = null,
+            assignedConsolidatedId = null,
+            assignedTargetType = null,
             assignmentStatus = PaymentAssignmentStatus.UNASSIGNED.name,
             createdAt = now,
             updatedAt = now,
@@ -1324,74 +1355,130 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         db.withTransaction {
             db.paymentDao().upsert(payment)
             sync?.enqueue(EntityTypes.PAYMENT, payment.id, SyncPayloads.payment(payment), 0)
-            if (target != null) {
-                applyAssignLocked(
-                    payment, target, amount,
-                    input.initialAssignReason.ifBlank { "Aplicación inicial del pago" },
-                    now,
-                )
+            val reason = input.initialAssignReason.ifBlank { "Aplicación inicial del pago" }
+            when {
+                account != null ->
+                    applyAssignLocked(payment, PaymentTargetKind.ACCOUNT, account.id,
+                        account.clientId, account.status, account.balance.toMoney(), amount, reason, now)
+                consolidated != null ->
+                    applyAssignLocked(payment, PaymentTargetKind.CONSOLIDATED, consolidated.id,
+                        consolidated.clientId, consolidated.status, consolidated.balance.toMoney(), amount, reason, now)
             }
         }
         return payment.id
     }
 
     /**
-     * Asigna dinero sin asignar de un Pago a una Cuenta: aplica solo lo
-     * necesario (min de lo pedido, el remanente y el saldo); el excedente
-     * queda UNASSIGNED en el mismo Pago. Devuelve null si aplicó o el
-     * motivo del rechazo.
+     * Asigna dinero sin asignar de un Pago a una Cuenta o Consolidado:
+     * aplica solo lo necesario (min de lo pedido, el remanente y el saldo);
+     * el excedente queda UNASSIGNED en el mismo Pago. Devuelve null si
+     * aplicó o el motivo del rechazo.
      */
     suspend fun assignPayment(paymentId: String, accountId: String, requested: String, reason: String): String? =
+        assignPaymentToTarget(paymentId, PaymentTargetKind.ACCOUNT, accountId, requested, reason)
+
+    /** Variante F7 genérica: el destino puede ser una Cuenta o un Consolidado. */
+    suspend fun assignPaymentToTarget(
+        paymentId: String,
+        targetKind: PaymentTargetKind,
+        targetId: String,
+        requested: String,
+        reason: String,
+    ): String? =
         db.withTransaction {
             if (reason.isBlank()) return@withTransaction "La asignación requiere un motivo."
             val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
-            val account = db.collectionAccountDao().get(accountId) ?: return@withTransaction "Cuenta no encontrada."
-            if (applyAssignLocked(payment, account, requested.toMoney(), reason, nowEpochMillis()) == null) {
-                return@withTransaction "La asignación no aplicó: sin remanente, cuenta cerrada o destino inválido."
+            if (payment.annulled) {
+                return@withTransaction "El pago está anulado; no admite asignaciones."
+            }
+            when (targetKind) {
+                PaymentTargetKind.ACCOUNT -> {
+                    val account = db.collectionAccountDao().get(targetId)
+                        ?: return@withTransaction "Cuenta no encontrada."
+                    if (db.consolidatedCollectionAccountDao()
+                            .activeConsolidatedForAccount(targetId) != null
+                    ) {
+                        return@withTransaction "La cuenta pertenece a un consolidado activo; asigna al consolidado."
+                    }
+                    val ok = applyAssignLocked(
+                        payment, PaymentTargetKind.ACCOUNT, account.id,
+                        account.clientId, account.status, account.balance.toMoney(),
+                        requested.toMoney(), reason, nowEpochMillis(),
+                    )
+                    if (ok == null) {
+                        return@withTransaction "La asignación no aplicó: sin remanente, cuenta cerrada o destino inválido."
+                    }
+                }
+                PaymentTargetKind.CONSOLIDATED -> {
+                    val consolidated = db.consolidatedCollectionDao().get(targetId)
+                        ?: return@withTransaction "Consolidado no encontrado."
+                    val ok = applyAssignLocked(
+                        payment, PaymentTargetKind.CONSOLIDATED, consolidated.id,
+                        consolidated.clientId, consolidated.status, consolidated.balance.toMoney(),
+                        requested.toMoney(), reason, nowEpochMillis(),
+                    )
+                    if (ok == null) {
+                        return@withTransaction "La asignación no aplicó: sin remanente o consolidado cerrado."
+                    }
+                }
             }
             null
         }
 
     /**
      * Retira la aplicación vigente del Pago (con motivo): el dinero vuelve
-     * a UNASSIGNED dentro del mismo Pago y el saldo de la Cuenta se
+     * al remanente libre dentro del mismo Pago y el saldo del destino se
      * restaura. Evento auditado append-only; no edita ni elimina nada.
      */
     suspend fun unassignPayment(paymentId: String, reason: String): String? =
         db.withTransaction {
             if (reason.isBlank()) return@withTransaction "La operación requiere un motivo."
             val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
-            val accountId = payment.assignedAccountId
+            if (payment.annulled) {
+                return@withTransaction "El pago está anulado; no admite más movimientos."
+            }
+            val targetKind = payment.assignedTargetType?.let { PaymentTargetKind.valueOf(it) }
+                ?: if (payment.assignedAccountId != null) PaymentTargetKind.ACCOUNT else null
                 ?: return@withTransaction "El pago no tiene dinero aplicado."
+            val targetId = when (targetKind) {
+                PaymentTargetKind.ACCOUNT -> payment.assignedAccountId
+                PaymentTargetKind.CONSOLIDATED -> payment.assignedConsolidatedId
+            } ?: return@withTransaction "El pago no tiene dinero aplicado."
             val released = payment.appliedAmount.toMoney()
             if (released.signum() <= 0) return@withTransaction "El pago no tiene dinero aplicado."
-            val account = db.collectionAccountDao().get(accountId)
-                ?: return@withTransaction "Cuenta destino no encontrada."
+            if (targetKind == PaymentTargetKind.ACCOUNT
+                && db.consolidatedCollectionAccountDao()
+                    .activeConsolidatedForAccount(targetId) != null
+            ) {
+                return@withTransaction "El dinero aplicado está en una cuenta dentro de un consolidado activo."
+            }
             val now = nowEpochMillis()
             val event = PaymentAssignmentEntity(
                 id = Ids.new(), userId = payment.userId, paymentId = payment.id,
-                action = PaymentAssignmentAction.UNASSIGN.name, accountId = accountId,
-                amount = QuoteCalc.format(released), reason = reason.trim(),
+                action = PaymentAssignmentAction.UNASSIGN.name,
+                targetType = targetKind.name,
+                accountId = if (targetKind == PaymentTargetKind.ACCOUNT) targetId else null,
+                consolidatedId = if (targetKind == PaymentTargetKind.CONSOLIDATED) targetId else null,
+                amount = QuoteCalc.format(released),
+                releasedAmount = QuoteCalc.format(released),
+                reason = reason.trim(),
                 createdAt = now, updatedAt = now,
             )
-            val payUnassigned = payment.amount.toMoney()
+            // Remanente libre: efectivo − aplicado − reembolsado.
+            val newUnassigned = payment.effectiveAmount.toMoney()
             db.paymentDao().upsert(
                 payment.copy(
-                    appliedAmount = "0.00", unassignedAmount = QuoteCalc.format(payUnassigned),
-                    assignedAccountId = null,
-                    assignmentStatus = PaymentAssignmentStatus.UNASSIGNED.name,
+                    appliedAmount = "0.00",
+                    unassignedAmount = QuoteCalc.format(newUnassigned.subtract(payment.refundedAmount.toMoney())),
+                    assignedTargetType = null, assignedAccountId = null, assignedConsolidatedId = null,
+                    assignmentStatus = deriveAssignmentStatus(
+                        BigDecimal.ZERO,
+                        newUnassigned.subtract(payment.refundedAmount.toMoney()),
+                    ).name,
                     updatedAt = now,
                 ),
             )
-            val accApplied = account.appliedAmount.toMoney().subtract(released)
-            db.collectionAccountDao().upsert(
-                account.copy(
-                    appliedAmount = QuoteCalc.format(accApplied),
-                    balance = QuoteCalc.format(account.net.toMoney().subtract(accApplied)),
-                    status = deriveCollectionStatus(false, accApplied, account.net.toMoney()).name,
-                    updatedAt = now,
-                ),
-            )
+            releaseTargetLocked(targetKind, targetId, released, now)
             db.paymentAssignmentDao().upsert(event)
             sync?.enqueue(EntityTypes.PAYMENT_ASSIGNMENT, event.id,
                 SyncPayloads.paymentAssignment(event), 0)
@@ -1405,134 +1492,618 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
      * Pago. Un solo evento auditado, atómico.
      */
     suspend fun reassignPayment(paymentId: String, toAccountId: String, reason: String): String? =
+        reassignPaymentToTarget(paymentId, PaymentTargetKind.ACCOUNT, toAccountId, reason)
+
+    /** Variante F7 genérica: origen y destino pueden ser Cuenta o Consolidado. */
+    suspend fun reassignPaymentToTarget(
+        paymentId: String,
+        targetKind: PaymentTargetKind,
+        targetId: String,
+        reason: String,
+    ): String? =
         db.withTransaction {
             if (reason.isBlank()) return@withTransaction "La reasignación requiere un motivo."
             val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
-            val fromId = payment.assignedAccountId
+            if (payment.annulled) {
+                return@withTransaction "El pago está anulado; no admite más movimientos."
+            }
+            val fromKind = payment.assignedTargetType?.let { PaymentTargetKind.valueOf(it) }
+                ?: if (payment.assignedAccountId != null) PaymentTargetKind.ACCOUNT else null
                 ?: return@withTransaction "El pago no tiene dinero aplicado; usa asignar."
-            if (fromId == toAccountId) return@withTransaction "El pago ya está aplicado a esa cuenta."
-            val released = payment.appliedAmount.toMoney()
-            val from = db.collectionAccountDao().get(fromId)
-                ?: return@withTransaction "Cuenta origen no encontrada."
-            val to = db.collectionAccountDao().get(toAccountId)
-                ?: return@withTransaction "Cuenta destino no encontrada."
-            if (to.clientId != payment.clientId) {
-                return@withTransaction "La cuenta destino pertenece a otro cliente."
+            val fromId = when (fromKind) {
+                PaymentTargetKind.ACCOUNT -> payment.assignedAccountId
+                PaymentTargetKind.CONSOLIDATED -> payment.assignedConsolidatedId
+            } ?: return@withTransaction "El pago no tiene dinero aplicado; usa asignar."
+            if (fromKind == targetKind && fromId == targetId) {
+                return@withTransaction "El pago ya está aplicado a ese destino."
             }
-            if (!CollectionAccountTransitions.canReceivePayments(
-                    CollectionAccountStatus.valueOf(to.status),
-                )
+            if (fromKind == PaymentTargetKind.ACCOUNT
+                && db.consolidatedCollectionAccountDao()
+                    .activeConsolidatedForAccount(fromId) != null
             ) {
-                return@withTransaction "La cuenta destino no puede recibir pagos."
+                return@withTransaction "El dinero aplicado está en una cuenta dentro de un consolidado activo."
             }
-            val toBalance = to.balance.toMoney()
+            val released = payment.appliedAmount.toMoney()
+            val (toClientId, toStatus, toBalance) = when (targetKind) {
+                PaymentTargetKind.ACCOUNT -> {
+                    val to = db.collectionAccountDao().get(targetId)
+                        ?: return@withTransaction "Cuenta destino no encontrada."
+                    if (db.consolidatedCollectionAccountDao()
+                            .activeConsolidatedForAccount(targetId) != null
+                    ) {
+                        return@withTransaction "La cuenta destino pertenece a un consolidado activo."
+                    }
+                    Triple(to.clientId, to.status, to.balance.toMoney())
+                }
+                PaymentTargetKind.CONSOLIDATED -> {
+                    val to = db.consolidatedCollectionDao().get(targetId)
+                        ?: return@withTransaction "Consolidado destino no encontrado."
+                    Triple(to.clientId, to.status, to.balance.toMoney())
+                }
+            }
+            if (toClientId != payment.clientId) {
+                return@withTransaction "El destino pertenece a otro cliente."
+            }
+            if (!ConsolidatedTransitions.canReceivePayments(CollectionAccountStatus.valueOf(toStatus))
+                || toBalance.signum() <= 0
+            ) {
+                return@withTransaction "El destino no puede recibir pagos."
+            }
             val appliedTo = released.min(toBalance)
-            if (appliedTo.signum() <= 0) {
-                return@withTransaction "La cuenta destino no tiene saldo pendiente."
-            }
             val now = nowEpochMillis()
             val event = PaymentAssignmentEntity(
                 id = Ids.new(), userId = payment.userId, paymentId = payment.id,
-                action = PaymentAssignmentAction.REASSIGN.name, accountId = toAccountId,
-                fromAccountId = fromId, amount = QuoteCalc.format(appliedTo),
+                action = PaymentAssignmentAction.REASSIGN.name,
+                targetType = targetKind.name,
+                accountId = if (targetKind == PaymentTargetKind.ACCOUNT) targetId else null,
+                consolidatedId = if (targetKind == PaymentTargetKind.CONSOLIDATED) targetId else null,
+                fromAccountId = if (fromKind == PaymentTargetKind.ACCOUNT) fromId else null,
+                fromConsolidatedId = if (fromKind == PaymentTargetKind.CONSOLIDATED) fromId else null,
+                amount = QuoteCalc.format(appliedTo),
                 releasedAmount = QuoteCalc.format(released), reason = reason.trim(),
                 createdAt = now, updatedAt = now,
             )
             val newApplied = appliedTo
-            val newUnassigned = payment.amount.toMoney().subtract(newApplied)
+            val newUnassigned = payment.effectiveAmount.toMoney()
+                .subtract(newApplied).subtract(payment.refundedAmount.toMoney())
             db.paymentDao().upsert(
                 payment.copy(
                     appliedAmount = QuoteCalc.format(newApplied),
                     unassignedAmount = QuoteCalc.format(newUnassigned),
-                    assignedAccountId = if (newApplied.signum() > 0) toAccountId else null,
+                    assignedTargetType = if (newApplied.signum() > 0) targetKind.name else null,
+                    assignedAccountId = if (newApplied.signum() > 0 && targetKind == PaymentTargetKind.ACCOUNT) targetId else null,
+                    assignedConsolidatedId = if (newApplied.signum() > 0 && targetKind == PaymentTargetKind.CONSOLIDATED) targetId else null,
                     assignmentStatus = deriveAssignmentStatus(newApplied, newUnassigned).name,
                     updatedAt = now,
                 ),
             )
-            val fromApplied = from.appliedAmount.toMoney().subtract(released)
-            db.collectionAccountDao().upsert(
-                from.copy(
-                    appliedAmount = QuoteCalc.format(fromApplied),
-                    balance = QuoteCalc.format(from.net.toMoney().subtract(fromApplied)),
-                    status = deriveCollectionStatus(false, fromApplied, from.net.toMoney()).name,
-                    updatedAt = now,
-                ),
-            )
-            val toApplied = to.appliedAmount.toMoney().add(appliedTo)
-            db.collectionAccountDao().upsert(
-                to.copy(
-                    appliedAmount = QuoteCalc.format(toApplied),
-                    balance = QuoteCalc.format(to.net.toMoney().subtract(toApplied)),
-                    status = deriveCollectionStatus(false, toApplied, to.net.toMoney()).name,
-                    updatedAt = now,
-                ),
-            )
+            releaseTargetLocked(fromKind, fromId, released, now)
+            applyToTargetLocked(targetKind, targetId, appliedTo, now)
             db.paymentAssignmentDao().upsert(event)
             sync?.enqueue(EntityTypes.PAYMENT_ASSIGNMENT, event.id,
                 SyncPayloads.paymentAssignment(event), 0)
             null
         }
 
+    // --- F7: Consolidados de Cuentas de Cobro ---
+
+    fun observeConsolidatedCollections(userId: String): Flow<List<ConsolidatedCollectionEntity>> =
+        db.consolidatedCollectionDao().observeForUser(userId)
+
+    fun observeConsolidatedCollection(id: String): Flow<ConsolidatedCollectionEntity?> =
+        db.consolidatedCollectionDao().observeOne(id)
+
+    fun observeConsolidatedMembers(consolidatedId: String): Flow<List<ConsolidatedCollectionAccountEntity>> =
+        db.consolidatedCollectionAccountDao().observeForConsolidated(consolidatedId)
+
+    /** Membresías (cualquier estado) de la Cuenta en Consolidados. */
+    fun observeConsolidatedMemberships(accountId: String): Flow<List<ConsolidatedCollectionAccountEntity>> =
+        db.consolidatedCollectionAccountDao().observeForAccount(accountId)
+
+    /** Membresías vigentes en Consolidados no cancelados (para la UI). */
+    fun observeActiveMemberships(): Flow<List<ConsolidatedCollectionAccountEntity>> =
+        db.consolidatedCollectionAccountDao().observeActiveMemberships()
+
+    fun observePaymentsForConsolidated(consolidatedId: String): Flow<List<PaymentEntity>> =
+        db.consolidatedCollectionAccountDao().observePaymentsForConsolidated(consolidatedId)
+
+    /** ¿La Cuenta pertenece a un Consolidado no cancelado? */
+    suspend fun activeConsolidatedForAccount(accountId: String): ConsolidatedCollectionEntity? =
+        db.consolidatedCollectionAccountDao().activeConsolidatedForAccount(accountId)
+
+    /**
+     * Crea/edita un Consolidado (docs/03 §6): ≥2 Cuentas no canceladas
+     * con saldo pendiente > 0, mismo Cliente y misma moneda (los Perfiles
+     * pueden diferir; cada Cuenta conserva sus propios snapshots). Los
+     * totales se derivan de los saldos vigentes de las Cuentas — la suma
+     * de sus saldos pendientes en el momento de la escritura. Nace
+     * PENDIENTE con numeración provisional `CONS-PEND-XXXX`; la oficial
+     * `CONS-AAAAMM-NNN` llega en la primera aceptación del servidor.
+     * Miembros editables solo en PENDIENTE sin pagos aplicados.
+     */
+    suspend fun saveConsolidatedCollection(
+        input: ConsolidatedInput,
+        existingId: String? = null,
+    ): String? {
+        val user = requireUser()
+        if (input.accountIds.toSet().size != input.accountIds.size || input.accountIds.size < 2) {
+            return null
+        }
+        val client = db.clientDao().get(input.clientId) ?: return null
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.consolidatedCollectionDao().get(it) }
+        if (existing != null) {
+            val st = CollectionAccountStatus.valueOf(existing.status)
+            if (!ConsolidatedTransitions.isEditable(st, existing.appliedAmount.toMoney())) {
+                return null // PARCIAL/PAGADA/CANCELADA: membresía cerrada
+            }
+        }
+        var currency: String? = null
+        var total = BigDecimal.ZERO
+        for (accountId in input.accountIds) {
+            val account = db.collectionAccountDao().get(accountId) ?: return null
+            if (account.clientId != client.id) return null
+            if (account.status == CollectionAccountStatus.CANCELADA.name) return null
+            if (account.balance.toMoney().signum() <= 0) return null
+            if (currency == null) currency = account.currency
+            else if (account.currency != currency) return null
+            val holder = db.consolidatedCollectionAccountDao().activeConsolidatedForAccount(accountId)
+            if (holder != null && holder.id != existing?.id) return null
+            total = total.add(account.balance.toMoney())
+        }
+        val consolidated = ConsolidatedCollectionEntity(
+            id = existing?.id ?: Ids.new(),
+            userId = existing?.userId ?: user.id,
+            clientId = client.id,
+            provisionalNumber = existing?.provisionalNumber ?: uniqueConsolidatedProvisionalNumber(),
+            status = CollectionAccountStatus.PENDIENTE.name,
+            currency = currency ?: input.currency.uppercase(),
+            totalAmount = QuoteCalc.format(total),
+            appliedAmount = "0.00",
+            balance = QuoteCalc.format(total),
+            clientNameSnapshot = client.name,
+            archived = existing?.archived ?: false,
+            officialNumber = existing?.officialNumber,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        val links = input.accountIds.mapIndexed { i, accountId ->
+            ConsolidatedCollectionAccountEntity(
+                id = Ids.new(), consolidatedId = consolidated.id, accountId = accountId,
+                position = i + 1, createdAt = now,
+            )
+        }
+        db.withTransaction {
+            db.consolidatedCollectionDao().upsert(consolidated)
+            db.consolidatedCollectionAccountDao().deleteForConsolidated(consolidated.id)
+            db.consolidatedCollectionAccountDao().upsertAll(links)
+            sync?.enqueue(
+                EntityTypes.CONSOLIDATED_COLLECTION, consolidated.id,
+                SyncPayloads.consolidatedCollection(consolidated, links.map { it.accountId }),
+                existing?.serverVersion ?: 0,
+            )
+        }
+        return consolidated.id
+    }
+
+    /**
+     * Cancela el Consolidado: solo en PENDIENTE sin pagos aplicados; la
+     * membresía histórica se conserva y las Cuentas quedan libres.
+     */
+    suspend fun cancelConsolidatedCollection(id: String): Boolean {
+        val consolidated = db.consolidatedCollectionDao().get(id) ?: return false
+        val st = CollectionAccountStatus.valueOf(consolidated.status)
+        if (!ConsolidatedTransitions.canCancel(st, consolidated.appliedAmount.toMoney())) return false
+        val updated = consolidated.copy(
+            status = CollectionAccountStatus.CANCELADA.name,
+            updatedAt = nowEpochMillis(),
+            pendingSync = true,
+        )
+        val members = db.consolidatedCollectionAccountDao().forConsolidated(id)
+        db.withTransaction {
+            db.consolidatedCollectionDao().upsert(updated)
+            sync?.enqueue(
+                EntityTypes.CONSOLIDATED_COLLECTION, id,
+                SyncPayloads.consolidatedCollection(updated, members.map { it.accountId }),
+                consolidated.serverVersion,
+            )
+        }
+        return true
+    }
+
+    suspend fun setConsolidatedArchived(id: String, archived: Boolean) {
+        val consolidated = db.consolidatedCollectionDao().get(id) ?: return
+        val members = db.consolidatedCollectionAccountDao().forConsolidated(id)
+        val updated = consolidated.copy(archived = archived, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.consolidatedCollectionDao().upsert(updated)
+            sync?.enqueue(
+                EntityTypes.CONSOLIDATED_COLLECTION, id,
+                SyncPayloads.consolidatedCollection(updated, members.map { it.accountId }),
+                consolidated.serverVersion,
+            )
+        }
+    }
+
+    private suspend fun uniqueConsolidatedProvisionalNumber(): String {
+        var n: String
+        do {
+            n = "CONS-PEND-" + (1000 + kotlin.random.Random.nextInt(9000)).toString()
+        } while (db.consolidatedCollectionDao().provisionalNumberExists(n))
+        return n
+    }
+
+    // --- F7: Ajustes de Pago (append-only) ---
+
+    fun observePaymentAdjustments(paymentId: String): Flow<List<PaymentAdjustmentEntity>> =
+        db.paymentAdjustmentDao().observeForPayment(paymentId)
+
+    /**
+     * Corrección del importe efectivo (evento `payment_adjustment`
+     * append-only, docs/03 §6): al alza el incremento queda UNASSIGNED; a
+     * la baja consume primero lo UNASSIGNED y luego libera la asignación
+     * vigente (LIFO: la aplicación más reciente es la única vigente), todo
+     * atómico. Rechaza si el nuevo efectivo queda por debajo del acumulado
+     * reembolsado. Devuelve null o el motivo del rechazo.
+     */
+    suspend fun correctPayment(paymentId: String, newEffective: String, reason: String): String? =
+        db.withTransaction {
+            if (reason.isBlank()) return@withTransaction "La corrección requiere un motivo."
+            val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
+            if (payment.annulled) {
+                return@withTransaction "El pago está anulado; no admite correcciones."
+            }
+            val target = newEffective.toMoney()
+            val effective = payment.effectiveAmount.toMoney()
+            val applied = payment.appliedAmount.toMoney()
+            val refunded = payment.refundedAmount.toMoney()
+            if (target.signum() < 0 || target.compareTo(effective) == 0) {
+                return@withTransaction "La corrección requiere un importe efectivo distinto y válido."
+            }
+            if (target < refunded) {
+                return@withTransaction "El importe corregido no puede quedar por debajo de lo ya reembolsado."
+            }
+            val now = nowEpochMillis()
+            var releasedNow = BigDecimal.ZERO
+            var releasedFromType: String? = null
+            var releasedFromId: String? = null
+            var newApplied = applied
+            if (target < effective) {
+                val free = effective.subtract(applied).subtract(refunded)
+                val need = target.let { effective.subtract(it) }.subtract(free)
+                if (need.signum() > 0) {
+                    val fromKind = payment.assignedTargetType?.let { PaymentTargetKind.valueOf(it) }
+                        ?: if (payment.assignedAccountId != null) PaymentTargetKind.ACCOUNT else null
+                    val fromId = when (fromKind) {
+                        PaymentTargetKind.ACCOUNT -> payment.assignedAccountId
+                        PaymentTargetKind.CONSOLIDATED -> payment.assignedConsolidatedId
+                        null -> null
+                    }
+                    if (fromKind == PaymentTargetKind.ACCOUNT && fromId != null
+                        && db.consolidatedCollectionAccountDao()
+                            .activeConsolidatedForAccount(fromId) != null
+                    ) {
+                        return@withTransaction "La corrección liberaría fondos de una cuenta en un consolidado activo."
+                    }
+                    if (fromId != null) {
+                        releaseTargetLocked(fromKind!!, fromId, need, now)
+                        releasedFromType = fromKind.name
+                        releasedFromId = fromId
+                    }
+                    releasedNow = need
+                    newApplied = applied.subtract(need)
+                }
+            }
+            val newUnassigned = target.subtract(newApplied).subtract(refunded)
+            val event = PaymentAdjustmentEntity(
+                id = Ids.new(), userId = payment.userId, paymentId = payment.id,
+                kind = PaymentAdjustmentKind.CORRECTION.name, reason = reason.trim(),
+                newEffectiveAmount = QuoteCalc.format(target),
+                effectiveBefore = QuoteCalc.format(effective),
+                effectiveAfter = QuoteCalc.format(target),
+                releasedAmount = QuoteCalc.format(releasedNow),
+                releasedFromType = releasedFromType, releasedFromId = releasedFromId,
+                createdAt = now, updatedAt = now,
+            )
+            db.paymentDao().upsert(
+                payment.copy(
+                    effectiveAmount = QuoteCalc.format(target),
+                    appliedAmount = QuoteCalc.format(newApplied),
+                    unassignedAmount = QuoteCalc.format(newUnassigned),
+                    assignedTargetType = if (newApplied.signum() <= 0) null else payment.assignedTargetType,
+                    assignedAccountId = if (newApplied.signum() <= 0) null else payment.assignedAccountId,
+                    assignedConsolidatedId = if (newApplied.signum() <= 0) null else payment.assignedConsolidatedId,
+                    assignmentStatus = deriveAssignmentStatus(newApplied, newUnassigned).name,
+                    updatedAt = now,
+                ),
+            )
+            db.paymentAdjustmentDao().upsert(event)
+            sync?.enqueue(EntityTypes.PAYMENT_ADJUSTMENT, event.id,
+                SyncPayloads.paymentAdjustment(event), 0)
+            null
+        }
+
+    /**
+     * Anulación terminal (evento `payment_adjustment` ANNULMENT, una sola
+     * vez por Pago): libera atómicamente la aplicación vigente y fija el
+     * efectivo al acumulado reembolsado (cero si no hubo Reembolsos).
+     * Después se rechazan asignaciones, correcciones y Reembolsos.
+     */
+    suspend fun annulPayment(paymentId: String, reason: String): String? =
+        db.withTransaction {
+            if (reason.isBlank()) return@withTransaction "La anulación requiere un motivo."
+            val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
+            if (payment.annulled) {
+                return@withTransaction "El pago ya está anulado; la anulación es una sola vez y terminal."
+            }
+            val effective = payment.effectiveAmount.toMoney()
+            val applied = payment.appliedAmount.toMoney()
+            val refunded = payment.refundedAmount.toMoney()
+            val now = nowEpochMillis()
+            var releasedFromType: String? = null
+            var releasedFromId: String? = null
+            if (applied.signum() > 0) {
+                val fromKind = payment.assignedTargetType?.let { PaymentTargetKind.valueOf(it) }
+                    ?: if (payment.assignedAccountId != null) PaymentTargetKind.ACCOUNT else null
+                val fromId = when (fromKind) {
+                    PaymentTargetKind.ACCOUNT -> payment.assignedAccountId
+                    PaymentTargetKind.CONSOLIDATED -> payment.assignedConsolidatedId
+                    null -> null
+                }
+                if (fromKind == PaymentTargetKind.ACCOUNT && fromId != null
+                    && db.consolidatedCollectionAccountDao()
+                        .activeConsolidatedForAccount(fromId) != null
+                ) {
+                    return@withTransaction "La anulación liberaría fondos de una cuenta en un consolidado activo."
+                }
+                if (fromId != null) {
+                    releaseTargetLocked(fromKind!!, fromId, applied, now)
+                    releasedFromType = fromKind.name
+                    releasedFromId = fromId
+                }
+            }
+            val event = PaymentAdjustmentEntity(
+                id = Ids.new(), userId = payment.userId, paymentId = payment.id,
+                kind = PaymentAdjustmentKind.ANNULMENT.name, reason = reason.trim(),
+                newEffectiveAmount = null,
+                effectiveBefore = QuoteCalc.format(effective),
+                effectiveAfter = QuoteCalc.format(refunded),
+                releasedAmount = QuoteCalc.format(applied),
+                releasedFromType = releasedFromType, releasedFromId = releasedFromId,
+                createdAt = now, updatedAt = now,
+            )
+            db.paymentDao().upsert(
+                payment.copy(
+                    effectiveAmount = QuoteCalc.format(refunded),
+                    appliedAmount = "0.00",
+                    unassignedAmount = "0.00",
+                    assignedTargetType = null, assignedAccountId = null, assignedConsolidatedId = null,
+                    assignmentStatus = PaymentAssignmentStatus.UNASSIGNED.name,
+                    annulled = true,
+                    updatedAt = now,
+                ),
+            )
+            db.paymentAdjustmentDao().upsert(event)
+            sync?.enqueue(EntityTypes.PAYMENT_ADJUSTMENT, event.id,
+                SyncPayloads.paymentAdjustment(event), 0)
+            null
+        }
+
+    // --- F7: Reembolsos (append-only, irreversibles) ---
+
+    fun observePaymentRefunds(paymentId: String): Flow<List<PaymentRefundEntity>> =
+        db.paymentRefundDao().observeForPayment(paymentId)
+
+    /**
+     * Reembolso vinculado al Pago origen (evento `payment_refund`
+     * append-only): solo hasta el remanente disponible — la misma reserva
+     * que las asignaciones: efectivo − aplicado − reembolsado. El dinero
+     * aplicado debe liberarse antes con una operación auditada. Nunca
+     * edita ni elimina el Pago; irreversible (sin reversión aprobada).
+     */
+    suspend fun refundPayment(
+        paymentId: String,
+        amount: String,
+        refundedAtEpochDay: Long,
+        collectionMethodId: String?,
+        reason: String,
+    ): String? =
+        db.withTransaction {
+            if (reason.isBlank()) return@withTransaction "El reembolso requiere un motivo."
+            val payment = db.paymentDao().get(paymentId) ?: return@withTransaction "Pago no encontrado."
+            if (payment.annulled) {
+                return@withTransaction "El pago está anulado; no admite reembolsos."
+            }
+            if (collectionMethodId != null
+                && db.collectionMethodDao().get(collectionMethodId) == null
+            ) return@withTransaction "Método de cobro no encontrado."
+            val requested = amount.toMoney()
+            if (requested.signum() <= 0) {
+                return@withTransaction "El importe del reembolso debe ser positivo."
+            }
+            val effective = payment.effectiveAmount.toMoney()
+            val applied = payment.appliedAmount.toMoney()
+            val refunded = payment.refundedAmount.toMoney()
+            val available = effective.subtract(applied).subtract(refunded)
+            if (requested > available) {
+                return@withTransaction "El reembolso excede el remanente disponible del pago."
+            }
+            val now = nowEpochMillis()
+            val event = PaymentRefundEntity(
+                id = Ids.new(), userId = payment.userId, paymentId = payment.id,
+                amount = QuoteCalc.format(requested), refundedAtEpochDay = refundedAtEpochDay,
+                collectionMethodId = collectionMethodId, reason = reason.trim(),
+                createdAt = now, updatedAt = now,
+            )
+            val newRefunded = refunded.add(requested)
+            val newUnassigned = effective.subtract(applied).subtract(newRefunded)
+            db.paymentDao().upsert(
+                payment.copy(
+                    refundedAmount = QuoteCalc.format(newRefunded),
+                    unassignedAmount = QuoteCalc.format(newUnassigned),
+                    assignmentStatus = deriveAssignmentStatus(applied, newUnassigned).name,
+                    updatedAt = now,
+                ),
+            )
+            db.paymentRefundDao().upsert(event)
+            sync?.enqueue(EntityTypes.PAYMENT_REFUND, event.id,
+                SyncPayloads.paymentRefund(event), 0)
+            null
+        }
+
     /**
      * Núcleo de aplicación compartido (creación con destino y `assign`):
-     * valida remanente, cuenta receptora, mismo Cliente y unicidad de
-     * documento destino; registra el evento auditado y actualiza los
-     * importes derivados de Pago y Cuenta en la misma transacción.
+     * valida remanente (efectivo − aplicado − reembolsado), destino
+     * receptor, mismo Cliente y unicidad de documento destino; registra
+     * el evento auditado y actualiza los importes derivados de Pago y
+     * destino en la misma transacción.
      * Los campos derivados NO se encolan como operación propia: el
      * servidor recalcula los mismos valores al aplicar el evento y los
      * entrega por pull (una sola fuente de verdad, sin doble escritura).
      */
     private suspend fun applyAssignLocked(
         payment: PaymentEntity,
-        account: CollectionAccountEntity,
+        targetKind: PaymentTargetKind,
+        targetId: String,
+        targetClientId: String,
+        targetStatus: String,
+        targetBalance: BigDecimal,
         requested: BigDecimal,
         reason: String,
         now: Long,
     ): PaymentAssignmentEntity? {
-        val unassigned = payment.unassignedAmount.toMoney()
+        // Remanente reservable: efectivo − aplicado − reembolsado.
+        val effective = payment.effectiveAmount.toMoney().let {
+            if (it.signum() <= 0) payment.amount.toMoney() else it
+        }
+        val unassigned = effective.subtract(payment.appliedAmount.toMoney())
+            .subtract(payment.refundedAmount.toMoney())
         if (unassigned.signum() <= 0) return null
-        if (payment.assignedAccountId != null && payment.assignedAccountId != account.id) return null
-        if (payment.clientId != account.clientId) return null
-        if (!CollectionAccountTransitions.canReceivePayments(
-                CollectionAccountStatus.valueOf(account.status),
-            )
-        ) return null
-        val balance = account.balance.toMoney()
-        val applied = requested.min(unassigned).min(balance)
+        val currentKind = payment.assignedTargetType?.let { PaymentTargetKind.valueOf(it) }
+            ?: if (payment.assignedAccountId != null) PaymentTargetKind.ACCOUNT else null
+        val currentId = when (currentKind) {
+            PaymentTargetKind.ACCOUNT -> payment.assignedAccountId
+            PaymentTargetKind.CONSOLIDATED -> payment.assignedConsolidatedId
+            null -> null
+        }
+        if (currentId != null && (currentKind != targetKind || currentId != targetId)) return null
+        if (payment.clientId != targetClientId) return null
+        if (!ConsolidatedTransitions.canReceivePayments(CollectionAccountStatus.valueOf(targetStatus))) {
+            return null
+        }
+        val applied = requested.min(unassigned).min(targetBalance)
         if (applied.signum() <= 0) return null
         val event = PaymentAssignmentEntity(
             id = Ids.new(), userId = payment.userId, paymentId = payment.id,
-            action = PaymentAssignmentAction.ASSIGN.name, accountId = account.id,
+            action = PaymentAssignmentAction.ASSIGN.name,
+            targetType = targetKind.name,
+            accountId = if (targetKind == PaymentTargetKind.ACCOUNT) targetId else null,
+            consolidatedId = if (targetKind == PaymentTargetKind.CONSOLIDATED) targetId else null,
             amount = QuoteCalc.format(applied), reason = reason.trim(),
             createdAt = now, updatedAt = now,
         )
         val newApplied = payment.appliedAmount.toMoney().add(applied)
-        val newUnassigned = payment.amount.toMoney().subtract(newApplied)
+        val newUnassigned = effective.subtract(newApplied).subtract(payment.refundedAmount.toMoney())
         db.paymentDao().upsert(
             payment.copy(
                 appliedAmount = QuoteCalc.format(newApplied),
                 unassignedAmount = QuoteCalc.format(newUnassigned),
-                assignedAccountId = account.id,
+                assignedTargetType = targetKind.name,
+                assignedAccountId = if (targetKind == PaymentTargetKind.ACCOUNT) targetId else null,
+                assignedConsolidatedId = if (targetKind == PaymentTargetKind.CONSOLIDATED) targetId else null,
                 assignmentStatus = deriveAssignmentStatus(newApplied, newUnassigned).name,
                 updatedAt = now,
             ),
         )
-        val accApplied = account.appliedAmount.toMoney().add(applied)
-        db.collectionAccountDao().upsert(
-            account.copy(
-                appliedAmount = QuoteCalc.format(accApplied),
-                balance = QuoteCalc.format(account.net.toMoney().subtract(accApplied)),
-                status = deriveCollectionStatus(
-                    account.status == CollectionAccountStatus.CANCELADA.name,
-                    accApplied, account.net.toMoney(),
-                ).name,
-                updatedAt = now,
-            ),
-        )
+        applyToTargetLocked(targetKind, targetId, applied, now)
         db.paymentAssignmentDao().upsert(event)
         sync?.enqueue(EntityTypes.PAYMENT_ASSIGNMENT, event.id,
             SyncPayloads.paymentAssignment(event), 0)
         return event
+    }
+
+    /** Suma dinero aplicado al destino con estado derivado (misma transacción). */
+    private suspend fun applyToTargetLocked(
+        targetKind: PaymentTargetKind,
+        targetId: String,
+        amount: BigDecimal,
+        now: Long,
+    ) {
+        when (targetKind) {
+            PaymentTargetKind.ACCOUNT -> {
+                val t = db.collectionAccountDao().get(targetId) ?: return
+                val applied = t.appliedAmount.toMoney().add(amount)
+                db.collectionAccountDao().upsert(
+                    t.copy(
+                        appliedAmount = QuoteCalc.format(applied),
+                        balance = QuoteCalc.format(t.net.toMoney().subtract(applied)),
+                        status = deriveCollectionStatus(
+                            t.status == CollectionAccountStatus.CANCELADA.name,
+                            applied, t.net.toMoney(),
+                        ).name,
+                        updatedAt = now,
+                    ),
+                )
+            }
+            PaymentTargetKind.CONSOLIDATED -> {
+                val t = db.consolidatedCollectionDao().get(targetId) ?: return
+                val applied = t.appliedAmount.toMoney().add(amount)
+                db.consolidatedCollectionDao().upsert(
+                    t.copy(
+                        appliedAmount = QuoteCalc.format(applied),
+                        balance = QuoteCalc.format(t.totalAmount.toMoney().subtract(applied)),
+                        status = deriveCollectionStatus(
+                            t.status == CollectionAccountStatus.CANCELADA.name,
+                            applied, t.totalAmount.toMoney(),
+                        ).name,
+                        updatedAt = now,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Retira dinero aplicado del destino con estado derivado (misma transacción). */
+    private suspend fun releaseTargetLocked(
+        targetKind: PaymentTargetKind,
+        targetId: String,
+        amount: BigDecimal,
+        now: Long,
+    ) {
+        when (targetKind) {
+            PaymentTargetKind.ACCOUNT -> {
+                val t = db.collectionAccountDao().get(targetId) ?: return
+                val applied = t.appliedAmount.toMoney().subtract(amount)
+                db.collectionAccountDao().upsert(
+                    t.copy(
+                        appliedAmount = QuoteCalc.format(applied),
+                        balance = QuoteCalc.format(t.net.toMoney().subtract(applied)),
+                        status = deriveCollectionStatus(
+                            t.status == CollectionAccountStatus.CANCELADA.name,
+                            applied, t.net.toMoney(),
+                        ).name,
+                        updatedAt = now,
+                    ),
+                )
+            }
+            PaymentTargetKind.CONSOLIDATED -> {
+                val t = db.consolidatedCollectionDao().get(targetId) ?: return
+                val applied = t.appliedAmount.toMoney().subtract(amount)
+                db.consolidatedCollectionDao().upsert(
+                    t.copy(
+                        appliedAmount = QuoteCalc.format(applied),
+                        balance = QuoteCalc.format(t.totalAmount.toMoney().subtract(applied)),
+                        status = deriveCollectionStatus(
+                            t.status == CollectionAccountStatus.CANCELADA.name,
+                            applied, t.totalAmount.toMoney(),
+                        ).name,
+                        updatedAt = now,
+                    ),
+                )
+            }
+        }
     }
 }
 
@@ -1646,9 +2217,10 @@ data class CollectionMethodInput(
 )
 
 /**
- * Entrada de Pago: `accountId` opcional — si se indica, la aplicación
- * inicial se registra como evento `assign` auditado en la misma
- * transacción; el excedente queda UNASSIGNED en el mismo Pago.
+ * Entrada de Pago: `accountId` o `consolidatedId` opcionales (mutuamente
+ * excluyentes) — si se indica destino, la aplicación inicial se registra
+ * como evento `assign` auditado en la misma transacción; el excedente
+ * queda UNASSIGNED en el mismo Pago.
  */
 data class PaymentInput(
     val clientId: String,
@@ -1658,5 +2230,17 @@ data class PaymentInput(
     val reference: String = "",
     val notes: String = "",
     val accountId: String? = null,
+    val consolidatedId: String? = null,
     val initialAssignReason: String = "",
+)
+
+/**
+ * Entrada de Consolidado F7: al menos dos Cuentas del mismo Cliente y
+ * moneda, no canceladas y con saldo pendiente > 0. Los Perfiles pueden
+ * diferir; cada Cuenta conserva sus snapshots.
+ */
+data class ConsolidatedInput(
+    val clientId: String,
+    val accountIds: List<String>,
+    val currency: String,
 )

@@ -185,7 +185,10 @@ components:
         entity_type:
           type: string
           enum: [user, profile, client, service, retention_config, quote, quote_version,
-                 job, job_quote, job_activity, job_material]
+                 job, job_quote, job_activity, job_material,
+                 report, report_job, report_version,
+                 collection_account, collection_method, payment, payment_assignment,
+                 consolidated_collection, payment_adjustment, payment_refund]
         entity_id:
           type: string
           format: uuid

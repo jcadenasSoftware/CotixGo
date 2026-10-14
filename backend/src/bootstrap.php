@@ -23,6 +23,14 @@ function db(): PDO
                 PDO::ATTR_EMULATE_PREPARES => false,
             ]
         );
+        // READ COMMITTED: las validaciones estructurales son lecturas
+        // consistentes que deben observar el estado vigente al ejecutarse,
+        // no el snapshot fijado al inicio de la transacción. Con REPEATABLE
+        // READ una alta concurrente de Consolidado confirmada durante la
+        // espera por un bloqueo de fila quedaría invisible para los chequeos
+        // de membresía posteriores (revisión PR #15, hallazgo M1). Las
+        // mutaciones financieras ya se serializan con lecturas FOR UPDATE.
+        $pdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
     }
     return $pdo;
 }

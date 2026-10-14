@@ -7,11 +7,15 @@ import com.cotixgo.app.core.CollectionAccountTransitions
 import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.JobTransitions
+import com.cotixgo.app.core.ConsolidatedTransitions
 import com.cotixgo.app.core.PaymentAssignmentStatus
+import com.cotixgo.app.core.PaymentTargetKind
 import com.cotixgo.app.core.ReportStatus
 import com.cotixgo.app.core.ReportTransitions
+import com.cotixgo.app.core.availableForRefundOrAssign
 import com.cotixgo.app.core.deriveAssignmentStatus
 import com.cotixgo.app.core.deriveCollectionStatus
+import com.cotixgo.app.core.paymentIsLive
 import com.cotixgo.app.core.validateClient
 import com.cotixgo.app.core.validateCollectionMethod
 import com.cotixgo.app.core.validateOnboarding
@@ -213,5 +217,64 @@ class DomainTest {
     fun `collection method requires name`() {
         assertNotNull(validateCollectionMethod("  "))
         assertNull(validateCollectionMethod("Transferencia"))
+    }
+
+    // ---------- Reglas del Consolidado y fondos de Pago (F7, docs/03 §6) ----------
+
+    @Test
+    fun `consolidated editable and cancellable only PENDIENTE without applied payments`() {
+        val zero = "0.00".toBigDecimal()
+        val some = "10.00".toBigDecimal()
+        for (fn in listOf(
+            ConsolidatedTransitions::isEditable,
+            ConsolidatedTransitions::canCancel,
+        )) {
+            assertTrue(fn(CollectionAccountStatus.PENDIENTE, zero))
+            assertFalse(fn(CollectionAccountStatus.PENDIENTE, some))
+            assertFalse(fn(CollectionAccountStatus.PARCIAL, zero))
+            assertFalse(fn(CollectionAccountStatus.PAGADA, zero))
+            assertFalse(fn(CollectionAccountStatus.CANCELADA, zero))
+        }
+    }
+
+    @Test
+    fun `consolidated receives payments only while open`() {
+        assertTrue(ConsolidatedTransitions.canReceivePayments(CollectionAccountStatus.PENDIENTE))
+        assertTrue(ConsolidatedTransitions.canReceivePayments(CollectionAccountStatus.PARCIAL))
+        assertFalse(ConsolidatedTransitions.canReceivePayments(CollectionAccountStatus.PAGADA))
+        assertFalse(ConsolidatedTransitions.canReceivePayments(CollectionAccountStatus.CANCELADA))
+    }
+
+    @Test
+    fun `shared reserve equals effective minus applied minus refunded`() {
+        // disponible = efectivo − aplicadoVigente − reembolsadoAcumulado
+        assertEquals(
+            "60.00".toBigDecimal(),
+            availableForRefundOrAssign("100.00".toBigDecimal(), "40.00".toBigDecimal(), "0.00".toBigDecimal()),
+        )
+        assertEquals(
+            "30.00".toBigDecimal(),
+            availableForRefundOrAssign("100.00".toBigDecimal(), "40.00".toBigDecimal(), "30.00".toBigDecimal()),
+        )
+        // La reserva nunca es negativa (el invariante ya lo impide).
+        assertEquals(
+            0,
+            availableForRefundOrAssign(
+                "50.00".toBigDecimal(), "40.00".toBigDecimal(), "20.00".toBigDecimal(),
+            ).compareTo("0.00".toBigDecimal()),
+        )
+    }
+
+    @Test
+    fun `annulled payment is not live`() {
+        assertTrue(paymentIsLive(false))
+        assertFalse(paymentIsLive(true))
+    }
+
+    @Test
+    fun `payment target kinds cover account and consolidated`() {
+        assertEquals(2, PaymentTargetKind.entries.size)
+        assertNotNull(PaymentTargetKind.ACCOUNT)
+        assertNotNull(PaymentTargetKind.CONSOLIDATED)
     }
 }

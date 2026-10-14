@@ -1,0 +1,69 @@
+Evidencia F7 — pruebas Android (JVM unitarias + instrumentadas en emulador) y builds
+===================================================================================
+Fecha: 13/10/2026
+Entorno: JDK 21 (C:\Program Files\Java\jdk-21), Gradle wrapper 8.11.1, AGP 8.9.1
+Emulador: Pixel_8 (AVD), Android 16
+Datos: 100% sintéticos
+
+Comandos ejecutados (HEAD ddecf30):
+  gradlew compileDebugKotlin compileDebugAndroidTestKotlin testDebugUnitTest
+  gradlew connectedDebugAndroidTest
+  gradlew assembleDebug assembleRelease
+
+Resultados reales:
+
+  - testDebugUnitTest:        34 tests, 0 fallos (DomainTest con matriz de
+                              ConsolidatedTransitions, reserva compartida
+                              efectivo−aplicado−reembolsado y paymentIsLive;
+                              más regresión ApiErrorParseTest, CalcVectorTest,
+                              QuoteDomainTest).
+
+  - Instrumentadas (81/81): el resultado autoritativo de la suite completa
+    provino de una ejecución DIRECTA de la instrumentación sobre el
+    emulador, no de la tarea de Gradle:
+
+      adb install app-debug.apk app-debug-androidTest.apk
+      adb shell am instrument -w \
+        com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+      → INSTRUMENTATION_STATUS: numtests=81
+      → INSTRUMENTATION_CODE: -1  (OK (81 tests))
+
+    Contexto: la corrida `gradlew connectedDebugAndroidTest`
+    multi-dispositivo (emulador + teléfono físico M2003J15SC) se abortó
+    porque el teléfono quedó inactivo ~45 min a media suite
+    (comportamiento del dispositivo/MIUI, no un fallo de tests); el XML
+    de resultados del emulador dentro de esa misma corrida ya marcaba
+    81 tests con 0 fallos. En una corrida filtrada previa por clase, las
+    5 pruebas UI nuevas pasaron también en el teléfono físico.
+
+    Contenido de la suite:
+      * PaymentDetailScreenTest (M4, nuevo): corrección bajo el piso de
+        reembolsados, anulación rechazada y reembolso sobre el disponible
+        muestran el mensaje del repositorio con el diálogo abierto en
+        contexto; la operación aceptada cierra el diálogo.
+      * ConsolidatedDetailScreenTest (M4, nuevo): cancelación rechazada
+        muestra el motivo dentro del diálogo.
+      * ConsolidatedRepositoryTest (F7, nuevo): elegibilidad/composición/
+        membresía única activa, congelamiento de Cuenta miembro, pago a
+        Consolidado sin reparto entre Cuentas, corrección al alza→UNASSIGNED
+        y a la baja con liberación LIFO y piso de reembolsados, reserva
+        compartida de Reembolso (dinero aplicado no reembolsable hasta
+        liberación auditada), anulación terminal una sola vez con rechazo
+        posterior y encolado durable de los eventos append-only.
+      * MigrationTest: incluye migrate7To8_preservesRowsAndCreatesF7Tables —
+        base v7 real con datos (usuario, cliente, cuenta, pago con
+        asignación, operación de cola pendiente) migrada a v8 conservando
+        filas y cola; pagos F6 ganan effectiveAmount=amount /
+        refundedAmount=0.00 / annulled=0 / assignedTargetType='ACCOUNT';
+        eventos de asignación reconstruidos con targetType='ACCOUNT';
+        tablas F7 creadas con índice único provisional CONS-PEND.
+      * Regresión: CollectionRepositoryTest, JobRepositoryTest,
+        JobFormScreenTest, QuoteRepositoryTest, ReportRepositoryTest,
+        SyncE2eTest — todas verdes.
+
+  - assembleDebug:    BUILD SUCCESSFUL (app-debug.apk)
+  - assembleRelease:  BUILD SUCCESSFUL (app-release.apk, minificado)
+
+Gradle Sync dentro de Android Studio: no verificable desde CLI — queda
+pendiente de comprobación manual del titular (JDK 21 como Gradle JDK, ver
+android/README.md). Una compilación CLI no equivale al Sync del IDE.

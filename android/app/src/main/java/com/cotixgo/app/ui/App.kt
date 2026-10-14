@@ -51,6 +51,9 @@ object Routes {
     const val COLLECTION_NEW = "collections/new"
     const val COLLECTION_EDIT = "collections/{id}/edit"
     const val COLLECTION_DETAIL = "collections/{id}"
+    const val CONSOLIDATED_NEW = "consolidateds/new"
+    const val CONSOLIDATED_EDIT = "consolidateds/{id}/edit"
+    const val CONSOLIDATED_DETAIL = "consolidateds/{id}"
     const val PAYMENT_NEW = "payments/new"
     const val PAYMENT_DETAIL = "payments/{id}"
     const val SETTINGS = "settings"
@@ -84,6 +87,8 @@ object Routes {
     fun reportVersion(id: String, v: Int) = "reports/$id/version/$v"
     fun collectionEdit(id: String) = "collections/$id/edit"
     fun collectionDetail(id: String) = "collections/$id"
+    fun consolidatedEdit(id: String) = "consolidateds/$id/edit"
+    fun consolidatedDetail(id: String) = "consolidateds/$id"
     fun paymentDetail(id: String) = "payments/$id"
 }
 
@@ -117,6 +122,8 @@ private fun CotixGoNavHost(
     val collectionAccounts by vm.collectionAccounts.collectAsStateWithLifecycle()
     val collectionMethods by vm.collectionMethods.collectAsStateWithLifecycle()
     val payments by vm.payments.collectAsStateWithLifecycle()
+    val consolidateds by vm.consolidateds.collectAsStateWithLifecycle()
+    val activeMemberships by vm.activeMemberships.collectAsStateWithLifecycle()
     val currentRoute = backStack?.destination?.route
     val showBar = currentRoute == Routes.DASHBOARD || currentRoute == Routes.CLIENTS ||
         currentRoute == Routes.QUOTES || currentRoute == Routes.JOBS ||
@@ -592,16 +599,86 @@ private fun CotixGoNavHost(
             composable(Routes.COLLECTIONS) {
                 CollectionsScreen(
                     accounts = collectionAccounts,
+                    consolidateds = consolidateds,
                     payments = payments,
                     methods = collectionMethods,
                     clients = clients,
                     accountsById = collectionAccounts.associateBy { it.id },
                     onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
+                    onOpenConsolidated = { nav.navigate(Routes.consolidatedDetail(it)) },
                     onOpenPayment = { nav.navigate(Routes.paymentDetail(it)) },
                     onNewAccount = { nav.navigate(Routes.COLLECTION_NEW) },
+                    onNewConsolidated = { nav.navigate(Routes.CONSOLIDATED_NEW) },
                     onNewPayment = { nav.navigate(Routes.PAYMENT_NEW) },
                     onSaveMethod = { input, id -> vm.saveCollectionMethod(input, id) {} },
                     onSetMethodArchived = { id, archived -> vm.setCollectionMethodArchived(id, archived) },
+                )
+            }
+            composable(Routes.CONSOLIDATED_NEW) {
+                ConsolidatedEditorScreen(
+                    initial = null,
+                    initialMemberIds = emptyList(),
+                    clients = clients,
+                    accounts = collectionAccounts,
+                    memberAccountIds = activeMemberships.keys,
+                    onSave = { input, done ->
+                        vm.saveConsolidated(input, null) { newId ->
+                            if (newId != null) {
+                                nav.navigate(Routes.consolidatedDetail(newId)) {
+                                    popUpTo(Routes.COLLECTIONS)
+                                }
+                            }
+                            done(newId)
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.CONSOLIDATED_EDIT,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val consolidated by vm.observeConsolidated(id).collectAsStateWithLifecycle(null)
+                val members by vm.observeConsolidatedMembers(id).collectAsStateWithLifecycle(emptyList())
+                val cons = consolidated ?: return@composable
+                ConsolidatedEditorScreen(
+                    initial = cons,
+                    initialMemberIds = members.map { it.accountId },
+                    clients = clients,
+                    accounts = collectionAccounts,
+                    memberAccountIds = activeMemberships
+                        .filter { it.value != id }.keys,
+                    onSave = { input, done ->
+                        vm.saveConsolidated(input, id) { newId ->
+                            if (newId != null) nav.popBackStack()
+                            done(newId)
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.CONSOLIDATED_DETAIL,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val consolidated by vm.observeConsolidated(id).collectAsStateWithLifecycle(null)
+                val members by vm.observeConsolidatedMembers(id).collectAsStateWithLifecycle(emptyList())
+                val consPayments by vm.observePaymentsForConsolidated(id)
+                    .collectAsStateWithLifecycle(emptyList())
+                val accountsById = collectionAccounts.associateBy { it.id }
+                ConsolidatedDetailScreen(
+                    consolidated = consolidated,
+                    memberAccounts = members.sortedBy { it.position }
+                        .mapNotNull { accountsById[it.accountId] },
+                    payments = consPayments,
+                    onEdit = { nav.navigate(Routes.consolidatedEdit(id)) },
+                    onCancelConsolidated = { done -> vm.cancelConsolidated(id, done) },
+                    onSetArchived = { archived -> vm.setConsolidatedArchived(id, archived) },
+                    onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
+                    onOpenPayment = { nav.navigate(Routes.paymentDetail(it)) },
+                    onBack = { nav.popBackStack() },
                 )
             }
             composable(Routes.COLLECTION_NEW) {
@@ -681,6 +758,7 @@ private fun CotixGoNavHost(
                 val jobLinks by vm.observeCollectionAccountJobs(id).collectAsStateWithLifecycle(emptyList())
                 val quoteLinks by vm.observeCollectionAccountQuotes(id).collectAsStateWithLifecycle(emptyList())
                 val assignments by vm.observeAccountAssignments(id).collectAsStateWithLifecycle(emptyList())
+                val activeConsolidatedId = activeMemberships[id]
                 CollectionAccountDetailScreen(
                     account = account,
                     items = items,
@@ -690,11 +768,13 @@ private fun CotixGoNavHost(
                     quotes = quotes,
                     assignments = assignments,
                     payments = payments,
+                    activeConsolidated = consolidateds.firstOrNull { it.id == activeConsolidatedId },
                     onEdit = { nav.navigate(Routes.collectionEdit(id)) },
                     onCancelAccount = { vm.cancelCollectionAccount(id) {} },
                     onSetArchived = { archived -> vm.setCollectionAccountArchived(id, archived) },
                     onOpenJob = { nav.navigate(Routes.jobDetail(it)) },
                     onOpenQuote = { nav.navigate(Routes.quoteDetail(it)) },
+                    onOpenConsolidated = { nav.navigate(Routes.consolidatedDetail(it)) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -702,6 +782,8 @@ private fun CotixGoNavHost(
                 PaymentEditorScreen(
                     clients = clients,
                     accounts = collectionAccounts,
+                    consolidateds = consolidateds,
+                    memberAccountIds = activeMemberships.keys,
                     methods = collectionMethods,
                     onSave = { input ->
                         vm.savePayment(input) { ok ->
@@ -718,25 +800,47 @@ private fun CotixGoNavHost(
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val payment by vm.observePayment(id).collectAsStateWithLifecycle(null)
                 val assignments by vm.observePaymentAssignments(id).collectAsStateWithLifecycle(emptyList())
+                val adjustments by vm.observePaymentAdjustments(id).collectAsStateWithLifecycle(emptyList())
+                val refunds by vm.observePaymentRefunds(id).collectAsStateWithLifecycle(emptyList())
                 val accountsById = collectionAccounts.associateBy { it.id }
+                val consById = consolidateds.associateBy { it.id }
                 PaymentDetailScreen(
                     payment = payment,
                     clientName = clients.firstOrNull { it.id == payment?.clientId }?.name ?: "",
                     methodName = collectionMethods.firstOrNull { it.id == payment?.collectionMethodId }?.name,
                     account = payment?.assignedAccountId?.let { accountsById[it] },
+                    consolidated = payment?.assignedConsolidatedId?.let { consById[it] },
                     receivableAccounts = collectionAccounts.filter {
                         it.clientId == payment?.clientId && !it.archived &&
                             it.id != payment?.assignedAccountId &&
+                            it.id !in activeMemberships.keys &&
+                            it.status in setOf("PENDIENTE", "PARCIAL") &&
+                            it.balance.toDoubleOrNull()?.let { b -> b > 0 } == true
+                    },
+                    receivableConsolidateds = consolidateds.filter {
+                        it.clientId == payment?.clientId && !it.archived &&
+                            it.id != payment?.assignedConsolidatedId &&
                             it.status in setOf("PENDIENTE", "PARCIAL") &&
                             it.balance.toDoubleOrNull()?.let { b -> b > 0 } == true
                     },
                     assignments = assignments,
+                    adjustments = adjustments,
+                    refunds = refunds,
                     accountsById = accountsById,
-                    onAssign = { accountId, amount, reason ->
-                        vm.assignPayment(id, accountId, amount, reason) {}
+                    consolidatedsById = consById,
+                    methods = collectionMethods,
+                    onAssign = { kind, targetId, amount, reason, done ->
+                        vm.assignPaymentToTarget(id, kind, targetId, amount, reason, done)
                     },
-                    onUnassign = { reason -> vm.unassignPayment(id, reason) {} },
-                    onReassign = { toId, reason -> vm.reassignPayment(id, toId, reason) {} },
+                    onUnassign = { reason, done -> vm.unassignPayment(id, reason, done) },
+                    onReassign = { kind, targetId, reason, done ->
+                        vm.reassignPaymentToTarget(id, kind, targetId, reason, done)
+                    },
+                    onCorrect = { eff, reason, done -> vm.correctPayment(id, eff, reason, done) },
+                    onAnnul = { reason, done -> vm.annulPayment(id, reason, done) },
+                    onRefund = { amt, day, mId, reason, done ->
+                        vm.refundPayment(id, amt, day, mId, reason, done)
+                    },
                     onBack = { nav.popBackStack() },
                 )
             }

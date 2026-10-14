@@ -1039,4 +1039,589 @@ $aud = (int) $pdo->query(
 )->fetchColumn();
 check('f6_audit_events_registrados', $aud >= 3, (string) $aud);
 
+// =====================  F7 — Consolidados, Ajustes y Reembolsos  =====================
+
+// Cuentas miembro sintéticas sin orígenes (perfil/moneda compartidos).
+$mkAcc = function (string $opId, string $id, string $net, int $base = 0,
+                   string $status = 'PENDIENTE', array $over = []) use ($ccop) {
+    return $ccop($opId, $id, $status, $base, array_merge([
+        'jobIds' => [], 'quoteIds' => [], 'net' => $net, 'balance' => $net,
+        'gross' => $net, 'totalRetained' => '0.00',
+        'items' => [['id' => $id . '-i', 'position' => 1, 'conceptType' => 'SERVICIO',
+            'description' => 'Servicio F7', 'quantity' => '1', 'unit' => '',
+            'unitPrice' => $net, 'lineTotal' => $net]],
+    ], $over));
+};
+$cca = $u('d1000001'); $ccb = $u('d1000002'); $ccc = $u('d1000003');
+$ccd = $u('d1000004'); $cce = $u('d1000005');
+
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        $mkAcc($u('d1000010'), $cca, '80.00')[0],
+        $mkAcc($u('d1000011'), $ccb, '60.00')[0],
+        $mkAcc($u('d1000012'), $ccc, '40.00')[0],
+        $mkAcc($u('d1000013'), $ccd, '30.00', 0, 'PENDIENTE', ['clientId' => $cliente2])[0],
+        $mkAcc($u('d1000014'), $cce, '20.00')[0],
+        // $cce nace PENDIENTE y se cancela: un Consolidado no la aceptará.
+        $mkAcc($u('d1000015'), $cce, '20.00', 1, 'CANCELADA')[0],
+    ]], $token);
+check('f7_member_accounts_created', count(array_filter($r['results'] ?? [],
+    fn($x) => ($x['status'] ?? '') === 'APPLIED')) === 6, json_encode($r));
+
+$consPayload = fn(string $id, string $status, array $ids, array $over = []) => array_merge([
+    'id' => $id, 'userId' => $userId, 'clientId' => $clienteId,
+    'provisionalNumber' => 'CONS-PEND-' . strtoupper(substr($id, -4)), 'status' => $status,
+    'currency' => 'COP', 'accountIds' => $ids,
+    'totalAmount' => '0.00', 'appliedAmount' => '0.00', 'balance' => '0.00',
+    'clientNameSnapshot' => 'Cliente Sintético', 'archived' => false,
+    'createdAt' => $now, 'updatedAt' => $now], $over);
+$consOp = fn(string $opId, string $id, string $status, array $ids, int $b, array $over = []) =>
+    [['operation_id' => $opId, 'entity_type' => 'consolidated_collection', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $b, 'payload' => $consPayload($id, $status, $ids, $over)]];
+
+// Elegibilidad: una sola Cuenta → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000010'), $u('d2000011'), 'PENDIENTE', [$cca], 0)], $token);
+check('f7_cons_una_cuenta_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Cuenta CANCELADA como miembro → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000020'), $u('d2000021'), 'PENDIENTE', [$cca, $cce], 0)], $token);
+check('f7_cons_cancelada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Cuenta de otro Cliente → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000030'), $u('d2000031'), 'PENDIENTE', [$cca, $ccd], 0)], $token);
+check('f7_cons_otro_cliente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Moneda distinta → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000032'), $u('d2000033'), 'PENDIENTE', [$cca, $ccc], 0,
+        ['currency' => 'USD'])], $token);
+check('f7_cons_moneda_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Estado fabricado en creación → INVALID_TRANSITION.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000034'), $u('d2000035'), 'PAGADA', [$cca, $ccb], 0)], $token);
+check('f7_cons_pagada_on_create_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Creación válida [$cca 80 + $ccb 60 = 140]: CONS- oficial idempotente.
+$cons1 = $u('d2000041');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000040'), $cons1, 'PENDIENTE', [$ccb, $cca], 0)], $token);
+$consNum = $r['results'][0]['official_number'] ?? null;
+check('f7_cons_created_CONS_number', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && is_string($consNum) && str_starts_with($consNum, 'CONS-'), json_encode($r));
+// Replay idempotente: la MISMA operación (mismo op_id y payload) devuelve
+// el resultado memorizado con el mismo CONS- oficial.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000040'), $cons1, 'PENDIENTE', [$ccb, $cca], 0)], $token);
+check('f7_cons_number_idempotent', ($r['results'][0]['official_number'] ?? null) === $consNum,
+    json_encode($r));
+
+// Doble vínculo: $cca ya pertenece a un Consolidado activo.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000050'), $u('d2000051'), 'PENDIENTE', [$cca, $ccc], 0)], $token);
+check('f7_cons_doble_vinculo_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Conflicto documental: edición con base fabricada → CONFLICT + server_state.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000060'), $cons1, 'PENDIENTE', [$cca, $ccb], 9)], $token);
+check('f7_cons_stale_base_CONFLICT', ($r['results'][0]['status'] ?? '') === 'CONFLICT'
+    && ($r['results'][0]['code'] ?? '') === 'STALE_BASE_VERSION', json_encode($r));
+
+// Asignación directa a una Cuenta miembro de Consolidado activo → rechazada.
+$pay2 = $u('d3000001');
+$pay2Op = fn(string $opId) => [['operation_id' => $opId, 'entity_type' => 'payment',
+    'entity_id' => $pay2, 'type' => 'upsert', 'base_server_version' => 0,
+    'payload' => ['id' => $pay2, 'userId' => $userId, 'clientId' => $clienteId,
+        'collectionMethodId' => $cm, 'amount' => '160.00', 'paidAtEpochDay' => 21001,
+        'reference' => '', 'notes' => '', 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $pay2Op($u('d3000005'))], $token);
+check('f7_payment2_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+$asgGen = fn(string $opId, string $action, ?string $acc, ?string $cons, string $amount,
+             string $reason, ?string $fromAcc = null, ?string $fromCons = null) =>
+    [['operation_id' => $opId, 'entity_type' => 'payment_assignment',
+      'entity_id' => $u('d4' . substr($opId, -6)),
+      'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => ['id' => $u('d4' . substr($opId, -6)), 'userId' => $userId,
+        'paymentId' => $pay2, 'action' => $action,
+        'targetType' => $cons !== null ? 'consolidated' : 'account',
+        'accountId' => $acc, 'consolidatedId' => $cons,
+        'fromAccountId' => $fromAcc, 'fromConsolidatedId' => $fromCons,
+        'amount' => $amount, 'releasedAmount' => '0.00',
+        'reason' => $reason, 'createdAt' => $now, 'updatedAt' => $now]]];
+
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asgGen($u('d4000010'), 'assign', $cca, null, '10.00', 'Directa a miembro')], $token);
+check('f7_member_direct_assign_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Edición de una Cuenta miembro → INVALID_TRANSITION (congelada).
+// Con $mkAcc para que la carga no choque con la regla de doble vínculo
+// de orígenes (jobIds vacío): solo debe disparar la guarda de miembro.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkAcc($u('d2000070'), $cca, '80.00', 1, 'PENDIENTE',
+        ['conditions' => 'edición bloqueada'])], $token);
+check('f7_member_edit_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Asignar 160 al Consolidado: aplica solo el saldo total 140 → PAGADA.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asgGen($u('d4000020'), 'assign', null, $cons1, '160.00', 'Pago consolidado')], $token);
+check('f7_cons_assign_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+$consRow = $byId["consolidated_collection:$cons1"] ?? [];
+$pay2Row = $byId["payment:$pay2"] ?? [];
+check('f7_cons_pagada_derivada', ($consRow['status'] ?? '') === 'PAGADA'
+    && ($consRow['totalAmount'] ?? '') === '140.00'
+    && ($consRow['appliedAmount'] ?? '') === '140.00'
+    && ($consRow['balance'] ?? '') === '0.00', json_encode($consRow));
+// Sin distribución: los saldos de las Cuentas miembro no cambiaron.
+check('f7_cons_sin_distribucion', ($byId["collection_account:$cca"]['balance'] ?? '') === '80.00'
+    && ($byId["collection_account:$cca"]['appliedAmount'] ?? '') === '0.00'
+    && ($byId["collection_account:$ccb"]['balance'] ?? '') === '60.00',
+    json_encode([$byId["collection_account:$cca"] ?? [], $byId["collection_account:$ccb"] ?? []]));
+check('f7_payment_parcial_unassigned', ($pay2Row['appliedAmount'] ?? '') === '140.00'
+    && ($pay2Row['unassignedAmount'] ?? '') === '20.00'
+    && ($pay2Row['assignmentStatus'] ?? '') === 'PARTIAL_ASSIGNED'
+    && ($pay2Row['assignedConsolidatedId'] ?? '') === $cons1
+    && ($pay2Row['effectiveAmount'] ?? '') === '160.00'
+    && ($pay2Row['refundedAmount'] ?? '') === '0.00', json_encode($pay2Row));
+
+// Consolidado con pagos es inmutable: edición y cancelación → INVALID_TRANSITION.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000080'), $cons1, 'PENDIENTE', [$cca, $ccc], 2,
+        ['totalAmount' => '140.00', 'appliedAmount' => '140.00', 'balance' => '0.00'])], $token);
+check('f7_cons_pagada_edit_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000090'), $cons1, 'CANCELADA', [$cca, $ccb], 2)], $token);
+check('f7_cons_pagada_cancel_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// --- Reembolsos: reserva compartida y piso ---
+
+$refundOp = fn(string $opId, string $payId, string $ent, string $amount, string $reason) =>
+    [['operation_id' => $opId, 'entity_type' => 'payment_refund', 'entity_id' => $ent,
+      'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => ['id' => $ent, 'userId' => $userId, 'paymentId' => $payId,
+        'amount' => $amount, 'refundedAtEpochDay' => 21002, 'collectionMethodId' => $cm,
+        'reason' => $reason, 'createdAt' => $now, 'updatedAt' => $now]]];
+
+// Reembolsar dinero APLICADO (pay2: efectivo 160, aplicado 140, libre 20)
+// sin liberar antes → VALIDATION_ERROR (reserva compartida).
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $refundOp($u('d5000010'), $pay2, $u('d5000011'), '50.00', 'Devolución')], $token);
+check('f7_refund_aplicado_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Reembolso dentro del remanente libre (20) → APPLIED.
+$ref1 = $u('d5000021');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $refundOp($u('d5000020'), $pay2, $ref1, '20.00', 'Devolución parcial')], $token);
+check('f7_refund_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Idempotencia del evento: mismo entity_id, mismo payload → dedupe.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $refundOp($u('d5000022'), $pay2, $ref1, '20.00', 'Devolución parcial')], $token);
+check('f7_refund_dedupe_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Mismo entity_id con importe distinto → IMMUTABLE_FINANCIAL.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $refundOp($u('d5000023'), $pay2, $ref1, '99.00', 'fabricado')], $token);
+check('f7_refund_append_only_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'IMMUTABLE_FINANCIAL', json_encode($r));
+
+// Liberar lo aplicado del Consolidado: unassign deja el Pago con 140 libres
+// menos lo reembolsado → efectivo 160, aplicado 0, reembolsado 20.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asgGen($u('d4000030'), 'unassign', null, $cons1, '140.00', 'Retiro total')], $token);
+check('f7_cons_unassign_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+$pay2Row = $byId["payment:$pay2"] ?? [];
+check('f7_refund_reserva_compartida', ($pay2Row['effectiveAmount'] ?? '') === '160.00'
+    && ($pay2Row['appliedAmount'] ?? '') === '0.00'
+    && ($pay2Row['refundedAmount'] ?? '') === '20.00'
+    && ($pay2Row['unassignedAmount'] ?? '') === '140.00', json_encode($pay2Row));
+check('f7_cons_vuelve_pendiente', ($byId["consolidated_collection:$cons1"]['status'] ?? '') === 'PENDIENTE'
+    && ($byId["consolidated_collection:$cons1"]['appliedAmount'] ?? '') === '0.00'
+    && ($byId["consolidated_collection:$cons1"]['balance'] ?? '') === '140.00',
+    json_encode($byId["consolidated_collection:$cons1"] ?? []));
+
+// --- Correcciones sobre un Pago nuevo ($pay3 = 100) ---
+$pay3 = $u('d3000011');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('d3000010'), 'entity_type' => 'payment',
+        'entity_id' => $pay3, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $pay3, 'userId' => $userId, 'clientId' => $clienteId,
+            'amount' => '100.00', 'paidAtEpochDay' => 21003, 'reference' => '', 'notes' => '',
+            'createdAt' => $now, 'updatedAt' => $now]]]], $token);
+check('f7_payment3_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+$adjOp = fn(string $opId, string $payId, string $ent, string $kind, ?string $newEff, string $reason) =>
+    [['operation_id' => $opId, 'entity_type' => 'payment_adjustment', 'entity_id' => $ent,
+      'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => array_filter([
+        'id' => $ent, 'userId' => $userId, 'paymentId' => $payId,
+        'kind' => $kind, 'reason' => $reason, 'newEffectiveAmount' => $newEff,
+        'createdAt' => $now, 'updatedAt' => $now], fn($v) => $v !== null)]];
+
+// Asignar 60 a $cc3 (saldo 50): aplica 50, quedan 50 UNASSIGNED.
+$asg3 = fn(string $opId, string $action, string $amount, string $reason, ?string $fromAcc = null) =>
+    [['operation_id' => $opId, 'entity_type' => 'payment_assignment',
+      'entity_id' => $u('d4' . substr($opId, -6)),
+      'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => ['id' => $u('d4' . substr($opId, -6)), 'userId' => $userId,
+        'paymentId' => $pay3, 'action' => $action, 'targetType' => 'account',
+        'accountId' => $cc3, 'consolidatedId' => null,
+        'fromAccountId' => $fromAcc, 'fromConsolidatedId' => null,
+        'amount' => $amount, 'releasedAmount' => '0.00',
+        'reason' => $reason, 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asg3($u('d4000040'), 'assign', '60.00', 'Aplicación inicial')], $token);
+check('f7_pay3_assign_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Corrección a la baja a 70: delta 30 consume solo UNASSIGNED (50 libres);
+// la aplicación de 50 a $cc3 queda intacta (LIFO no alcanza a liberar).
+$adj1 = $u('d6000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000005'), $pay3, $adj1, 'CORRECTION', '70.00', 'Sobrefacturado')], $token);
+check('f7_correction_free_only', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+check('f7_correction_free_saldos', ($byId["payment:$pay3"]['effectiveAmount'] ?? '') === '70.00'
+    && ($byId["payment:$pay3"]['appliedAmount'] ?? '') === '50.00'
+    && ($byId["payment:$pay3"]['unassignedAmount'] ?? '') === '20.00'
+    && ($byId["collection_account:$cc3"]['appliedAmount'] ?? '') === '50.00',
+    json_encode([$byId["payment:$pay3"] ?? [], $byId["collection_account:$cc3"] ?? []]));
+
+// Corrección a la baja a 30: delta 40 → libre 20 + libera 20 de la
+// asignación vigente (la aplicación más reciente = única vigente).
+$adj2 = $u('d6000011');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000010'), $pay3, $adj2, 'CORRECTION', '30.00', 'Baja con liberación')], $token);
+check('f7_correction_lifo_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+check('f7_correction_lifo_saldos', ($byId["payment:$pay3"]['effectiveAmount'] ?? '') === '30.00'
+    && ($byId["payment:$pay3"]['appliedAmount'] ?? '') === '30.00'
+    && ($byId["payment:$pay3"]['unassignedAmount'] ?? '') === '0.00'
+    && ($byId["collection_account:$cc3"]['appliedAmount'] ?? '') === '30.00'
+    && ($byId["collection_account:$cc3"]['balance'] ?? '') === '20.00',
+    json_encode([$byId["payment:$pay3"] ?? [], $byId["collection_account:$cc3"] ?? []]));
+// El evento conserva antes/después y lo liberado con su origen.
+$adjRow = $byId["payment_adjustment:$adj2"] ?? [];
+check('f7_correction_evento_trazable', ($adjRow['kind'] ?? '') === 'CORRECTION'
+    && ($adjRow['effectiveBefore'] ?? '') === '70.00'
+    && ($adjRow['effectiveAfter'] ?? '') === '30.00'
+    && ($adjRow['releasedAmount'] ?? '') === '20.00'
+    && ($adjRow['releasedFromId'] ?? '') === $cc3, json_encode($adjRow));
+
+// Corrección al alza a 90: el incremento queda UNASSIGNED (aplicado intacto).
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000020'), $pay3, $u('d6000021'), 'CORRECTION', '90.00', 'Monto mayor')], $token);
+check('f7_correction_up_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+check('f7_correction_up_unassigned', ($byId["payment:$pay3"]['effectiveAmount'] ?? '') === '90.00'
+    && ($byId["payment:$pay3"]['appliedAmount'] ?? '') === '30.00'
+    && ($byId["payment:$pay3"]['unassignedAmount'] ?? '') === '60.00',
+    json_encode($byId["payment:$pay3"] ?? []));
+
+// Corrección sin cambio → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000030'), $pay3, $u('d6000031'), 'CORRECTION', '90.00', 'Igual')], $token);
+check('f7_correction_igual_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Piso de reembolsos: retirar lo aplicado y reembolsar 10; luego corregir
+// a 5 (< 10 reembolsado) → VALIDATION_ERROR.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $asg3($u('d4000050'), 'unassign', '30.00', 'Liberar para reembolso', null)], $token);
+check('f7_pay3_unassign', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $refundOp($u('d5000030'), $pay3, $u('d5000031'), '10.00', 'Devuelvo 10')], $token);
+check('f7_pay3_refund_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000040'), $pay3, $u('d6000041'), 'CORRECTION', '5.00', 'Bajo el piso')], $token);
+check('f7_correction_bajo_reembolsado_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// --- ANNULMENT terminal sobre $pay4 = 200 con 50 aplicados a $cc3 ---
+$pay4 = $u('d3000021');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('d3000020'), 'entity_type' => 'payment',
+        'entity_id' => $pay4, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $pay4, 'userId' => $userId, 'clientId' => $clienteId,
+            'amount' => '200.00', 'paidAtEpochDay' => 21004, 'reference' => '', 'notes' => '',
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $u('d4000060'), 'entity_type' => 'payment_assignment',
+         'entity_id' => $u('d4000061'), 'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('d4000061'), 'userId' => $userId,
+            'paymentId' => $pay4, 'action' => 'assign', 'targetType' => 'account',
+            'accountId' => $cc3, 'consolidatedId' => null, 'fromAccountId' => null,
+            'fromConsolidatedId' => null, 'amount' => '50.00', 'releasedAmount' => '0.00',
+            'reason' => 'Aplicación', 'createdAt' => $now, 'updatedAt' => $now]]]], $token);
+check('f7_pay4_assigned', count($r['results'] ?? []) === 2
+    && $r['results'][0]['status'] === 'APPLIED' && $r['results'][1]['status'] === 'APPLIED',
+    json_encode($r));
+
+// pay4: efectivo 200, aplicado 50 a $cc3 (saldo $cc3 tenía 50 → ocupa 30
+// previos de pay3? No: pay3 quedó sin asignación tras el unassign; el
+// saldo de $cc3 volvió a 50 → assign 50 aplica 50). ANNULMENT libera los
+// 50 y fija el efectivo en reembolsado (0) → anulado terminal.
+$ann1 = $u('d6000101');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000100'), $pay4, $ann1, 'ANNULMENT', null, 'Pago erróneo')], $token);
+check('f7_annulment_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+[$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+$byId = [];
+foreach ($r['changes'] ?? [] as $ch) { $byId[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch['payload']; }
+check('f7_annulment_efecto', ($byId["payment:$pay4"]['annulled'] ?? false) === true
+    && ($byId["payment:$pay4"]['effectiveAmount'] ?? '') === '0.00'
+    && ($byId["payment:$pay4"]['appliedAmount'] ?? '') === '0.00'
+    && ($byId["payment:$pay4"]['unassignedAmount'] ?? '') === '0.00'
+    && ($byId["collection_account:$cc3"]['appliedAmount'] ?? '') === '0.00',
+    json_encode([$byId["payment:$pay4"] ?? [], $byId["collection_account:$cc3"] ?? []]));
+
+// Operaciones posteriores rechazadas: asignación, corrección, reembolso.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('d4000070'), 'entity_type' => 'payment_assignment',
+        'entity_id' => $u('d4000071'), 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $u('d4000071'), 'userId' => $userId,
+            'paymentId' => $pay4, 'action' => 'assign', 'targetType' => 'account',
+            'accountId' => $cc3, 'consolidatedId' => null, 'fromAccountId' => null,
+            'fromConsolidatedId' => null, 'amount' => '10.00', 'releasedAmount' => '0.00',
+            'reason' => 'Tras anulación', 'createdAt' => $now, 'updatedAt' => $now]]]], $token);
+check('f7_annulled_assign_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000110'), $pay4, $u('d6000111'), 'CORRECTION', '10.00', 'Tras anulación')], $token);
+check('f7_annulled_correction_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $refundOp($u('d5000040'), $pay4, $u('d5000041'), '10.00', 'Tras anulación')], $token);
+check('f7_annulled_refund_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// Una segunda anulación distinta → INVALID_TRANSITION (terminal una vez).
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000120'), $pay4, $u('d6000121'), 'ANNULMENT', null, 'Segunda')], $token);
+check('f7_annulment_segunda_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+
+// El replay del MISMO evento de anulación devuelve el resultado memorizado.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $adjOp($u('d6000100'), $pay4, $ann1, 'ANNULMENT', null, 'Pago erróneo')], $token);
+check('f7_annulment_replay_idempotent', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// --- Cancelación del Consolidado libera a las Cuentas ---
+
+// $cons2 con [$ccc 40 + $ccn 25]; cancelar libera a ambas.
+$ccn = $u('d1000006');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [$mkAcc($u('d1000016'), $ccn, '25.00')[0]]], $token);
+check('f7_ccn_created', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$cons2 = $u('d2000101');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000100'), $cons2, 'PENDIENTE', [$ccc, $ccn], 0)], $token);
+check('f7_cons2_created', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && str_starts_with($r['results'][0]['official_number'] ?? '', 'CONS-'), json_encode($r));
+
+// Edición de membresía en PENDIENTE: quitar $ccc, añadir… se mantiene ≥2.
+// Quitar $ccc y dejar [$ccn, $cc3] (cc3 PENDIENTE saldo 50).
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000110'), $cons2, 'PENDIENTE', [$ccn, $cc3], 1)], $token);
+check('f7_cons_edit_membership', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Tras editarse, $ccc queda libre: admite asignación directa de nuevo.
+$pay5 = $u('d3000031');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('d3000030'), 'entity_type' => 'payment',
+        'entity_id' => $pay5, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $pay5, 'userId' => $userId, 'clientId' => $clienteId,
+            'amount' => '10.00', 'paidAtEpochDay' => 21005, 'reference' => '', 'notes' => '',
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $u('d4000080'), 'entity_type' => 'payment_assignment',
+         'entity_id' => $u('d4000081'), 'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('d4000081'), 'userId' => $userId,
+            'paymentId' => $pay5, 'action' => 'assign', 'targetType' => 'account',
+            'accountId' => $ccc, 'consolidatedId' => null, 'fromAccountId' => null,
+            'fromConsolidatedId' => null, 'amount' => '10.00', 'releasedAmount' => '0.00',
+            'reason' => 'Cuenta liberada', 'createdAt' => $now, 'updatedAt' => $now]]]], $token);
+check('f7_freed_account_assignable', ($r['results'][1]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Cancelar $cons2 (PENDIENTE, sin pagos) → libera $ccn y $cc3.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000120'), $cons2, 'CANCELADA', [$ccn, $cc3], 2)], $token);
+check('f7_cons_cancel_libera', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $consOp($u('d2000130'), $u('d2000131'), 'PENDIENTE', [$ccn, $ccc], 0)], $token);
+check('f7_cons_reuse_after_cancel', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+
+// Auditoría F7: correcciones, anulación y reembolso registrados.
+$aud7 = (int) $pdo->query(
+    "SELECT COUNT(*) FROM audit_events WHERE action IN
+     ('PAYMENT_CORRECTION','PAYMENT_ANNULMENT','PAYMENT_REFUND') AND user_id = " . $pdo->quote($userId)
+)->fetchColumn();
+check('f7_audit_events_registrados', $aud7 >= 5, (string) $aud7);
+
+// =====================  M2 (revisión PR #15): identidad canónica  =====================
+// El payload no puede suplantar `id` (queda el entity_id del sobre) ni
+// `userId` (titular autenticado); `createdAt` se conserva si el cliente lo
+// declara y se completa con la hora del servidor si falta. En edición
+// PENDIENTE se restauran desde lo persistido. Se verifica por pull: los
+// valores almacenados son exactamente los que se propagan a los clientes.
+$pullById = function () use ($base, $token) {
+    [$c, $r] = http($base, 'GET', '/sync/pull?cursor=0', null, $token);
+    $m = [];
+    foreach ($r['changes'] ?? [] as $ch) {
+        $m[$ch['entity_type'] . ':' . $ch['entity_id']] = $ch;
+    }
+    return $m;
+};
+
+// Cuenta PENDIENTE creada con identidad fabricada → APPLIED con canónicos.
+$m2acc = $u('e1000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkAcc($u('e1000010'), $m2acc, '10.00', 0, 'PENDIENTE',
+        ['id' => 'FORGED-ACC-ID', 'userId' => 'forged-user', 'createdAt' => ''])], $token);
+check('m2_cc_create_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2accP = $byId["collection_account:$m2acc"]['payload'] ?? [];
+check('m2_cc_create_canonical_identity', ($m2accP['id'] ?? '') === $m2acc
+    && ($m2accP['userId'] ?? '') === $userId
+    && trim((string) ($m2accP['createdAt'] ?? '')) !== '',
+    json_encode([$m2accP['id'] ?? null, $m2accP['userId'] ?? null]));
+
+// Edición PENDIENTE con identidad fabricada → se restauran los persistidos.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkAcc($u('e1000020'), $m2acc, '10.00', 1, 'PENDIENTE',
+        ['id' => 'FORGED-ACC-ID', 'userId' => 'forged-user',
+         'createdAt' => '1999-01-01T00:00:00Z', 'conditions' => 'Editada'])], $token);
+check('m2_cc_edit_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2accP = $byId["collection_account:$m2acc"]['payload'] ?? [];
+check('m2_cc_edit_canonical_identity', ($m2accP['id'] ?? '') === $m2acc
+    && ($m2accP['userId'] ?? '') === $userId
+    && ($m2accP['createdAt'] ?? '') !== '1999-01-01T00:00:00Z',
+    json_encode([$m2accP['id'] ?? null, $m2accP['userId'] ?? null, $m2accP['createdAt'] ?? null]));
+
+// Consolidado creado con identidad fabricada → canónicos persistidos.
+$m2a = $u('e2000001'); $m2b = $u('e2000002'); $m2cons = $u('e2000003');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        $mkAcc($u('e2000010'), $m2a, '10.00')[0],
+        $mkAcc($u('e2000011'), $m2b, '12.00')[0],
+        $consOp($u('e2000020'), $m2cons, 'PENDIENTE', [$m2a, $m2b], 0,
+            ['id' => 'FORGED-CONS-ID', 'userId' => 'forged-user', 'createdAt' => ''])[0],
+    ]], $token);
+check('m2_cons_create_forged_APPLIED', ($r['results'][2]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2consP = $byId["consolidated_collection:$m2cons"]['payload'] ?? [];
+check('m2_cons_create_canonical_identity', ($m2consP['id'] ?? '') === $m2cons
+    && ($m2consP['userId'] ?? '') === $userId
+    && trim((string) ($m2consP['createdAt'] ?? '')) !== '',
+    json_encode([$m2consP['id'] ?? null, $m2consP['userId'] ?? null]));
+
+// Pago creado con identidad fabricada → canónicos (misma clase, F6).
+$m2pay = $u('e3000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('e3000010'), 'entity_type' => 'payment',
+        'entity_id' => $m2pay, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => 'FORGED-PAY-ID', 'userId' => 'forged-user', 'clientId' => $clienteId,
+            'collectionMethodId' => null, 'amount' => '25.00', 'paidAtEpochDay' => 21002,
+            'reference' => '', 'notes' => '', 'createdAt' => '', 'updatedAt' => $now]]]], $token);
+check('m2_pay_create_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2payP = $byId["payment:$m2pay"]['payload'] ?? [];
+check('m2_pay_create_canonical_identity', ($m2payP['id'] ?? '') === $m2pay
+    && ($m2payP['userId'] ?? '') === $userId
+    && trim((string) ($m2payP['createdAt'] ?? '')) !== '',
+    json_encode([$m2payP['id'] ?? null, $m2payP['userId'] ?? null]));
+
+// Ajuste (CORRECTION al alza) y Reembolso con identidad fabricada → canónicos.
+$m2adj = $u('e3000002'); $m2ref = $u('e3000003');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $u('e3000020'), 'entity_type' => 'payment_adjustment',
+         'entity_id' => $m2adj, 'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => 'FORGED-ADJ-ID', 'userId' => 'forged-user', 'paymentId' => $m2pay,
+            'kind' => 'CORRECTION', 'reason' => 'Ajuste M2', 'newEffectiveAmount' => '30.00',
+            'createdAt' => '', 'updatedAt' => $now]],
+        ['operation_id' => $u('e3000030'), 'entity_type' => 'payment_refund',
+         'entity_id' => $m2ref, 'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => 'FORGED-REF-ID', 'userId' => 'forged-user', 'paymentId' => $m2pay,
+            'amount' => '5.00', 'refundedAtEpochDay' => 21002, 'collectionMethodId' => null,
+            'reason' => 'Reembolso M2', 'createdAt' => '', 'updatedAt' => $now]],
+    ]], $token);
+check('m2_adj_ref_forged_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][1]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$m2adjP = $byId["payment_adjustment:$m2adj"]['payload'] ?? [];
+$m2refP = $byId["payment_refund:$m2ref"]['payload'] ?? [];
+check('m2_adj_canonical_identity', ($m2adjP['id'] ?? '') === $m2adj
+    && ($m2adjP['userId'] ?? '') === $userId
+    && trim((string) ($m2adjP['createdAt'] ?? '')) !== '',
+    json_encode([$m2adjP['id'] ?? null, $m2adjP['userId'] ?? null]));
+check('m2_ref_canonical_identity', ($m2refP['id'] ?? '') === $m2ref
+    && ($m2refP['userId'] ?? '') === $userId
+    && trim((string) ($m2refP['createdAt'] ?? '')) !== '',
+    json_encode([$m2refP['id'] ?? null, $m2refP['userId'] ?? null]));
+
+// Política de `createdAt` (revisión PR #15, N3): el instante DECLARADO por
+// el cliente es un dato de negocio (creación offline) que el servidor no
+// infiere ni reescribe — se conserva tal cual en creación; solo el caso
+// vacío se completa con la hora del servidor. Verificado por pull.
+$declaredTs = '2025-06-15T10:30:00Z';
+$m2pay2 = $u('e4000001');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('e4000010'), 'entity_type' => 'payment',
+        'entity_id' => $m2pay2, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $m2pay2, 'userId' => $userId, 'clientId' => $clienteId,
+            'collectionMethodId' => null, 'amount' => '7.50', 'paidAtEpochDay' => 21002,
+            'reference' => '', 'notes' => '', 'createdAt' => $declaredTs,
+            'updatedAt' => $now]]]], $token);
+check('m2_pay_declared_ts_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('m2_pay_createdAt_declared_preserved',
+    ($byId["payment:$m2pay2"]['payload']['createdAt'] ?? null) === $declaredTs,
+    json_encode($byId["payment:$m2pay2"]['payload']['createdAt'] ?? null));
+
+// Consolidado con createdAt declarado: se conserva igual (entidad F7).
+$m2c = $u('e4000011'); $m2d = $u('e4000012'); $m2cons2 = $u('e4000013');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        $mkAcc($u('e4000020'), $m2c, '10.00')[0],
+        $mkAcc($u('e4000021'), $m2d, '12.00')[0],
+        $consOp($u('e4000022'), $m2cons2, 'PENDIENTE', [$m2c, $m2d], 0,
+            ['createdAt' => $declaredTs])[0],
+    ]], $token);
+check('m2_cons_declared_ts_APPLIED', ($r['results'][2]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('m2_cons_createdAt_declared_preserved',
+    ($byId["consolidated_collection:$m2cons2"]['payload']['createdAt'] ?? null) === $declaredTs,
+    json_encode($byId["consolidated_collection:$m2cons2"]['payload']['createdAt'] ?? null));
+
 echo "\n$pass passed, $fail failed\n";

@@ -15,6 +15,8 @@ import com.cotixgo.app.data.CollectionAccountEntity
 import com.cotixgo.app.data.CollectionAccountInput
 import com.cotixgo.app.data.CollectionMethodEntity
 import com.cotixgo.app.data.CollectionMethodInput
+import com.cotixgo.app.data.ConsolidatedCollectionEntity
+import com.cotixgo.app.data.ConsolidatedInput
 import com.cotixgo.app.data.PaymentEntity
 import com.cotixgo.app.data.PaymentInput
 import com.cotixgo.app.data.JobActivityInput
@@ -248,6 +250,84 @@ class AppViewModel(
 
     fun reassignPayment(paymentId: String, toAccountId: String, reason: String, onDone: (String?) -> Unit) {
         viewModelScope.launch { onDone(repo.reassignPayment(paymentId, toAccountId, reason)) }
+    }
+
+    // ---------- Consolidados, Ajustes y Reembolsos (F7) ----------
+
+    val consolidateds: StateFlow<List<ConsolidatedCollectionEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeConsolidatedCollections(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Membresías en Consolidados no cancelados: accountId → consolidatedId. */
+    val activeMemberships: StateFlow<Map<String, String>> = run {
+        repo.observeActiveMemberships()
+            .map { links -> links.associate { it.accountId to it.consolidatedId } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+    }
+
+    fun observeConsolidated(id: String) = repo.observeConsolidatedCollection(id)
+    fun observeConsolidatedMembers(id: String) = repo.observeConsolidatedMembers(id)
+    fun observeConsolidatedMemberships(accountId: String) = repo.observeConsolidatedMemberships(accountId)
+    fun observePaymentsForConsolidated(id: String) = repo.observePaymentsForConsolidated(id)
+    fun observePaymentAdjustments(paymentId: String) = repo.observePaymentAdjustments(paymentId)
+    fun observePaymentRefunds(paymentId: String) = repo.observePaymentRefunds(paymentId)
+
+    fun saveConsolidated(input: ConsolidatedInput, existingId: String?, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.saveConsolidatedCollection(input, existingId)) }
+    }
+
+    fun cancelConsolidated(id: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.cancelConsolidatedCollection(id)) }
+    }
+
+    fun setConsolidatedArchived(id: String, archived: Boolean) {
+        viewModelScope.launch { repo.setConsolidatedArchived(id, archived) }
+    }
+
+    fun assignPaymentToTarget(
+        paymentId: String,
+        targetKind: com.cotixgo.app.core.PaymentTargetKind,
+        targetId: String,
+        requested: String,
+        reason: String,
+        onDone: (String?) -> Unit,
+    ) {
+        viewModelScope.launch {
+            onDone(repo.assignPaymentToTarget(paymentId, targetKind, targetId, requested, reason))
+        }
+    }
+
+    fun reassignPaymentToTarget(
+        paymentId: String,
+        targetKind: com.cotixgo.app.core.PaymentTargetKind,
+        targetId: String,
+        reason: String,
+        onDone: (String?) -> Unit,
+    ) {
+        viewModelScope.launch {
+            onDone(repo.reassignPaymentToTarget(paymentId, targetKind, targetId, reason))
+        }
+    }
+
+    fun correctPayment(paymentId: String, newEffective: String, reason: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.correctPayment(paymentId, newEffective, reason)) }
+    }
+
+    fun annulPayment(paymentId: String, reason: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.annulPayment(paymentId, reason)) }
+    }
+
+    fun refundPayment(
+        paymentId: String,
+        amount: String,
+        refundedAtEpochDay: Long,
+        collectionMethodId: String?,
+        reason: String,
+        onDone: (String?) -> Unit,
+    ) {
+        viewModelScope.launch {
+            onDone(repo.refundPayment(paymentId, amount, refundedAtEpochDay, collectionMethodId, reason))
+        }
     }
 
     fun syncNow() {
