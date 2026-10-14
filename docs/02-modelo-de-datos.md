@@ -1,5 +1,5 @@
 # CotixGo — Modelo de Datos
-## Documento de diseño v1.7
+## Documento de diseño v1.8
 
 **Estado:** Borrador para revisión  
 **Fuente funcional:** `01-reglas-de-negocio-v0.2.md`  
@@ -332,6 +332,8 @@ El material del catálogo/inventario es información interna.
 
 No debe confundirse con el material históricamente incluido en una cotización o utilizado en un trabajo.
 
+Alcance F8 (`03` §6): el catálogo de Materiales es global por Usuario/Titular; mínimos aprobados — nombre y unidad requeridos, descripción opcional. La condición `NUEVO`/`USADO` es una dimensión del stock del material, no dos materiales separados. Los campos conceptuales restantes quedan como elección técnica o decisión pendiente.
+
 ---
 
 # 9. Tool
@@ -603,6 +605,8 @@ El consumo se registra en el Trabajo según lo realmente utilizado, sin validarl
 
 Alcance de F4 (`03` §6): el registro de materiales del Trabajo es descriptivo — descripción, cantidad, unidad, origen `CLIENTE`/`PROFESIONAL` y observaciones — sin catálogo ni `material_id`, sin modificar inventario ni generar movimientos. La futura fase de inventario no reinterpretará retroactivamente estos registros descriptivos.
 
+Alcance F8 (`03` §6): solo los consumos nuevos registrados en un Trabajo pueden vincularse a un `Material` inventariado; los registros históricos y descriptivos de F4 se conservan intactos y sin reinterpretación retroactiva.
+
 ---
 
 # 16. Attachment
@@ -650,6 +654,8 @@ Representa una compra real de materiales.
 - fechas
 
 Una compra confirmada genera entradas de inventario.
+
+Alcance F8 (`03` §6): mínimos aprobados — fecha requerida; al menos una línea para confirmar; cada línea identifica Material, cantidad, unidad y precio unitario; proveedor/lugar y referencia opcionales; total derivado por el servidor; moneda global del Usuario/Titular. Ciclo aprobado: `BORRADOR` (sin movimientos) → `CONFIRMADA` (entradas por línea; editable por diferencia con trazabilidad; anulable con movimientos inversos) → `ANULADA` terminal e irreversible; el archivado se mantiene separado de la anulación y no revierte movimientos. Numeración `COM-PEND-XXXX` → `COM-AAAAMM-NNN` idempotente en el primer registro aceptado por el servidor sobre el mismo `entity_id`.
 
 ---
 
@@ -725,6 +731,10 @@ El sistema no debe impedir:
 porque el inventario no esté actualizado.
 
 Puede existir un estado de ajuste pendiente.
+
+### Alcance F8 (`03` §6)
+
+Los movimientos append-only son la fuente de verdad del stock; el servidor mantiene y actualiza el saldo derivado/proyectado atómicamente dentro de la transacción, y el saldo puede reconstruirse desde los movimientos. El stock se registra por dimensión de condición `NUEVO`/`USADO` del mismo material. Los sobrantes se registran como entrada manual explicable con origen `SOBRANTE`, que puede referenciar un Trabajo; no hay flujo automático desde el Trabajo.
 
 ---
 
@@ -1368,19 +1378,19 @@ Estas son vistas, enums, configuraciones o comportamientos, salvo que una regla 
 Este documento establece la estructura conceptual, pero todavía deben cerrarse:
 
 1. transiciones completas permitidas de cada entidad y sus actores (Trabajo: resueltas para F4 en `03` §6; Cuenta de Cobro: reglas de ciclo de vida aprobadas para F6 en `03` §6);
-2. transiciones/estados restantes de Compras, archivos y sincronización;
+2. transiciones/estados restantes de Compras, archivos y sincronización (Compras: ciclo `BORRADOR`/`CONFIRMADA`/`ANULADA` resuelto para F8 en la ficha F8 — `ANULADA` terminal e irreversible, archivado separado de la anulación, `03` §6; archivos y sincronización siguen pendientes);
 3. relación de versiones de Informe — resuelta para F5: relación `Report`–`ReportVersion` con snapshot inmutable por versión emitida; una corrección crea una versión nueva enlazada por campo de referencia y la versión anterior se conserva (`03` §6); la corrección/anulación de Pagos está aprobada para V1 con el mecanismo `PaymentAdjustment` y su diseño detallado quedó confirmado en la ficha F7 (`03` §6): `CORRECTION` con absorción LIFO y piso de reembolsados, `ANNULMENT` terminal con piso de reembolsados e invariante `aplicado + reembolsado ≤ efectivo`;
 4. tratamiento de impuestos (no es funcionalidad aprobada ni requisito de V1);
 5. instante exacto de vencimiento de Cotización — resuelto para F2 y aclarado en F3: `fecha_vencimiento` es el último día válido y pasa a `VENCIDA` cuando la fecha local del dispositivo es posterior, solo desde los estados no terminales `BORRADOR`, `EMITIDA` y `RECHAZADA` (`03` §6);
-6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); resuelto para Informe en la planificación de F5: al aceptar el backend por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (`03` §6); resuelto para Cuenta de Cobro en la planificación de F6: `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro de la Cuenta aceptado por el backend sobre el mismo `entity_id` (`03` §6); resuelto para Consolidado en la ficha F7: `CONS-PEND-XXXX` → `CONS-AAAAMM-NNN` en la primera aceptación del servidor sobre el mismo `entity_id`, idempotente (`03` §6); otros tipos de documento siguen pendientes;
+6. momento exacto, por tipo de documento, en que el backend confirma el número oficial tras el provisional — resuelto para Cotización en la planificación de F3: al aceptar el backend la primera versión `EMITIDA`/`APROBADA` sobre el mismo `entity_id` (`03` §6); resuelto para Trabajo en la planificación de F4: al aceptar el backend por primera vez el Trabajo en `PROGRAMADO` o `EN PROCESO` (`03` §6); resuelto para Informe en la planificación de F5: al aceptar el backend por primera vez el Informe como `EMITIDO` sobre el mismo `entity_id` (`03` §6); resuelto para Cuenta de Cobro en la planificación de F6: `CC-PEND-XXXX` → `CC-AAAAMM-NNN` en el primer registro de la Cuenta aceptado por el backend sobre el mismo `entity_id` (`03` §6); resuelto para Consolidado en la ficha F7: `CONS-PEND-XXXX` → `CONS-AAAAMM-NNN` en la primera aceptación del servidor sobre el mismo `entity_id`, idempotente (`03` §6); resuelto para Compra en la ficha F8: `COM-PEND-XXXX` → `COM-AAAAMM-NNN` en el primer registro aceptado por el servidor sobre el mismo `entity_id`, idempotente (`03` §6); los demás tipos de documento siguen pendientes;
 7. estructura física de snapshots;
 8. representación técnica del estado archivado/desarchivado; los datos generados no se eliminan;
 9. timestamps y control de versiones;
-10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (`03` §6) — la resolución del usuario crea una versión nueva del Informe — e implementada en local para ellas (`05` §5.3); extendida por decisión a las entidades documentales de F6 (`collection_account`, `collection_method`) en la ficha F6 (`03` §6), con los eventos financieros (`payment`, asignaciones) aprobados como append-only con validación atómica de saldo en el servidor; extendida por decisión a las entidades de F7 en la ficha F7 (`03` §6): `consolidated_collection` como entidad documental y `payment_adjustment`/`refund` como eventos financieros append-only — implementada en local para ellas (`05` §5.5); la extensión a fases posteriores sigue pendiente;
+10. resolución de conflictos — política de producto aprobada para las entidades de F3 (detección explícita, preservación, resolución del usuario; ver `03` §6) e implementada en local para esas entidades (`05` §5.1); extendida por decisión a las entidades de F4 en la ficha F4 (`03` §6) e implementada en local para ellas (`05` §5.2); extendida por decisión a las entidades de F5 (Informes) en la ficha F5 (`03` §6) — la resolución del usuario crea una versión nueva del Informe — e implementada en local para ellas (`05` §5.3); extendida por decisión a las entidades documentales de F6 (`collection_account`, `collection_method`) en la ficha F6 (`03` §6), con los eventos financieros (`payment`, asignaciones) aprobados como append-only con validación atómica de saldo en el servidor; extendida por decisión a las entidades de F7 en la ficha F7 (`03` §6): `consolidated_collection` como entidad documental y `payment_adjustment`/`refund` como eventos financieros append-only — implementada en local para ellas (`05` §5.5); extendida por decisión a las entidades de F8 en la ficha F8 (`03` §6): `Material` y `Compra` como entidades documentales con detección por versión base, preservación de ambas copias y resolución del usuario; `inventory_movement` como evento append-only que no se resuelve sobrescribiéndolo; la extensión a fases posteriores sigue pendiente;
 11. estructura exacta de `SyncOperation`;
 12. estructura exacta de `AuditEvent`;
-13. campos finales de cada entidad;
-14. precisión de cantidades;
+13. campos finales de cada entidad (campos mínimos de `Material` y `Compra` aprobados en la ficha F8, `03` §6; los campos adicionales quedan como elección técnica o decisión pendiente);
+14. precisión de cantidades (para F8 queda como elección técnica pendiente, junto con la normalización de unidades y la precisión de precios, `03` §6);
 15. almacenamiento físico y política de retención de fotografías/archivos;
 16. campos y reglas de relación pendientes entre perfil profesional y documentos, sin afectar la propiedad global del inventario y Métodos de Cobro;
 17. reglas de permisos futuras si se incorpora colaboración multiusuario;
@@ -1466,3 +1476,4 @@ Pendientes del modelo: validaciones residuales de transiciones; precisión de ca
 | v1.5 | 13/10/2026 | Corrección de la revisión del PR documental #14 (sin decisiones nuevas): §24 retira el nombre de campo `targetType`, que se había registrado como si fuera parte del contrato; queda la regla conceptual aprobada — el Pago se dirige a una Cuenta individual, a un Consolidado o permanece sin asignación — y el nombre del campo y su representación física quedan para el contrato de API y la implementación. | Coherencia con la regla de no resolver por inferencia los detalles de contrato. | Cambio aprobado; el documento sigue en borrador. |
 | v1.6 | 13/10/2026 | F7 implementada en local con datos sintéticos tras la autorización de etapa del titular: `ConsolidatedCollection`, la membresía `consolidated_collection_accounts`, `PaymentAdjustment` y `Refund` quedaron materializados como tablas Room (v8) y como tipos del almacenamiento genérico `entities` del servidor, sobre el protocolo de sincronización F3–F6; el discriminador físico de destino quedó implementado como `targetType`/`assignedTargetType` con `accountId`/`consolidatedId` y `fromAccountId`/`fromConsolidatedId` (detalle técnico en `05` §5.5; evidencia en `evidence/f7/`). §38 actualizado: los pendientes físicos de F7 quedan resueltos por la implementación. Sin cambios en el modelo conceptual aprobado. | Registro del estado de implementación local de F7; pendiente revisión vía PR. | Cambio aprobado; el documento sigue en borrador. |
 | v1.7 | 14/10/2026 | Corrección factual del estado (sin cambios en el modelo conceptual): F7 quedó integrada en `main` por el merge `7d5e167` (PR #15) tras las revisiones del titular. F8 sigue sin alcance aprobado ni implementación iniciada. | Registro del estado posterior al merge de F7. | Cambio aprobado; el documento sigue en borrador. |
+| v1.8 | 14/10/2026 | F8 (planificación aprobada, sin cambios en listas conceptuales): §8 `Material` registra catálogo global y mínimos (nombre+unidad requeridos, descripción opcional; `NUEVO`/`USADO` como dimensión de stock); §15 `JobMaterial` registra el vínculo solo en consumos nuevos con históricos F4 intactos; §17 `Purchase` registra mínimos, ciclo `BORRADOR`/`CONFIRMADA`/`ANULADA` terminal con archivado separado y numeración `COM-`; §19 `InventoryMovement` registra los movimientos append-only como fuente de verdad con saldo proyectado atómico en servidor y el origen `SOBRANTE` manual. Pendientes §36.2, §36.6, §36.10, §36.13 y §36.14 resueltos/anotados para F8; normalización de unidades y precisión quedan como elección técnica pendiente. La implementación de F8 no está autorizada. | Aprobación de las decisiones de la ficha F8 por el titular. | Cambio aprobado; el documento sigue en borrador. |
