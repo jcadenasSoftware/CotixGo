@@ -34,6 +34,15 @@ object DbMigrationManager {
     private const val MARKER = "db_migration.state"
     private const val SQLITE_HEADER = "SQLite format 3"
 
+    init {
+        // La librería nativa debe estar cargada antes de CUALQUIER uso de
+        // las clases de SQLCipher — incluida la apertura de la base clara
+        // en migrate()/verify(), no solo al construir la fábrica de Room.
+        // Cargarla aquí (init del objeto) garantiza que el primer acceso a
+        // DbMigrationManager la tenga disponible.
+        System.loadLibrary("sqlcipher")
+    }
+
     private var deleter: (File) -> Boolean = { it.delete() }
     private var freeSpaceProbe: (File) -> Long = {
         StatFs(it.absolutePath).run { availableBlocksLong * blockSizeLong }
@@ -102,10 +111,8 @@ object DbMigrationManager {
         hex(DbKeyProvider.getOrCreatePassphrase(context))
 
     /** Fábrica cifrada para Room; el llamador debe pasar por [ensureReady] antes. */
-    fun encryptedFactory(context: Context): SupportOpenHelperFactory {
-        System.loadLibrary("sqlcipher")
-        return SupportOpenHelperFactory(passphrase(context).toByteArray(Charsets.US_ASCII))
-    }
+    fun encryptedFactory(context: Context): SupportOpenHelperFactory =
+        SupportOpenHelperFactory(passphrase(context).toByteArray(Charsets.US_ASCII))
 
     /**
      * Gate exclusivo de acceso a la base. Invocado desde [AppDatabase.get]

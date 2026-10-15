@@ -83,3 +83,33 @@ Delta vs baseline previo al spike: ≈ +7.7 MB (los .so de SQLCipher).
 - allowBackup="false" sigue vigente en el manifiesto.
 - Gradle Sync / Assemble en Android Studio post-integración: pendiente
   de verificación por el titular (instrucciones en el PR).
+
+== Corrida G — corrección del arranque en dispositivo físico (PR #20) ==
+
+Fallo reportado por el titular en Xiaomi M2003J15SC (merlin, arm64-v8a):
+java.lang.UnsatisfiedLinkError: no implementation found for
+SQLiteConnection.nativeOpen — en DbMigrationManager.migrate:160.
+
+Causa raíz: System.loadLibrary("sqlcipher") solo se ejecutaba en
+encryptedFactory(), que AppDatabase.get() llama DESPUÉS de ensureReady().
+Con una base clara preexistente, migrate() tocaba
+net.zetetic.database.sqlcipher.SQLiteDatabase sin la .so cargada.
+Los tests no lo detectaban porque el sandbox no tiene cotixgo.db clara
+(fresh install → camino sin SQLCipher) y LocalEncryptionTest cargaba la
+librería manualmente en su setUp.
+
+Corrección: loadLibrary movido al init{} de DbMigrationManager — se
+ejecuta en el primer acceso al objeto, antes de cualquier clase
+SQLCipher (migrate, verify, factory).
+
+Regresión añadida: BootMigrationTest — siembra cotixgo.db CLARA v9 real
+(nombre de producción) y entra por AppDatabase.get() sin loadLibrary en
+el test. Corre antes que LocalEncryptionTest en el orden alfabético de
+la suite.
+
+Resultados:
+- Xiaomi físico (adb-021e6d4a0403, arm64-v8a):
+  BootMigrationTest + LocalEncryptionTest → OK (14 tests), 29.7s.
+  El dispositivo donde ocurrió el fallo queda verificado.
+- Emulador Pixel_8: suite completa OK (103 tests) en 906.1s —
+  BootMigrationTest corrió primero y validó el arranque real.

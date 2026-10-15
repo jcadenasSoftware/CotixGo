@@ -2043,5 +2043,11 @@ abstract class AppDatabase : RoomDatabase() {
                         .build().also { instance = it }
                 }
             }
+
+        /** Solo para pruebas: cierra y olvida el singleton. */
+        internal fun resetForTest() = synchronized(this) {
+            instance?.close()
+            instance = null
+        }
     }
 }
