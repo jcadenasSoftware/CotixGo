@@ -989,8 +989,19 @@ private fun CotixGoNavHost(
                 )
             }
             composable(Routes.SETTINGS) {
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                var appLockEnabled by androidx.compose.runtime.remember {
+                    androidx.compose.runtime.mutableStateOf(
+                        com.cotixgo.app.data.security.AppLock.isEnabled(ctx),
+                    )
+                }
                 SettingsScreen(
                     user = user,
+                    appLockEnabled = appLockEnabled,
+                    onToggleAppLock = { enabled ->
+                        com.cotixgo.app.data.security.AppLock.setEnabled(ctx, enabled)
+                        appLockEnabled = enabled
+                    },
                     onCurrency = { vm.setMainCurrency(it) },
                     onServices = { nav.navigate(Routes.SERVICES) },
                     onRetentions = { nav.navigate(Routes.RETENTIONS) },
