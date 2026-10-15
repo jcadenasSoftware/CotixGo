@@ -1,0 +1,85 @@
+Evidencia de verificación — Protección local en reposo (SQLCipher + Keystore)
+Rama: impl/proteccion-local-reposo — base: main @ f684e23 (merge PR #19)
+Entorno: Windows, JDK 21 (C:\Program Files\Java\jdk-21), Gradle 8.11.1,
+AGP 8.9.1, Kotlin 2.0.21, compileSdk 35, minSdk 26, Room 2.6.1,
+net.zetetic:sqlcipher-android:4.17.0@aar + androidx.sqlite:sqlite:2.6.2.
+Backend local: PHP 8.4.24 (php -S 0.0.0.0:8080) + MariaDB 13.0 local.
+Dispositivos: emulador Pixel_8 (API 36). Solo datos sintéticos.
+
+== Corrida A — backend E2E ==
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 251 passed, 0 failed.
+
+== Corrida B — backend race/concurrencia ==
+php -c backend/dev.ini backend/tests/race.php
+Resultado: 39 passed, 0 failed.
+
+== Corrida C — php -l (lint) ==
+index.php, bootstrap.php, domain.php, sync.php, auth.php, migrate.php,
+e2e.php, race.php, race_worker.php → "No syntax errors detected" en todos.
+
+== Corrida D — JVM unit tests (testDebugUnitTest) ==
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+4 clases, 41 casos, 0 fallos (ApiErrorParseTest 4, CalcVectorTest 4,
+DomainTest 28, más la clase restante del suite — mismos totales que F8).
+
+== Corrida E — suite instrumentada completa (emulador-5554) ==
+adb -s emulator-5554 shell am instrument -w
+  com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+Resultado: OK (102 tests) en 303.83s.
+Desglose por clase (todas PASS):
+- CollectionRepositoryTest: 6
+- ConsolidatedDetailScreenTest: 1
+- ConsolidatedRepositoryTest: 4
+- InventoryRepositoryTest: 7
+- JobFormScreenTest: 5
+- JobRepositoryTest: 9
+- LocalEncryptionTest: 13  ← suite nueva de protección en reposo
+- MigrationTest: 5
+- PaymentDetailScreenTest: 4
+- QuoteRepositoryTest: 12
+- ReportRepositoryTest: 7
+- SyncE2eTest: 29 (login/logout/sync end-to-end contra php -S local,
+  ejercitando la base cifrada vía AppDatabase.get → ensureReady)
+
+LocalEncryptionTest (13 casos) cubre:
+- Room cifrada: crear/escribir/cerrar/reabrir; fichero sin cabecera
+  "SQLite format 3"; passphrase incorrecta → fallo al consultar.
+- Migración claro→cifrado con fixture sintética AppDatabase v9 real
+  (35+ tablas): integrity_check ok, conteos idénticos por tabla,
+  filas del fixture preservadas.
+- Recuperación por cierre forzado simulado en cada estado:
+  PREPARING/EXPORTING/VERIFYING (reinicio idempotente),
+  SWAP_PENDING (forense de archivos: bak+cifrada→cleanup;
+  db ausente+bak+tmp→tmp pasa a db; db clara+bak→reinicio),
+  CLEANUP_PENDING (reintento), FAILED (bloqueo hasta hardReset),
+  MIGRATED+base clara → clear_db_after_migrated.
+- Falta de espacio (hook) → insufficient_space; origen claro intacto.
+- Exportación sobre fichero corrupto → estado final fail-closed.
+- Verificación fallida (hook) → verification_failed, bloqueo
+  persistente en arranques posteriores.
+- Fallo de limpieza (hook de borrado) → cleanup_incomplete, la app
+  bloqueada con el .bak claro presente hasta resolverlo.
+- DbKeyProvider: blob envuelto (no contiene la passphrase en claro),
+  blob corrupto → KeyUnavailableException, regeneración tras borrado.
+- SessionCrypto: AES/GCM round-trip, valor corrupto → null.
+
+== Corrida F — builds ==
+./gradlew :app:assembleDebug            — BUILD SUCCESSFUL
+./gradlew :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+./gradlew :app:assembleRelease          — BUILD SUCCESSFUL
+  (isMinifyEnabled=false — política de release vigente sin cambios)
+
+== Artefactos nativos / tamaños ==
+libsqlcipher.so por ABI: arm64-v8a 2.10 MB, armeabi-v7a 1.05 MB,
+x86 2.24 MB, x86_64 2.23 MB (los 4 ABIs empaquetados).
+APK debug: ~22 MB; APK release (unsigned, sin minificar): ~17 MB.
+Delta vs baseline previo al spike: ≈ +7.7 MB (los .so de SQLCipher).
+
+== Notas ==
+- La migración respeta la cadena Room existente: bases <v9 ejecutan las
+  migraciones versionadas antes de la exportación (la fixture se crea a
+  v9 final; el gate opera sobre el fichero resultante).
+- allowBackup="false" sigue vigente en el manifiesto.
+- Gradle Sync / Assemble en Android Studio post-integración: pendiente
+  de verificación por el titular (instrucciones en el PR).

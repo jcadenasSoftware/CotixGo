@@ -839,6 +839,8 @@ fun ProfileScreen(
 @Composable
 fun SettingsScreen(
     user: UserEntity?,
+    appLockEnabled: Boolean,
+    onToggleAppLock: (Boolean) -> Unit,
     onCurrency: (String) -> Unit,
     onServices: () -> Unit,
     onRetentions: () -> Unit,
@@ -861,6 +863,24 @@ fun SettingsScreen(
             OutlinedButton(onClick = onRetentions, modifier = Modifier.fillMaxWidth()) { Text("Retenciones") }
             OutlinedButton(onClick = onProfile, modifier = Modifier.fillMaxWidth()) { Text("Perfil profesional") }
             OutlinedButton(onClick = onAccount, modifier = Modifier.fillMaxWidth()) { Text("Cuenta y sincronización") }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Bloqueo de interfaz")
+                    Text(
+                        "Pide biometría o PIN al abrir la app. Es una barrera de " +
+                            "interfaz: no es cifrado adicional ni autenticación del " +
+                            "almacén, y no afecta a la sincronización en segundo plano.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Checkbox(
+                    checked = appLockEnabled,
+                    onCheckedChange = { onToggleAppLock(it) },
+                )
+            }
             TextButton(onClick = onBack) { Text("Volver") }
         }
     }

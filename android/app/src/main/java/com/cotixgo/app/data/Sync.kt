@@ -3,8 +3,7 @@ package com.cotixgo.app.data
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.room.withTransaction
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
+import com.cotixgo.app.data.security.SessionCrypto
 import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.nowEpochMillis
 import com.cotixgo.app.net.ApiClient
@@ -57,28 +56,29 @@ object EntityTypes {
 }
 
 /**
- * Sesión local de sincronización: token en EncryptedSharedPreferences
- * (Keystore), identidad de cuenta y device_id en preferencias, cursor en
- * `sync_meta` (se reinicia al cambiar de cuenta o limpiar datos).
+ * Sesión local de sincronización: token como blob AES/GCM de
+ * AndroidKeyStore (SessionCrypto) en preferencias planas, identidad de
+ * cuenta y device_id en preferencias, cursor en `sync_meta` (se
+ * reinicia al cambiar de cuenta o limpiar datos). La librería
+ * `androidx.security:security-crypto` quedó sustituida por APIs
+ * directas de Keystore (deprecada en 1.1.0 estable). Los tokens
+ * guardados con EncryptedSharedPreferences en versiones anteriores no
+ * se migran: tras la actualización el usuario inicia sesión de nuevo.
  */
 class Session(context: Context, private val db: AppDatabase) {
     private val appContext = context.applicationContext
     private val plain: SharedPreferences =
         appContext.getSharedPreferences("cotixgo.session", Context.MODE_PRIVATE)
 
-    private val secure: SharedPreferences by lazy {
-        EncryptedSharedPreferences.create(
-            appContext,
-            "cotixgo.secure",
-            MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+    init {
+        // Limpieza del archivo de preferencias cifradas legado
+        // (EncryptedSharedPreferences de security-crypto, ya sin uso).
+        appContext.deleteSharedPreferences("cotixgo.secure")
     }
 
     var token: String?
-        get() = secure.getString("token", null)
-        set(v) = secure.edit().putString("token", v).apply()
+        get() = SessionCrypto.decryptOrNull(plain.getString("token_enc", null))
+        set(v) = plain.edit().putString("token_enc", SessionCrypto.encrypt(v)).apply()
 
     var accountEmail: String?
         get() = plain.getString("account_email", null)

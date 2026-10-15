@@ -2021,16 +2021,27 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val ALL_MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(
+            MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+            MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+        )
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
-                instance ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    "cotixgo.db",
-                ).addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
-                ).build().also { instance = it }
+                instance ?: run {
+                    // Gate exclusivo: migración fail-closed a base cifrada
+                    // (SQLCipher) antes de cualquier apertura. Lanza
+                    // DbBlockedException si la app debe quedar bloqueada.
+                    DbMigrationManager.ensureReady(context)
+                    Room.databaseBuilder(
+                        context.applicationContext,
+                        AppDatabase::class.java,
+                        "cotixgo.db",
+                    )
+                        .openHelperFactory(DbMigrationManager.encryptedFactory(context))
+                        .addMigrations(*ALL_MIGRATIONS)
+                        .build().also { instance = it }
+                }
             }
     }
 }
