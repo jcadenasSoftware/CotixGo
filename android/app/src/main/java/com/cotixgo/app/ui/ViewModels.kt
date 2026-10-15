@@ -23,6 +23,12 @@ import com.cotixgo.app.data.JobActivityInput
 import com.cotixgo.app.data.JobEntity
 import com.cotixgo.app.data.JobInput
 import com.cotixgo.app.data.JobMaterialInput
+import com.cotixgo.app.data.MaterialEntity
+import com.cotixgo.app.data.MaterialInput
+import com.cotixgo.app.data.MaterialStockView
+import com.cotixgo.app.data.InventoryMovementInput
+import com.cotixgo.app.data.PurchaseEntity
+import com.cotixgo.app.data.PurchaseInput
 import com.cotixgo.app.data.ProfileEntity
 import com.cotixgo.app.data.QuoteEntity
 import com.cotixgo.app.data.QuoteInput
@@ -328,6 +334,57 @@ class AppViewModel(
         viewModelScope.launch {
             onDone(repo.refundPayment(paymentId, amount, refundedAtEpochDay, collectionMethodId, reason))
         }
+    }
+
+    // ---------- Inventario y Compras (F8) ----------
+
+    val materials: StateFlow<List<MaterialEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeMaterials(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Catálogo + saldo mostrado (espejo del servidor + efectos pendientes). */
+    val inventory: StateFlow<List<MaterialStockView>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observeInventory(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val purchases: StateFlow<List<PurchaseEntity>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyList()) else repo.observePurchases(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun observeMaterial(id: String) = repo.observeMaterial(id)
+    fun observeMovementsForMaterial(materialId: String) = repo.observeMovementsForMaterial(materialId)
+    fun observeAllMovements(userId: String) = repo.observeAllMovements(userId)
+    fun observePurchase(id: String) = repo.observePurchase(id)
+    fun observePurchaseItems(id: String) = repo.observePurchaseItems(id)
+    fun observePurchaseMovements(id: String) = repo.observePurchaseMovements(id)
+    fun observeMovementsForJob(jobId: String) = repo.observeMovementsForJob(jobId)
+
+    fun saveMaterial(input: MaterialInput, existingId: String?, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch { onDone(repo.saveMaterial(input, existingId) != null) }
+    }
+
+    fun setMaterialArchived(id: String, archived: Boolean) {
+        viewModelScope.launch { repo.setMaterialArchived(id, archived) }
+    }
+
+    fun savePurchase(input: PurchaseInput, existingId: String?, confirm: Boolean, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.savePurchase(input, existingId, confirm)) }
+    }
+
+    fun confirmPurchase(id: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.confirmPurchase(id)) }
+    }
+
+    fun annulPurchase(id: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.annulPurchase(id)) }
+    }
+
+    fun setPurchaseArchived(id: String, archived: Boolean) {
+        viewModelScope.launch { repo.setPurchaseArchived(id, archived) }
+    }
+
+    fun saveInventoryMovement(input: InventoryMovementInput, onDone: (String?) -> Unit) {
+        viewModelScope.launch { onDone(repo.saveInventoryMovement(input)) }
     }
 
     fun syncNow() {

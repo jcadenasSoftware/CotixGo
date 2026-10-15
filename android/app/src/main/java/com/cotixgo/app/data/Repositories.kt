@@ -11,6 +11,11 @@ import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.JobTransitions
 import com.cotixgo.app.core.JobActivityStatus
 import com.cotixgo.app.core.ConsolidatedTransitions
+import com.cotixgo.app.core.MaterialCondition
+import com.cotixgo.app.core.MovementType
+import com.cotixgo.app.core.MovementOrigin
+import com.cotixgo.app.core.PurchaseStatus
+import com.cotixgo.app.core.PurchaseTransitions
 import com.cotixgo.app.core.PaymentAdjustmentKind
 import com.cotixgo.app.core.PaymentAssignmentAction
 import com.cotixgo.app.core.PaymentAssignmentStatus
@@ -25,11 +30,17 @@ import com.cotixgo.app.core.deriveAssignmentStatus
 import com.cotixgo.app.core.deriveCollectionStatus
 import com.cotixgo.app.core.effectiveQuoteStatus
 import com.cotixgo.app.core.expiryEpochDay
+import com.cotixgo.app.core.isPositiveQuantity
 import com.cotixgo.app.core.newProvisionalNumber
+import com.cotixgo.app.core.normDecimal
 import com.cotixgo.app.core.nowEpochMillis
 import com.cotixgo.app.core.toMoney
 import com.cotixgo.app.core.toQty
 import com.cotixgo.app.core.validateCollectionMethod
+import com.cotixgo.app.core.validateMaterial
+import com.cotixgo.app.net.str
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.math.BigDecimal
@@ -693,12 +704,39 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
     }
 
     // --- Materiales descriptivos (sin catálogo ni inventario) ---
+    // F8: un registro NUEVO puede vincularse opcionalmente a un Material
+    // inventariado del titular (origin PROFESIONAL, cantidad positiva y
+    // condición de stock). El vínculo genera en la misma transacción el
+    // movimiento de consumo (JOB_CONSUMPTION/TRABAJO, append-only) y sus
+    // campos quedan inmutables — una corrección es un ajuste manual.
 
     suspend fun saveJobMaterial(input: JobMaterialInput, existingId: String? = null): String? {
         if (!jobEditable(input.jobId)) return null
         val now = nowEpochMillis()
         val existing = existingId?.let { db.jobMaterialDao().get(it) }
-        val material = JobMaterialEntity(
+        val linkId = input.materialId?.trim()?.ifEmpty { null }
+        if (existing?.materialId != null) {
+            // El vínculo es append-only: los campos del consumo no cambian.
+            if (linkId != existing.materialId
+                || input.quantity.trim() != existing.quantity
+                || input.unit.trim() != existing.unit
+                || input.condition?.name != existing.condition
+            ) {
+                return null
+            }
+        } else if (existing != null && linkId != null) {
+            return null // un registro histórico no puede vincularse al editarse
+        }
+        var material: MaterialEntity? = null
+        if (linkId != null) {
+            if (input.origin != com.cotixgo.app.core.MaterialOrigin.PROFESIONAL
+                || input.condition == null || !isPositiveQuantity(input.quantity)
+            ) {
+                return null
+            }
+            material = db.materialDao().get(linkId)?.takeIf { !it.archived } ?: return null
+        }
+        val jobMaterial = JobMaterialEntity(
             id = existing?.id ?: Ids.new(),
             jobId = input.jobId,
             description = input.description.trim(),
@@ -706,17 +744,36 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             quantity = input.quantity.trim(),
             unit = input.unit.trim(),
             notes = input.notes.trim(),
+            materialId = existing?.materialId ?: linkId,
+            condition = existing?.condition ?: input.condition?.name,
             createdAt = existing?.createdAt ?: now,
             updatedAt = now,
             pendingSync = true,
             serverVersion = existing?.serverVersion ?: 0,
         )
         db.withTransaction {
-            db.jobMaterialDao().upsert(material)
-            sync?.enqueue(EntityTypes.JOB_MATERIAL, material.id,
-                SyncPayloads.jobMaterial(material), existing?.serverVersion ?: 0)
+            db.jobMaterialDao().upsert(jobMaterial)
+            sync?.enqueue(EntityTypes.JOB_MATERIAL, jobMaterial.id,
+                SyncPayloads.jobMaterial(jobMaterial), existing?.serverVersion ?: 0)
+            if (linkId != null && existing == null) {
+                // Consumo explícito: salida de inventario append-only.
+                val user = db.userDao().get()
+                val mov = InventoryMovementEntity(
+                    id = Ids.new(), userId = user?.id ?: "",
+                    materialId = linkId, condition = input.condition!!.name,
+                    movementType = MovementType.JOB_CONSUMPTION.name,
+                    origin = MovementOrigin.TRABAJO.name,
+                    quantity = normDecimal(input.quantity), unit = input.unit.trim(),
+                    jobId = input.jobId, jobMaterialId = jobMaterial.id,
+                    note = "Consumo en trabajo",
+                    occurredAt = now, createdAt = now, updatedAt = now,
+                )
+                db.inventoryMovementDao().upsert(mov)
+                sync?.enqueue(EntityTypes.INVENTORY_MOVEMENT, mov.id,
+                    SyncPayloads.inventoryMovement(mov), 0)
+            }
         }
-        return material.id
+        return jobMaterial.id
     }
 
     // ---------- Informes de Trabajo (F5) ----------
@@ -2105,6 +2162,333 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             }
         }
     }
+
+    // ---------- Inventario y Compras (F8) ----------
+
+    fun observeMaterials(userId: String): Flow<List<MaterialEntity>> =
+        db.materialDao().observeForUser(userId)
+
+    fun observeActiveMaterials(userId: String): Flow<List<MaterialEntity>> =
+        db.materialDao().observeActiveForUser(userId)
+
+    fun observeMaterial(id: String): Flow<MaterialEntity?> = db.materialDao().observeOne(id)
+
+    fun observePurchases(userId: String): Flow<List<PurchaseEntity>> =
+        db.purchaseDao().observeForUser(userId)
+
+    fun observePurchase(id: String): Flow<PurchaseEntity?> = db.purchaseDao().observeOne(id)
+
+    fun observePurchaseItems(id: String): Flow<List<PurchaseItemEntity>> =
+        db.purchaseItemDao().observeForPurchase(id)
+
+    fun observePurchaseMovements(id: String): Flow<List<InventoryMovementEntity>> =
+        db.inventoryMovementDao().observeForPurchase(id)
+
+    fun observeMovementsForMaterial(materialId: String): Flow<List<InventoryMovementEntity>> =
+        db.inventoryMovementDao().observeForMaterial(materialId)
+
+    fun observeMovementsForJob(jobId: String): Flow<List<InventoryMovementEntity>> =
+        db.inventoryMovementDao().observeForJob(jobId)
+
+    fun observeAllMovements(userId: String): Flow<List<InventoryMovementEntity>> =
+        db.inventoryMovementDao().observeForUser(userId)
+
+    /**
+     * Saldo mostrado por Material: espejo `inventory_stock` (autoritativo,
+     * derivado por el servidor) + movimientos locales aún pendientes +
+     * efecto pendiente de las Compras no sincronizadas — calculado como la
+     * diferencia entre sus líneas actuales y el último payload que el
+     * servidor aplicó (reconstruido desde la cola durable). El stock
+     * negativo es visible y nunca bloquea.
+     */
+    fun observeInventory(userId: String): Flow<List<MaterialStockView>> =
+        kotlinx.coroutines.flow.combine(
+            db.materialDao().observeForUser(userId),
+            db.materialStockDao().observeAll(),
+            db.inventoryMovementDao().observeForUser(userId),
+            db.purchaseDao().observePendingForUser(userId),
+        ) { materials, mirrors, movements, pendingPurchases ->
+            val purchaseDelta = pendingPurchaseDeltas(pendingPurchases)
+            materials.map { m ->
+                val mirror = mirrors.firstOrNull { it.materialId == m.id }
+                var sNew = (mirror?.stockNew ?: "0").toQty()
+                var sUsed = (mirror?.stockUsed ?: "0").toQty()
+                for (mov in movements) {
+                    if (mov.materialId != m.id || !mov.pendingSync) continue
+                    val q = mov.quantity.toQty()
+                    if (mov.movementType == MovementType.PURCHASE_IN.name
+                        || mov.movementType == MovementType.ADJUSTMENT_IN.name
+                    ) {
+                        if (mov.condition == MaterialCondition.NUEVO.name) sNew += q else sUsed += q
+                    } else {
+                        if (mov.condition == MaterialCondition.NUEVO.name) sNew -= q else sUsed -= q
+                    }
+                }
+                purchaseDelta[m.id]?.let { (dNew, dUsed) -> sNew += dNew; sUsed += dUsed }
+                MaterialStockView(m, sNew, sUsed)
+            }
+        }
+
+    /** Deltas locales por materialId de las Compras aún no aplicadas. */
+    private suspend fun pendingPurchaseDeltas(
+        pending: List<PurchaseEntity>,
+    ): Map<String, Pair<BigDecimal, BigDecimal>> {
+        val acc = mutableMapOf<Pair<String, String>, BigDecimal>()
+        fun add(materialId: String, condition: String, qty: BigDecimal) {
+            val key = materialId to (if (condition == MaterialCondition.USADO.name) "USADO" else "NUEVO")
+            acc[key] = (acc[key] ?: BigDecimal.ZERO).add(qty)
+        }
+        for (p in pending) {
+            val baseJson = db.syncDao().lastAppliedPayload(EntityTypes.PURCHASE, p.id)
+                ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it).jsonObject }.getOrNull() }
+            if (baseJson?.str("status") == "CONFIRMADA") {
+                baseJson["items"]?.jsonArray?.forEach { el ->
+                    val it = el.jsonObject
+                    add(it.str("materialId") ?: "", it.str("condition") ?: "NUEVO",
+                        (it.str("quantity") ?: "0").toQty().negate())
+                }
+            }
+            if (p.status == PurchaseStatus.CONFIRMADA.name) {
+                for (it in db.purchaseItemDao().forPurchase(p.id)) {
+                    add(it.materialId, it.condition, it.quantity.toQty())
+                }
+            }
+        }
+        val out = mutableMapOf<String, Pair<BigDecimal, BigDecimal>>()
+        for ((key, q) in acc) {
+            val (m, c) = key
+            val cur = out[m] ?: (BigDecimal.ZERO to BigDecimal.ZERO)
+            out[m] = if (c == "NUEVO") cur.first + q to cur.second else cur.first to cur.second + q
+        }
+        return out
+    }
+
+    /** Catálogo global: nombre y unidad requeridos, descripción opcional. */
+    suspend fun saveMaterial(input: MaterialInput, existingId: String? = null): String? {
+        validateMaterial(input.name, input.unit)?.let { return null }
+        val user = db.userDao().get() ?: return null
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.materialDao().get(it) }
+        val material = MaterialEntity(
+            id = existing?.id ?: Ids.new(),
+            userId = user.id,
+            name = input.name.trim(),
+            unit = input.unit.trim(),
+            description = input.description.trim(),
+            archived = existing?.archived ?: false,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        db.withTransaction {
+            db.materialDao().upsert(material)
+            sync?.enqueue(EntityTypes.MATERIAL, material.id,
+                SyncPayloads.material(material), existing?.serverVersion ?: 0)
+        }
+        return material.id
+    }
+
+    /** Archivado de catálogo: solo cambia visibilidad, nunca toca el stock. */
+    suspend fun setMaterialArchived(id: String, archived: Boolean) {
+        val existing = db.materialDao().get(id) ?: return
+        val updated = existing.copy(archived = archived, updatedAt = nowEpochMillis(), pendingSync = true)
+        db.withTransaction {
+            db.materialDao().upsert(updated)
+            sync?.enqueue(EntityTypes.MATERIAL, id, SyncPayloads.material(updated), existing.serverVersion)
+        }
+    }
+
+    /** Número provisional único `COM-PEND-XXXX` entre las Compras del usuario. */
+    private suspend fun uniquePurchaseProvisionalNumber(): String {
+        var candidate = newProvisionalNumber("COM")
+        while (db.purchaseDao().provisionalNumberExists(candidate)) {
+            candidate = newProvisionalNumber("COM")
+        }
+        return candidate
+    }
+
+    /**
+     * Crea o edita una Compra (docs/03 §6). Nace en BORRADOR con
+     * `COM-PEND-XXXX` (o ya CONFIRMADA si el usuario confirmó antes de
+     * sincronizar — el ciclo de ops lo refleja). En CONFIRMADA la edición
+     * es diferencial: el servidor recalcula totales, fija la moneda global
+     * del titular y deriva los movimientos con trazabilidad. Devuelve null
+     * o el motivo del rechazo.
+     */
+    suspend fun savePurchase(input: PurchaseInput, existingId: String? = null,
+                             confirm: Boolean = false): String? {
+        validatePurchase(input, confirm)?.let { return it }
+        val user = db.userDao().get() ?: return "Sin usuario local."
+        val now = nowEpochMillis()
+        val existing = existingId?.let { db.purchaseDao().get(it) }
+        if (existing != null) {
+            val cur = PurchaseStatus.valueOf(existing.status)
+            if (cur == PurchaseStatus.ANULADA) return "La compra está anulada (terminal)."
+            if (confirm && cur == PurchaseStatus.CONFIRMADA) {
+                return "La compra ya está confirmada."
+            }
+        }
+        val materialNames = mutableMapOf<String, String>()
+        for (it in input.items) {
+            val m = db.materialDao().get(it.materialId) ?: return "Material no encontrado."
+            materialNames[it.materialId] = m.name
+        }
+        val items = input.items.mapIndexed { i, it ->
+            val lineTotal = QuoteCalc.format(it.quantity.toQty().multiply(it.unitPrice.toMoney()))
+            PurchaseItemEntity(
+                id = Ids.new(), purchaseId = existing?.id ?: "",
+                position = i + 1, materialId = it.materialId,
+                materialNameSnapshot = materialNames[it.materialId] ?: "",
+                quantity = normDecimal(it.quantity), unit = it.unit.trim(),
+                unitPrice = QuoteCalc.format(it.unitPrice.toMoney()),
+                lineTotal = lineTotal, condition = it.condition.name,
+                createdAt = now,
+            )
+        }
+        val total = items.fold(BigDecimal.ZERO) { a, it -> a.add(it.lineTotal.toMoney()) }
+        val status = when {
+            existing == null -> PurchaseStatus.BORRADOR
+            else -> if (confirm) PurchaseStatus.CONFIRMADA else PurchaseStatus.valueOf(existing.status)
+        }
+        val purchase = PurchaseEntity(
+            id = existing?.id ?: Ids.new(),
+            userId = user.id,
+            provisionalNumber = existing?.provisionalNumber ?: uniquePurchaseProvisionalNumber(),
+            status = status.name,
+            purchaseDateEpochDay = input.purchaseDateEpochDay,
+            supplierPlace = input.supplierPlace.trim(),
+            reference = input.reference.trim(),
+            notes = input.notes.trim(),
+            currency = user.mainCurrency ?: "COP",
+            totalAmount = QuoteCalc.format(total),
+            archived = existing?.archived ?: false,
+            officialNumber = existing?.officialNumber,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            pendingSync = true,
+            serverVersion = existing?.serverVersion ?: 0,
+        )
+        val itemsWithId = items.map { it.copy(purchaseId = purchase.id) }
+        db.withTransaction {
+            db.purchaseDao().upsert(purchase)
+            db.purchaseItemDao().deleteForPurchase(purchase.id)
+            db.purchaseItemDao().upsertAll(itemsWithId)
+            sync?.enqueue(EntityTypes.PURCHASE, purchase.id,
+                SyncPayloads.purchase(purchase, itemsWithId), existing?.serverVersion ?: 0)
+        }
+        if (existing == null && confirm) {
+            // "Guardar y confirmar" en el alta: el documento nace en
+            // BORRADOR y la confirmación se encola como segunda operación
+            // de la misma entidad; el push la envía tras aplicar el alta
+            // con la base rebasada. La intención nunca se descarta.
+            confirmPurchase(purchase.id)?.let { return it }
+        }
+        return null
+    }
+
+    /** Confirma una compra en BORRADOR (requiere al menos una línea). */
+    suspend fun confirmPurchase(id: String): String? {
+        val purchase = db.purchaseDao().get(id) ?: return "Compra no encontrada."
+        val items = db.purchaseItemDao().forPurchase(id)
+        if (!PurchaseTransitions.canTransition(
+                PurchaseStatus.valueOf(purchase.status), PurchaseStatus.CONFIRMADA)
+            || !PurchaseTransitions.canConfirm(PurchaseStatus.valueOf(purchase.status), items.size)
+        ) {
+            return "Solo una compra en borrador con al menos una línea puede confirmarse."
+        }
+        val updated = purchase.copy(
+            status = PurchaseStatus.CONFIRMADA.name,
+            updatedAt = nowEpochMillis(), pendingSync = true,
+        )
+        db.withTransaction {
+            db.purchaseDao().upsert(updated)
+            sync?.enqueue(EntityTypes.PURCHASE, id,
+                SyncPayloads.purchase(updated, items), purchase.serverVersion)
+        }
+        return null
+    }
+
+    /**
+     * Anula la Compra: terminal e irreversible. Sobre una CONFIRMADA el
+     * servidor registra los movimientos inversos en la misma transacción;
+     * sobre BORRADOR no hay efectos de stock que revertir.
+     */
+    suspend fun annulPurchase(id: String): String? {
+        val purchase = db.purchaseDao().get(id) ?: return "Compra no encontrada."
+        // Terminalidad explícita: canTransition admite mismo-estado para
+        // ediciones, pero la anulación no se puede repetir.
+        if (purchase.status == PurchaseStatus.ANULADA.name) {
+            return "La compra ya está anulada (terminal)."
+        }
+        val items = db.purchaseItemDao().forPurchase(id)
+        val updated = purchase.copy(
+            status = PurchaseStatus.ANULADA.name,
+            updatedAt = nowEpochMillis(), pendingSync = true,
+        )
+        db.withTransaction {
+            db.purchaseDao().upsert(updated)
+            sync?.enqueue(EntityTypes.PURCHASE, id,
+                SyncPayloads.purchase(updated, items), purchase.serverVersion)
+        }
+        return null
+    }
+
+    /** Archivado separado de la anulación: jamás revierte movimientos. */
+    suspend fun setPurchaseArchived(id: String, archived: Boolean) {
+        val existing = db.purchaseDao().get(id) ?: return
+        val items = db.purchaseItemDao().forPurchase(id)
+        val updated = existing.copy(archived = archived, updatedAt = nowEpochMillis(), pendingSync = true)
+        db.withTransaction {
+            db.purchaseDao().upsert(updated)
+            sync?.enqueue(EntityTypes.PURCHASE, id,
+                SyncPayloads.purchase(updated, items), existing.serverVersion)
+        }
+    }
+
+    /**
+     * Movimiento manual explicable (append-only): ajuste de entrada/salida
+     * o entrada por SOBRANTE con referencia opcional a un Trabajo. Requiere
+     * nota; el stock negativo resultante está permitido. Devuelve null o
+     * el motivo del rechazo.
+     */
+    suspend fun saveInventoryMovement(input: InventoryMovementInput): String? {
+        val material = db.materialDao().get(input.materialId) ?: return "Material no encontrado."
+        if (material.archived) return "El material está archivado."
+        if (!isPositiveQuantity(input.quantity)) return "El movimiento requiere una cantidad positiva."
+        if (input.note.isBlank()) return "El movimiento manual requiere una nota explicativa."
+        val (type, origin) = input.movementType to input.origin
+        val validCombo = when (origin) {
+            MovementOrigin.SOBRANTE -> type == MovementType.ADJUSTMENT_IN
+            MovementOrigin.AJUSTE -> type == MovementType.ADJUSTMENT_IN || type == MovementType.ADJUSTMENT_OUT
+            else -> false
+        }
+        if (!validCombo) return "Combinación tipo/origen no permitida para un movimiento manual."
+        if (input.jobId != null && origin != MovementOrigin.SOBRANTE) {
+            return "Solo el sobrante puede referenciar un Trabajo."
+        }
+        if (input.jobId != null && db.jobDao().get(input.jobId) == null) {
+            return "El trabajo referenciado no existe."
+        }
+        val user = db.userDao().get() ?: return "Sin usuario local."
+        val now = nowEpochMillis()
+        val mov = InventoryMovementEntity(
+            id = Ids.new(), userId = user.id,
+            materialId = input.materialId, condition = input.condition.name,
+            movementType = type.name, origin = origin.name,
+            quantity = normDecimal(input.quantity),
+            unit = input.unit.ifBlank { material.unit },
+            unitCost = input.unitCost?.ifBlank { null }?.let { QuoteCalc.format(it.toMoney()) },
+            jobId = input.jobId, note = input.note.trim(),
+            occurredAt = now, createdAt = now, updatedAt = now,
+        )
+        db.withTransaction {
+            db.inventoryMovementDao().upsert(mov)
+            sync?.enqueue(EntityTypes.INVENTORY_MOVEMENT, mov.id,
+                SyncPayloads.inventoryMovement(mov), 0)
+        }
+        return null
+    }
 }
 
 // ---------- Entradas de dominio para F2 ----------
@@ -2170,6 +2554,10 @@ data class JobMaterialInput(
     val quantity: String = "",
     val unit: String = "",
     val notes: String = "",
+    // F8: vínculo opcional al catálogo de Materiales — solo al crear el
+    // registro (nunca al editar un histórico descriptivo).
+    val materialId: String? = null,
+    val condition: com.cotixgo.app.core.MaterialCondition? = null,
 )
 
 // ---------- Entradas de dominio para F5 ----------
@@ -2243,4 +2631,73 @@ data class ConsolidatedInput(
     val clientId: String,
     val accountIds: List<String>,
     val currency: String,
+)
+
+// ---------- Entradas de dominio para F8 ----------
+
+/** Material del catálogo global: nombre y unidad requeridos. */
+data class MaterialInput(
+    val name: String,
+    val unit: String,
+    val description: String = "",
+)
+
+/** Línea de Compra: Material, cantidad, unidad, precio unitario y condición de stock. */
+data class PurchaseLineInput(
+    val materialId: String,
+    val quantity: String,
+    val unit: String,
+    val unitPrice: String,
+    val condition: com.cotixgo.app.core.MaterialCondition =
+        com.cotixgo.app.core.MaterialCondition.NUEVO,
+)
+
+/**
+ * Entrada de Compra (docs/03 §6): fecha requerida; proveedor/lugar y
+ * referencia opcionales; al menos una línea para confirmar. El total y la
+ * moneda los deriva el servidor.
+ */
+data class PurchaseInput(
+    val purchaseDateEpochDay: Long,
+    val items: List<PurchaseLineInput>,
+    val supplierPlace: String = "",
+    val reference: String = "",
+    val notes: String = "",
+)
+
+/** Mínimos de la Compra validados localmente (el servidor los revalida). */
+fun validatePurchase(input: PurchaseInput, confirm: Boolean): String? = when {
+    input.purchaseDateEpochDay <= 0 -> "La fecha de la compra es obligatoria."
+    confirm && input.items.isEmpty() -> "Confirmar la compra requiere al menos una línea."
+    input.items.any { it.materialId.isBlank() } -> "Cada línea de la compra requiere un material."
+    input.items.any { !isPositiveQuantity(it.quantity) } ->
+        "Cada línea de la compra requiere una cantidad positiva."
+    input.items.any { it.unit.isBlank() } -> "Cada línea de la compra requiere una unidad."
+    input.items.any { it.unitPrice.isBlank()
+        || runCatching { it.unitPrice.toMoney() }.getOrNull()?.signum()?.let { s -> s < 0 } != false } ->
+        "Cada línea requiere un precio unitario válido (≥ 0)."
+    else -> null
+}
+
+/**
+ * Movimiento manual de inventario (append-only): AJUSTE con entrada o
+ * salida, o SOBRANTE como entrada con referencia opcional a un Trabajo.
+ */
+data class InventoryMovementInput(
+    val materialId: String,
+    val condition: com.cotixgo.app.core.MaterialCondition,
+    val movementType: com.cotixgo.app.core.MovementType,
+    val origin: com.cotixgo.app.core.MovementOrigin,
+    val quantity: String,
+    val unit: String = "",
+    val unitCost: String? = null,
+    val jobId: String? = null,
+    val note: String = "",
+)
+
+/** Saldo mostrado por Material: espejo del servidor + efectos locales pendientes. */
+data class MaterialStockView(
+    val material: MaterialEntity,
+    val stockNew: java.math.BigDecimal,
+    val stockUsed: java.math.BigDecimal,
 )

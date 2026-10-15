@@ -519,5 +519,220 @@ foreach ($byId as $key => $ch) {
 check('race7_single_active_membership', $consWithM === ["consolidated_collection:$cons7"],
     json_encode($consWithM));
 
+// =====================  Escenario 8 (F8): serialización sobre Material  =====================
+// Una Compra CONFIRMADA deriva movimientos y saldo proyectado en la misma
+// transacción, bloqueando la fila del Material (orden canónico). El
+// orquestador retiene ese lock como "ganadora"; el trabajador empuja la
+// confirmación y debe quedar bloqueado en el FOR UPDATE del movimiento
+// derivado — tras el commit todo aplica junto: transición + movimiento
+// PURCHASE_IN + saldo, nunca a medias.
+$matR = $uid('mat-r');
+$purR = $uid('pur-r');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $uid('op-mat-r'), 'entity_type' => 'material', 'entity_id' => $matR,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $matR, 'userId' => $userId, 'name' => 'Material Race',
+            'unit' => 'kg', 'description' => '', 'archived' => false,
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $uid('op-pur-r'), 'entity_type' => 'purchase', 'entity_id' => $purR,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $purR, 'userId' => $userId, 'provisionalNumber' => 'COM-PEND-RA8',
+            'status' => 'BORRADOR', 'purchaseDateEpochDay' => 21005,
+            'supplierPlace' => '', 'reference' => '', 'notes' => '', 'currency' => 'COP',
+            'totalAmount' => '0.00', 'archived' => false,
+            'items' => [['id' => $purR . '-i', 'position' => 1, 'materialId' => $matR,
+                'quantity' => '7', 'unit' => 'kg', 'unitPrice' => '10.00',
+                'lineTotal' => '70.00', 'condition' => 'NUEVO', 'createdAt' => $now]],
+            'createdAt' => $now, 'updatedAt' => $now]],
+    ]], $token);
+check('race8_seed_applied', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'],
+    json_encode($r));
+
+$pdo->beginTransaction();
+$pdo->prepare('SELECT id FROM entities WHERE entity_type = ? AND id = ? FOR UPDATE')
+    ->execute(['material', $matR]);
+$w = spawnWorker($base, $token, $device,
+    [['operation_id' => $uid('op-pur-r-confirm'), 'entity_type' => 'purchase', 'entity_id' => $purR,
+      'type' => 'upsert', 'base_server_version' => 1,
+      'payload' => ['id' => $purR, 'userId' => $userId, 'provisionalNumber' => 'COM-PEND-RA8',
+        'status' => 'CONFIRMADA', 'purchaseDateEpochDay' => 21005,
+        'supplierPlace' => '', 'reference' => '', 'notes' => '', 'currency' => 'COP',
+        'totalAmount' => '70.00', 'archived' => false,
+        'items' => [['id' => $purR . '-i', 'position' => 1, 'materialId' => $matR,
+            'quantity' => '7', 'unit' => 'kg', 'unitPrice' => '10.00',
+            'lineTotal' => '70.00', 'condition' => 'NUEVO', 'createdAt' => $now]],
+        'createdAt' => $now, 'updatedAt' => $now]]]);
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race8_confirm_blocked_on_material', $blockedThreads !== [],
+    'la confirmación no apareció esperando el lock del material');
+$pdo->commit();
+[$res, $err] = finishWorker($w);
+check('race8_confirm_APPLIED_atomic',
+    ($res['results'][0]['status'] ?? '') === 'APPLIED', json_encode($res) . $err);
+$byId = pullById($base, $token);
+$movR = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['purchaseId'] ?? null) === $purR));
+check('race8_movement_and_stock_together',
+    ($byId["purchase:$purR"]['payload']['status'] ?? '') === 'CONFIRMADA'
+    && count($movR) === 1
+    && ($movR[0]['payload']['movementType'] ?? '') === 'PURCHASE_IN'
+    && ($movR[0]['payload']['quantity'] ?? '') === '7'
+    && ($byId["inventory_stock:$matR"]['payload']['stockNew'] ?? '') === '7',
+    json_encode([$byId["purchase:$purR"]['payload']['status'] ?? null,
+        count($movR), $byId["inventory_stock:$matR"]['payload'] ?? null]));
+
+// ========  Escenario 9 (F8): confirmaciones concurrentes, orden canónico  ========
+// Dos Compras distintas comparten dos Materiales con las líneas en orden
+// OPUESTO. Los movimientos derivados adquieren los locks de Material en
+// orden canónico de id, así que ambas confirmaciones terminan sin
+// interbloqueo aunque se solapen — el segundo hilo solo espera al primero.
+$matP = $uid('mat-p');
+$matQ = $uid('mat-q');
+$purA = $uid('pur-a');
+$purB = $uid('pur-b');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $uid('op-mat-p'), 'entity_type' => 'material', 'entity_id' => $matP,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $matP, 'userId' => $userId, 'name' => 'Material P',
+            'unit' => 'kg', 'description' => '', 'archived' => false,
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $uid('op-mat-q'), 'entity_type' => 'material', 'entity_id' => $matQ,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $matQ, 'userId' => $userId, 'name' => 'Material Q',
+            'unit' => 'und', 'description' => '', 'archived' => false,
+            'createdAt' => $now, 'updatedAt' => $now]],
+    ]], $token);
+check('race9_materials_APPLIED', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'],
+    json_encode($r));
+$mkPur = fn(string $id, array $items) => ['id' => $id, 'userId' => $userId,
+    'provisionalNumber' => 'COM-PEND-' . strtoupper(substr($id, -3)),
+    'status' => 'BORRADOR', 'purchaseDateEpochDay' => 21005,
+    'supplierPlace' => '', 'reference' => '', 'notes' => '', 'currency' => 'COP',
+    'totalAmount' => '0.00', 'archived' => false, 'items' => $items,
+    'createdAt' => $now, 'updatedAt' => $now];
+$mkLine = fn(string $id, string $mat, string $qty, int $pos) => ['id' => $id,
+    'position' => $pos, 'materialId' => $mat, 'quantity' => $qty, 'unit' => 'kg',
+    'unitPrice' => '10.00', 'lineTotal' => '0.00', 'condition' => 'NUEVO', 'createdAt' => $now];
+// Órdenes opuestos: A declara [matP, matQ], B declara [matQ, matP].
+$itemsA = [$mkLine($purA . '-i1', $matP, '3', 1), $mkLine($purA . '-i2', $matQ, '2', 2)];
+$itemsB = [$mkLine($purB . '-i1', $matQ, '6', 1), $mkLine($purB . '-i2', $matP, '1', 2)];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $uid('op-pur-a'), 'entity_type' => 'purchase', 'entity_id' => $purA,
+         'type' => 'upsert', 'base_server_version' => 0, 'payload' => $mkPur($purA, $itemsA)],
+        ['operation_id' => $uid('op-pur-b'), 'entity_type' => 'purchase', 'entity_id' => $purB,
+         'type' => 'upsert', 'base_server_version' => 0, 'payload' => $mkPur($purB, $itemsB)],
+    ]], $token);
+check('race9_drafts_APPLIED', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'],
+    json_encode($r));
+
+// Dos trabajadores confirman a la vez: sin orden canónico, A tomaría matP y
+// B tomaría matQ — cruce mortal. Con orden canónico ambos piden matP|matQ
+// en el mismo orden y solo se serializan.
+$wA = spawnWorker($base, $token, $device,
+    [['operation_id' => $uid('op-pur-a-confirm'), 'entity_type' => 'purchase',
+      'entity_id' => $purA, 'type' => 'upsert', 'base_server_version' => 1,
+      'payload' => array_merge($mkPur($purA, $itemsA), ['status' => 'CONFIRMADA'])]]);
+$wB = spawnWorker($base, $token, $device,
+    [['operation_id' => $uid('op-pur-b-confirm'), 'entity_type' => 'purchase',
+      'entity_id' => $purB, 'type' => 'upsert', 'base_server_version' => 1,
+      'payload' => array_merge($mkPur($purB, $itemsB), ['status' => 'CONFIRMADA'])]]);
+[$resA, $errA] = finishWorker($wA);
+[$resB, $errB] = finishWorker($wB);
+check('race9_both_confirms_APPLIED_no_deadlock',
+    ($resA['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($resB['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode([$resA['results'] ?? null, $resB['results'] ?? null, $errA, $errB]));
+$byId = pullById($base, $token);
+$movs9 = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && in_array($ch['payload']['purchaseId'] ?? null, [$purA, $purB], true)));
+check('race9_stock_y_movimientos_correctos',
+    ($byId["inventory_stock:$matP"]['payload']['stockNew'] ?? '') === '4'
+    && ($byId["inventory_stock:$matQ"]['payload']['stockNew'] ?? '') === '8'
+    && ($byId["purchase:$purA"]['payload']['status'] ?? '') === 'CONFIRMADA'
+    && ($byId["purchase:$purB"]['payload']['status'] ?? '') === 'CONFIRMADA'
+    && count($movs9) === 4
+    && count(array_filter($movs9,
+        fn($m) => ($m['payload']['movementType'] ?? '') === 'PURCHASE_IN')) === 4,
+    json_encode([$byId["inventory_stock:$matP"]['payload'] ?? null,
+        $byId["inventory_stock:$matQ"]['payload'] ?? null, count($movs9)]));
+// El orden declarado de las líneas se conserva en el documento.
+check('race9_orden_lineas_conservado',
+    ($byId["purchase:$purB"]['payload']['items'][0]['materialId'] ?? '') === $matQ
+    && ($byId["purchase:$purB"]['payload']['items'][1]['materialId'] ?? '') === $matP,
+    json_encode(array_column($byId["purchase:$purB"]['payload']['items'] ?? [], 'materialId')));
+
+// =====  Escenario 10 (F8): consumo duplicado concurrente sobre el mismo jm  =====
+// Dos operaciones JOB_CONSUMPTION fabricadas con entity_id/operation_id
+// distintos contra el mismo job_material: el lock del registro de consumo
+// las serializa y la lectura de bloqueo descubre al ganador — solo una
+// aplica y el stock descuenta una sola vez.
+$matC = $uid('mat-c');
+$jobR = $uid('job-r');
+$jmR = $uid('jm-r');
+$movR1 = $uid('mov-r1');
+$movR2 = $uid('mov-r2');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $uid('op-mat-c'), 'entity_type' => 'material', 'entity_id' => $matC,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $matC, 'userId' => $userId, 'name' => 'Material C',
+            'unit' => 'kg', 'description' => '', 'archived' => false,
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $uid('op-job-r'), 'entity_type' => 'job', 'entity_id' => $jobR,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $jobR, 'userId' => $userId, 'clientId' => $clienteId,
+            'profileId' => $perfilId, 'provisionalNumber' => 'TR-PEND-RR1',
+            'status' => 'EN_PROCESO', 'startDateEpochDay' => 21000,
+            'estimatedDateEpochDay' => 21007, 'executionAddress' => 'Obra R',
+            'notes' => '', 'clientNameSnapshot' => 'Cliente Race',
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $uid('op-jm-r'), 'entity_type' => 'job_material', 'entity_id' => $jmR,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $jmR, 'jobId' => $jobR, 'description' => 'Consumo race',
+            'origin' => 'PROFESIONAL', 'quantity' => '2', 'unit' => 'kg', 'notes' => '',
+            'materialId' => $matC, 'condition' => 'NUEVO',
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $uid('op-mov-stock'), 'entity_type' => 'inventory_movement',
+         'entity_id' => $uid('mov-stock'), 'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $uid('mov-stock'), 'userId' => $userId, 'materialId' => $matC,
+            'condition' => 'NUEVO', 'movementType' => 'ADJUSTMENT_IN', 'origin' => 'AJUSTE',
+            'quantity' => '10', 'unit' => 'kg', 'note' => 'stock inicial',
+            'occurredAt' => $now, 'createdAt' => $now, 'updatedAt' => $now]],
+    ]], $token);
+check('race10_seed_APPLIED', array_column($r['results'] ?? [], 'status') ===
+    ['APPLIED', 'APPLIED', 'APPLIED', 'APPLIED'], json_encode($r));
+
+$movPayload = fn(string $id) => ['id' => $id, 'userId' => $userId, 'materialId' => $matC,
+    'condition' => 'NUEVO', 'movementType' => 'JOB_CONSUMPTION', 'origin' => 'TRABAJO',
+    'quantity' => '2', 'unit' => 'kg', 'jobId' => $jobR, 'jobMaterialId' => $jmR,
+    'note' => '', 'occurredAt' => $now, 'createdAt' => $now, 'updatedAt' => $now];
+$w1 = spawnWorker($base, $token, $device,
+    [['operation_id' => $uid('op-mov-r1'), 'entity_type' => 'inventory_movement',
+      'entity_id' => $movR1, 'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => $movPayload($movR1)]]);
+$w2 = spawnWorker($base, $token, $device,
+    [['operation_id' => $uid('op-mov-r2'), 'entity_type' => 'inventory_movement',
+      'entity_id' => $movR2, 'type' => 'upsert', 'base_server_version' => 0,
+      'payload' => $movPayload($movR2)]]);
+[$res1, $err1] = finishWorker($w1);
+[$res2, $err2] = finishWorker($w2);
+$st = [($res1['results'][0]['status'] ?? ''), ($res2['results'][0]['status'] ?? '')];
+sort($st);
+check('race10_exactamente_uno_APPLIED', $st === ['APPLIED', 'REJECTED'],
+    json_encode([$st, $err1, $err2]));
+$byId = pullById($base, $token);
+$movsJm = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['jobMaterialId'] ?? null) === $jmR));
+check('race10_un_solo_movimiento_y_stock_una_vez',
+    count($movsJm) === 1
+    && ($byId["inventory_stock:$matC"]['payload']['stockNew'] ?? '') === '8',
+    json_encode([count($movsJm), $byId["inventory_stock:$matC"]['payload'] ?? null]));
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

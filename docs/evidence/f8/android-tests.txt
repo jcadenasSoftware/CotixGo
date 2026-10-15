@@ -1,0 +1,91 @@
+Evidencia de verificación Android — F8 Inventario y Compras (14/10/2026)
+Entorno: Windows, JDK 21 (C:\Program Files\Java\jdk-21), Gradle 8.11.1,
+emulador Pixel_8 (API 36) con la app apuntando al API local
+http://10.0.2.2:8080 (php -S sobre MariaDB local). Solo datos sintéticos.
+
+== Pruebas JVM locales (testDebugUnitTest) ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+
+Suites ejecutadas: 4 clases, 41 casos, 0 fallos:
+- DomainTest: 28 casos (incluye los 7 nuevos de F8: transiciones
+  PurchaseTransitions BORRADOR→CONFIRMADA/ANULADA, CONFIRMADA→ANULADA,
+  CONFIRMADA→BORRADOR inválida, ANULADA terminal, mismo-estado,
+  isEditable y canConfirm ≥1 línea; validateMaterial; dirección
+  inbound/outbound de movimientos; isPositiveQuantity; normDecimal).
+- CalcTest: 4 casos. QuoteCalcTest: 4 casos. JobActivityTest: 5 casos.
+
+== Pruebas instrumentadas (am instrument, emulador-5554) ==
+
+Primera corrida del paquete com.cotixgo.app.test (88 casos):
+
+  adb -s emulator-5554 shell am instrument -w -r
+    com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+
+  Resultado: 88 casos ejecutados — 87 PASS + 1 FAIL.
+
+  El único fallo fue InventoryRepositoryTest.compra_ciclo_completo_yEncolado:
+  la aserción "segunda anulación rechazada" expuso que annulPurchase
+  confiaba en PurchaseTransitions.canTransition, que tolera el
+  mismo-estado para ediciones y dejaba pasar ANULADA→ANULADA.
+  Corrección aplicada: annulPurchase bloquea explícitamente el estado
+  ANULADA (la tolerancia mismo-estado es solo para ediciones). El
+  servidor ya era correcto (ANULADA solo admite cambiar `archived`).
+
+Re-corrida de la clase corregida sobre APKs recompilados e instalados:
+
+  adb -s emulator-5554 shell am instrument -w -r
+    -e class com.cotixgo.app.InventoryRepositoryTest
+    com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+
+  Resultado: OK (6 tests).
+
+Revisión posterior del PR: se corrigieron los hallazgos (orden canónico
+de locks en confirmación, unicidad 1:1 de consumo, coherencia documental
+de la anulación, normalización de unidad en dedupe, "Guardar y confirmar"
+encadenado alta→confirmación) y se añadió el caso
+InventoryRepositoryTest.compra_guardarYConfirmar_encadena_alta_y_confirmacion.
+
+Corrida completa final del paquete sobre el HEAD corregido — UNA SOLA
+corrida ininterrumpida:
+
+  adb -s emulator-5554 shell am instrument -w -r
+    com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+
+  Resultado: OK (89 tests) — Time: 276.222s — verde completa en una
+  sola ejecución, incluidos InventoryRepositoryTest (7 casos),
+  MigrationTest (incluye migrate8To9 real) y SyncE2eTest completo
+  contra el API local.
+
+Cobertura F8 instrumentada dentro de la corrida de 89:
+- MigrationTest.migrate8To9_preservesRowsAndCreatesF8Tables: PASS —
+  migración real v8→v9 con MigrationTestHelper sobre base v8 sembrada
+  (filas F1–F7 conservadas, job_material histórico sin vínculo, tablas
+  materials/material_stocks/purchases/purchase_items/inventory_movements
+  creadas, índices y unicidad de COM-PEND verificados).
+- InventoryRepositoryTest: 7 casos F8 (catálogo global, ciclo completo
+  de Compra con encolado y sin movimientos de compra empujados por el
+  cliente, "Guardar y confirmar" que encadena alta+confirmación sin
+  descartar la intención, consumo vinculado append-only
+  job_material+inventory_movement, movimientos manuales con nota/combos,
+  saldo observado espejo+pendientes con negativo permitido).
+- SyncE2eTest: suite de sincronización completa contra el API local
+  (push/pull, conflictos, numeración oficial, reinstalación limpia).
+
+== Builds ==
+
+./gradlew :app:assembleDebug — BUILD SUCCESSFUL
+./gradlew :app:assembleRelease — BUILD SUCCESSFUL (lintVitalRelease OK)
+KSP exporta el esquema Room v9: app/schemas/com.cotixgo.app.data.AppDatabase/9.json
+
+== Notas ==
+
+- Todas las corridas de Gradle usaron JAVA_HOME=JDK 21; con JDK 25 por
+  defecto del PATH el daemon de Kotlin falla al parsear la versión
+  (problema conocido documentado en android/README.md).
+- La corrida instrumentada se ejecutó por `am instrument` directo contra
+  el emulador (un dispositivo físico también conectado no es válido para
+  SyncE2eTest, que usa 10.0.2.2 — loopback exclusivo de emulador).
+- La verificación de Gradle Sync dentro de Android Studio con JDK 21
+  sigue pendiente de verificación manual del titular: las verificaciones
+  fueron por CLI.

@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.cotixgo.app.core.JobActivityStatus
 import com.cotixgo.app.core.JobStatus
 import com.cotixgo.app.core.JobTransitions
+import com.cotixgo.app.core.MaterialCondition
 import com.cotixgo.app.core.MaterialOrigin
 import com.cotixgo.app.data.JobActivityEntity
 import com.cotixgo.app.data.JobEntity
@@ -314,6 +315,8 @@ fun JobDetailScreen(
     onAddActivity: (JobActivityInput) -> Unit,
     onActivityStatus: (String, JobActivityStatus) -> Unit,
     onAddMaterial: (JobMaterialInput) -> Unit,
+    // F8: materiales inventariables disponibles para consumo explícito.
+    inventoryMaterials: List<com.cotixgo.app.data.MaterialEntity> = emptyList(),
     onLinkQuote: (String) -> Unit,
     linkableQuotes: List<QuoteEntity>,
     onNewReport: () -> Unit,
@@ -362,6 +365,13 @@ fun JobDetailScreen(
         var unit by remember { mutableStateOf("") }
         var matNotes by remember { mutableStateOf("") }
         var origin by remember { mutableStateOf(MaterialOrigin.PROFESIONAL) }
+        // F8: vínculo opcional al inventario — solo al crear; genera el
+        // movimiento de consumo (append-only) y sus campos quedan fijos.
+        var linkInventory by remember { mutableStateOf(false) }
+        var linkedMaterialId by remember { mutableStateOf<String?>(null) }
+        var linkedCondition by remember { mutableStateOf(MaterialCondition.NUEVO) }
+        var linkMenu by remember { mutableStateOf(false) }
+        val linkedMaterial = inventoryMaterials.firstOrNull { it.id == linkedMaterialId }
         AlertDialog(
             onDismissRequest = { materialDialog = false },
             title = { Text("Nuevo material") },
@@ -378,7 +388,10 @@ fun JobDetailScreen(
                         listOf("Del cliente", "Propio").forEachIndexed { i, t ->
                             SegmentedButton(
                                 selected = origin == MaterialOrigin.entries[i],
-                                onClick = { origin = MaterialOrigin.entries[i] },
+                                onClick = {
+                                    origin = MaterialOrigin.entries[i]
+                                    if (origin != MaterialOrigin.PROFESIONAL) linkInventory = false
+                                },
                                 shape = SegmentedButtonDefaults.itemShape(index = i, count = 2),
                             ) { Text(t) }
                         }
@@ -391,6 +404,53 @@ fun JobDetailScreen(
                         value = unit, onValueChange = { unit = it },
                         label = { Text("Unidad") }, modifier = Modifier.fillMaxWidth(),
                     )
+                    if (origin == MaterialOrigin.PROFESIONAL && inventoryMaterials.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = linkInventory,
+                                onCheckedChange = {
+                                    linkInventory = it
+                                    if (!it) linkedMaterialId = null
+                                },
+                            )
+                            Text("Descontar del inventario")
+                        }
+                        if (linkInventory) {
+                            Box {
+                                OutlinedButton(
+                                    onClick = { linkMenu = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(linkedMaterial?.name ?: "Material del catálogo *")
+                                }
+                                DropdownMenu(
+                                    expanded = linkMenu,
+                                    onDismissRequest = { linkMenu = false },
+                                ) {
+                                    inventoryMaterials.forEach { m ->
+                                        DropdownMenuItem(
+                                            text = { Text("${m.name} (${m.unit})") },
+                                            onClick = {
+                                                linkedMaterialId = m.id
+                                                if (unit.isBlank()) unit = m.unit
+                                                if (desc.isBlank()) desc = m.name
+                                                linkMenu = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                listOf("Nuevo", "Usado").forEachIndexed { i, t ->
+                                    SegmentedButton(
+                                        selected = linkedCondition == MaterialCondition.entries[i],
+                                        onClick = { linkedCondition = MaterialCondition.entries[i] },
+                                        shape = SegmentedButtonDefaults.itemShape(index = i, count = 2),
+                                    ) { Text(t) }
+                                }
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = matNotes, onValueChange = { matNotes = it },
                         label = { Text("Observaciones") }, modifier = Modifier.fillMaxWidth(),
@@ -399,11 +459,14 @@ fun JobDetailScreen(
             },
             confirmButton = {
                 Button(onClick = {
-                    if (desc.isNotBlank()) {
+                    val linked = linkInventory && linkedMaterialId != null
+                    if (desc.isNotBlank() && (!linked || qty.isNotBlank())) {
                         onAddMaterial(
                             JobMaterialInput(
                                 jobId = job.id, description = desc, origin = origin,
                                 quantity = qty, unit = unit, notes = matNotes,
+                                materialId = if (linked) linkedMaterialId else null,
+                                condition = if (linked) linkedCondition else null,
                             ),
                         )
                         materialDialog = false
@@ -499,6 +562,9 @@ fun JobDetailScreen(
                                         buildString {
                                             append(if (m.origin == "CLIENTE") "Del cliente" else "Propio")
                                             if (m.quantity.isNotBlank()) append(" · ${m.quantity} ${m.unit}".trimEnd())
+                                            if (m.materialId != null) {
+                                                append(" · inventario ${if (m.condition == "USADO") "usado" else "nuevo"}")
+                                            }
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                     )

@@ -48,6 +48,12 @@ object EntityTypes {
     const val CONSOLIDATED_COLLECTION = "consolidated_collection"
     const val PAYMENT_ADJUSTMENT = "payment_adjustment"
     const val PAYMENT_REFUND = "payment_refund"
+    // F8
+    const val MATERIAL = "material"
+    const val PURCHASE = "purchase"
+    const val INVENTORY_MOVEMENT = "inventory_movement"
+    // Proyección derivada del servidor (solo lectura; el cliente nunca la encola).
+    const val INVENTORY_STOCK = "inventory_stock"
 }
 
 /**
@@ -174,7 +180,10 @@ object SyncPayloads {
     fun jobMaterial(e: JobMaterialEntity) = buildJsonObject {
         put("id", e.id); put("jobId", e.jobId); put("description", e.description)
         put("origin", e.origin); put("quantity", e.quantity); put("unit", e.unit)
-        put("notes", e.notes); put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+        put("notes", e.notes)
+        // F8: vínculo opcional al catálogo (solo registros nuevos).
+        put("materialId", e.materialId); put("condition", e.condition)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
     }
     fun report(e: ReportEntity) = buildJsonObject {
         put("id", e.id); put("userId", e.userId); put("clientId", e.clientId)
@@ -292,6 +301,55 @@ object SyncPayloads {
         put("id", e.id); put("userId", e.userId); put("paymentId", e.paymentId)
         put("amount", e.amount); put("refundedAtEpochDay", e.refundedAtEpochDay)
         put("collectionMethodId", e.collectionMethodId); put("reason", e.reason)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    /** F8 — Material del catálogo global del titular (documental). */
+    fun material(e: MaterialEntity) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("name", e.name)
+        put("unit", e.unit); put("description", e.description)
+        put("archived", e.archived)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    /**
+     * F8 — Compra documental completa: las líneas viajan dentro del
+     * payload (mismo patrón que la Cuenta de Cobro) y el servidor las
+     * revalida con datos persistidos; el total y la moneda son derivados
+     * allí — el total local es solo referencia.
+     */
+    fun purchase(
+        e: PurchaseEntity,
+        items: List<PurchaseItemEntity>,
+    ) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId)
+        put("provisionalNumber", e.provisionalNumber)
+        put("status", e.status); put("purchaseDateEpochDay", e.purchaseDateEpochDay)
+        put("supplierPlace", e.supplierPlace); put("reference", e.reference)
+        put("notes", e.notes); put("currency", e.currency)
+        put("totalAmount", e.totalAmount); put("archived", e.archived)
+        put("items", kotlinx.serialization.json.JsonArray(items.map { item ->
+            buildJsonObject {
+                put("id", item.id); put("position", item.position)
+                put("materialId", item.materialId)
+                put("quantity", item.quantity); put("unit", item.unit)
+                put("unitPrice", item.unitPrice); put("lineTotal", item.lineTotal)
+                put("condition", item.condition)
+                put("createdAt", item.createdAt)
+            }
+        }))
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    /**
+     * F8 — Movimiento append-only creado por el cliente (consumo en
+     * Trabajo, sobrante o ajuste manual). Los movimientos de origen COMPRA
+     * los deriva el servidor y llegan por pull.
+     */
+    fun inventoryMovement(e: InventoryMovementEntity) = buildJsonObject {
+        put("id", e.id); put("userId", e.userId); put("materialId", e.materialId)
+        put("condition", e.condition); put("movementType", e.movementType)
+        put("origin", e.origin); put("quantity", e.quantity); put("unit", e.unit)
+        put("unitCost", e.unitCost); put("purchaseId", e.purchaseId)
+        put("jobId", e.jobId); put("jobMaterialId", e.jobMaterialId)
+        put("note", e.note); put("occurredAt", e.occurredAt)
         put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
     }
 }
@@ -440,6 +498,23 @@ class SyncRepository(
             }
             EntityTypes.PAYMENT_ADJUSTMENT, EntityTypes.PAYMENT_REFUND ->
                 free(EntityTypes.PAYMENT, p.str("paymentId"))
+            // F8: un consumo vinculado espera a que su Material exista en el
+            // servidor (los descriptivos sin materialId no esperan nada).
+            EntityTypes.JOB_MATERIAL -> free(EntityTypes.MATERIAL, p.str("materialId"))
+            // La Compra espera a que todos los Materiales de sus líneas no
+            // tengan operaciones activas.
+            EntityTypes.PURCHASE -> {
+                val mats = p["items"]?.jsonArray?.mapNotNull {
+                    it.jsonObject["materialId"]?.jsonPrimitive?.content
+                } ?: emptyList()
+                mats.all { free(EntityTypes.MATERIAL, it) }
+            }
+            // El movimiento espera a sus referencias declaradas; los de
+            // origen COMPRA los deriva el servidor (nunca se encolan).
+            EntityTypes.INVENTORY_MOVEMENT ->
+                free(EntityTypes.MATERIAL, p.str("materialId")) &&
+                    free(EntityTypes.JOB, p.str("jobId")) &&
+                    free(EntityTypes.JOB_MATERIAL, p.str("jobMaterialId"))
             else -> true
         }
     }
@@ -530,6 +605,15 @@ class SyncRepository(
                 }
                 EntityTypes.PAYMENT_ADJUSTMENT -> db.paymentAdjustmentDao().markSynced(op.entityId, sv, now)
                 EntityTypes.PAYMENT_REFUND -> db.paymentRefundDao().markSynced(op.entityId, sv, now)
+                EntityTypes.MATERIAL -> db.materialDao().markSynced(op.entityId, sv, now)
+                EntityTypes.PURCHASE -> {
+                    db.purchaseDao().markSynced(op.entityId, sv, now)
+                    if (official != null) {
+                        db.purchaseDao().updateOfficial(op.entityId, official, now)
+                    }
+                }
+                EntityTypes.INVENTORY_MOVEMENT ->
+                    db.inventoryMovementDao().markSynced(op.entityId, sv, now)
             }
         }
     }
@@ -677,6 +761,9 @@ class SyncRepository(
         if (type == EntityTypes.CONSOLIDATED_COLLECTION) {
             db.consolidatedCollectionDao().updateOfficial(id, c.str("official_number"), nowEpochMillis())
         }
+        if (type == EntityTypes.PURCHASE) {
+            db.purchaseDao().updateOfficial(id, c.str("official_number"), nowEpochMillis())
+        }
     }
 
     /** Devuelve (tiene pendingSync local, serverVersion local) o null si no existe. */
@@ -700,6 +787,11 @@ class SyncRepository(
         EntityTypes.CONSOLIDATED_COLLECTION -> db.consolidatedCollectionDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.PAYMENT_ADJUSTMENT -> db.paymentAdjustmentDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.PAYMENT_REFUND -> db.paymentRefundDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.MATERIAL -> db.materialDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.PURCHASE -> db.purchaseDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.INVENTORY_MOVEMENT -> db.inventoryMovementDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        // Proyección derivada: nunca tiene escrituras locales pendientes.
+        EntityTypes.INVENTORY_STOCK -> db.materialStockDao().get(id)?.let { false to it.serverVersion }
         else -> null
     }
 
@@ -867,6 +959,7 @@ class SyncRepository(
                     origin = p.str("origin") ?: "PROFESIONAL",
                     quantity = p.str("quantity") ?: "", unit = p.str("unit") ?: "",
                     notes = p.str("notes") ?: "",
+                    materialId = p.str("materialId"), condition = p.str("condition"),
                     createdAt = p.longOr("createdAt") ?: now,
                     updatedAt = now,
                     pendingSync = false,
@@ -1091,6 +1184,87 @@ class SyncRepository(
                     serverVersion = sv,
                 ),
             )
+            EntityTypes.MATERIAL -> db.materialDao().upsert(
+                MaterialEntity(
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    name = p.str("name") ?: "", unit = p.str("unit") ?: "",
+                    description = p.str("description") ?: "",
+                    archived = p.boolOr("archived"),
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.PURCHASE -> {
+                // Documento completo: fila + líneas reconstruidas desde el
+                // payload autoritativo del servidor (mismo patrón que la
+                // Cuenta de Cobro).
+                val purchaseId = p.str("id") ?: id
+                db.purchaseDao().upsert(
+                    PurchaseEntity(
+                        id = purchaseId, userId = p.str("userId") ?: "",
+                        provisionalNumber = p.str("provisionalNumber") ?: "",
+                        status = p.str("status") ?: "BORRADOR",
+                        purchaseDateEpochDay = p.longOr("purchaseDateEpochDay") ?: 0,
+                        supplierPlace = p.str("supplierPlace") ?: "",
+                        reference = p.str("reference") ?: "",
+                        notes = p.str("notes") ?: "",
+                        currency = p.str("currency") ?: "COP",
+                        totalAmount = p.str("totalAmount") ?: "0.00",
+                        archived = p.boolOr("archived"),
+                        officialNumber = p.str("officialNumber"),
+                        createdAt = p.longOr("createdAt") ?: now,
+                        updatedAt = now,
+                        pendingSync = false,
+                        serverVersion = sv,
+                    ),
+                )
+                val items = p["items"]?.jsonArray?.mapIndexed { i, el ->
+                    val it = el.jsonObject
+                    PurchaseItemEntity(
+                        id = it.str("id") ?: Ids.new(), purchaseId = purchaseId,
+                        position = it.longOr("position")?.toInt() ?: (i + 1),
+                        materialId = it.str("materialId") ?: "",
+                        materialNameSnapshot = it.str("materialNameSnapshot") ?: "",
+                        quantity = it.str("quantity") ?: "",
+                        unit = it.str("unit") ?: "",
+                        unitPrice = it.str("unitPrice") ?: "",
+                        lineTotal = it.str("lineTotal") ?: "",
+                        condition = it.str("condition") ?: "NUEVO",
+                        createdAt = it.longOr("createdAt") ?: now,
+                    )
+                } ?: emptyList()
+                db.purchaseItemDao().deleteForPurchase(purchaseId)
+                db.purchaseItemDao().upsertAll(items)
+            }
+            EntityTypes.INVENTORY_MOVEMENT -> db.inventoryMovementDao().upsert(
+                InventoryMovementEntity(
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    materialId = p.str("materialId") ?: "",
+                    condition = p.str("condition") ?: "NUEVO",
+                    movementType = p.str("movementType") ?: "ADJUSTMENT_IN",
+                    origin = p.str("origin") ?: "AJUSTE",
+                    quantity = p.str("quantity") ?: "", unit = p.str("unit") ?: "",
+                    unitCost = p.str("unitCost"), purchaseId = p.str("purchaseId"),
+                    jobId = p.str("jobId"), jobMaterialId = p.str("jobMaterialId"),
+                    note = p.str("note") ?: "",
+                    occurredAt = p.longOr("occurredAt") ?: now,
+                    createdAt = p.longOr("createdAt") ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                ),
+            )
+            EntityTypes.INVENTORY_STOCK -> db.materialStockDao().upsert(
+                MaterialStockEntity(
+                    materialId = p.str("materialId") ?: id,
+                    stockNew = p.str("stockNew") ?: "0",
+                    stockUsed = p.str("stockUsed") ?: "0",
+                    updatedAt = now,
+                    serverVersion = sv,
+                ),
+            )
         }
     }
 
@@ -1124,6 +1298,10 @@ class SyncRepository(
                 db.openHelper.writableDatabase.execSQL("UPDATE consolidated_collections SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE payment_adjustments SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 db.openHelper.writableDatabase.execSQL("UPDATE payment_refunds SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                // F8: catálogo, compras y movimientos también reasignan titular.
+                db.openHelper.writableDatabase.execSQL("UPDATE materials SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE purchases SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
+                db.openHelper.writableDatabase.execSQL("UPDATE inventory_movements SET userId = ? WHERE userId = ?", arrayOf(userId, oldId))
                 // Regenerar operaciones pendientes con identidad canónica:
                 // reescribe userId en el payload y, para la entidad user,
                 // también entityId y payload.id hacia el id canónico.
@@ -1185,6 +1363,7 @@ class SyncRepository(
             "reports", "report_jobs",
             "collection_accounts", "collection_methods", "payments", "payment_assignments",
             "consolidated_collections", "payment_adjustments", "payment_refunds",
+            "materials", "purchases", "inventory_movements",
         )) {
             db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $t WHERE pendingSync = 1").use { c ->
                 if (c.moveToFirst()) n += c.getInt(0)
@@ -1207,6 +1386,8 @@ class SyncRepository(
     suspend fun wipeLocalData() {
         db.withTransaction {
             for (t in listOf(
+                "inventory_movements", "material_stocks", "purchase_items", "purchases",
+                "materials",
                 "payment_refunds", "payment_adjustments", "payment_assignments", "payments",
                 "consolidated_collection_accounts", "consolidated_collections",
                 "collection_account_jobs", "collection_account_quotes",
@@ -1278,6 +1459,8 @@ class SyncRepository(
                 EntityTypes.COLLECTION_ACCOUNT -> db.collectionAccountDao().updateOfficial(
                     conflict.entityId, remote.str("official_number"), nowEpochMillis())
                 EntityTypes.CONSOLIDATED_COLLECTION -> db.consolidatedCollectionDao().updateOfficial(
+                    conflict.entityId, remote.str("official_number"), nowEpochMillis())
+                EntityTypes.PURCHASE -> db.purchaseDao().updateOfficial(
                     conflict.entityId, remote.str("official_number"), nowEpochMillis())
             }
             db.syncDao().resolveConflict(conflictId)

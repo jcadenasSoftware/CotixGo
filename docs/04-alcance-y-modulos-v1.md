@@ -1,6 +1,6 @@
 # CotixGo — Alcance y módulos de V1
 
-**Versión:** 1.10  
+**Versión:** 1.11  
 **Estado:** Especificación de alcance basada en reglas aprobadas  
 **Producto:** Herramienta profesional de campo para trabajadores independientes y pequeños proveedores de servicios.
 
@@ -206,3 +206,4 @@ La operación se considera cerrada e histórica cuando el Trabajo fue entregado 
 | 1.8 | 13/10/2026 | §2.7 registra la elegibilidad de Cotización aprobada por el titular: solo Cotizaciones `APROBADA` son elegibles como origen de Cuenta de Cobro, validado con el estado persistido por el backend. | Aprobación de la decisión pendiente `03` §4.9 por el titular. | Aprobado. |
 | 1.9 | 13/10/2026 | §2.10 registra las reglas F7 aprobadas por el titular (sin funcionalidad nueva en F6): especificación del Consolidado (elegibilidad, composición, ciclo derivado, anti-doble-vínculo, numeración `CONS-`), `CORRECTION` con absorción LIFO y piso de reembolsados con alza `UNASSIGNED`, `ANNULMENT` terminal con piso y rechazo de operaciones posteriores, y Reembolsos limitados al remanente `efectivo − aplicado − reembolsado` compartido con asignaciones. La implementación de F7 sigue sin autorización. (Entrada renumerada desde 1.8 tras la revisión del PR documental #14.) | Registro de las decisiones de la ficha F7 por el titular. | Aprobado. |
 | 1.10 | 14/10/2026 | §2.5 registra las reglas de Inventario de la ficha F8 (catálogo de Materiales global y distinto del catálogo de servicios, mínimos de Material, `NUEVO`/`USADO` como dimensión de stock, movimientos append-only como fuente de verdad con saldo proyectado atómico, `SOBRANTE` manual, vínculo solo en consumos nuevos); §2.6 registra la especificación de Compra de la ficha F8 (numeración `COM-`, mínimos, moneda global, `ANULADA` terminal con archivado separado); §2.11 registra que Herramientas queda pospuesto fuera de F8 sin fase ni alcance. La implementación de F8 no está autorizada. | Aprobación de las decisiones de la ficha F8 por el titular. | Aprobado. |
+| 1.11 | 14/10/2026 | F8 implementada en local con datos sintéticos tras la autorización de etapa del titular (sin cambios en el alcance de §2.5/§2.6/§2.11; detalle técnico en `05` §5.6, evidencia en `evidence/f8/`). Herramientas sigue pospuesto sin fase ni alcance. | Registro del estado de implementación local de F8; pendiente revisión vía PR. | Aprobado. |

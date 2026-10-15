@@ -270,3 +270,63 @@ fun availableForRefundOrAssign(
 
 /** ¿El Pago admite asignaciones, correcciones o Reembolsos? (no anulado). */
 fun paymentIsLive(annulled: Boolean): Boolean = !annulled
+
+// ---------- Inventario y Compras (F8) ----------
+
+/**
+ * Estados aprobados de la Compra (docs/03 §6): nace BORRADOR sin
+ * movimientos; CONFIRMADA registra entradas por línea y admite edición
+ * por diferencia con trazabilidad; ANULADA es terminal e irreversible —
+ * solo `archived` puede cambiar después. El archivado es acción separada
+ * y nunca revierte movimientos.
+ */
+enum class PurchaseStatus { BORRADOR, CONFIRMADA, ANULADA }
+
+object PurchaseTransitions {
+    private val allowed: Map<PurchaseStatus, Set<PurchaseStatus>> = mapOf(
+        PurchaseStatus.BORRADOR to setOf(PurchaseStatus.CONFIRMADA, PurchaseStatus.ANULADA),
+        PurchaseStatus.CONFIRMADA to setOf(PurchaseStatus.ANULADA),
+        PurchaseStatus.ANULADA to emptySet(),
+    )
+
+    fun canTransition(from: PurchaseStatus, to: PurchaseStatus): Boolean =
+        from == to || (allowed[from] ?: emptySet()).contains(to)
+
+    /** Editable en BORRADOR (líneas libres) y CONFIRMADA (edición diferencial). */
+    fun isEditable(status: PurchaseStatus): Boolean = status != PurchaseStatus.ANULADA
+
+    /** Confirmar exige al menos una línea (mínimo aprobado). */
+    fun canConfirm(status: PurchaseStatus, lineCount: Int): Boolean =
+        status == PurchaseStatus.BORRADOR && lineCount >= 1
+}
+
+/** Condición como dimensión del stock del mismo Material (no dos materiales). */
+enum class MaterialCondition { NUEVO, USADO }
+
+/** Tipos de movimiento de inventario (append-only): entradas y salidas. */
+enum class MovementType { PURCHASE_IN, JOB_CONSUMPTION, ADJUSTMENT_IN, ADJUSTMENT_OUT }
+
+/** Origen explicable del movimiento: compra, consumo en Trabajo, sobrante o ajuste manual. */
+enum class MovementOrigin { COMPRA, TRABAJO, SOBRANTE, AJUSTE }
+
+/** Catálogo global de Materiales: nombre y unidad requeridos (descripción opcional). */
+fun validateMaterial(name: String, unit: String): String? = when {
+    name.isBlank() -> "El material requiere un nombre."
+    unit.isBlank() -> "El material requiere una unidad."
+    else -> null
+}
+
+/** Los tipos IN suman al saldo proyectado; los OUT restan. */
+fun movementIsInbound(type: MovementType): Boolean =
+    type == MovementType.PURCHASE_IN || type == MovementType.ADJUSTMENT_IN
+
+/** Cantidad decimal positiva para inventario (admite fracciones). */
+fun isPositiveQuantity(q: String): Boolean =
+    q.trim().matches(Regex("^\\d+(\\.\\d{1,6})?$")) &&
+        runCatching { java.math.BigDecimal(q.trim()) }.getOrNull()
+            ?.let { it.signum() > 0 } == true
+
+/** Normaliza un decimal: sin ceros finales ni "-0". */
+fun normDecimal(d: String): String =
+    runCatching { java.math.BigDecimal(d.trim()).stripTrailingZeros().toPlainString() }
+        .getOrDefault("0")

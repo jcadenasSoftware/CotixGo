@@ -252,7 +252,7 @@ data class JobActivityEntity(
  * ni `material_id`, sin efecto en inventario ni movimientos. Los registros
  * descriptivos no se reinterpretan retroactivamente en fases posteriores.
  */
-@Entity(tableName = "job_materials", indices = [Index("jobId")])
+@Entity(tableName = "job_materials", indices = [Index("jobId"), Index("materialId")])
 data class JobMaterialEntity(
     @PrimaryKey val id: String,
     val jobId: String,
@@ -261,6 +261,10 @@ data class JobMaterialEntity(
     val quantity: String = "",
     val unit: String = "",
     val notes: String = "",
+    // F8: vínculo opcional al catálogo de Materiales — solo filas NUEVAS;
+    // los registros históricos F4 quedan descriptivos (materialId = null).
+    val materialId: String? = null,
+    val condition: String? = null,
     val createdAt: Long,
     val updatedAt: Long,
     val pendingSync: Boolean = true,
@@ -1018,6 +1022,246 @@ interface PaymentRefundDao {
     suspend fun upsert(event: PaymentRefundEntity)
 }
 
+// ---------- Inventario y Compras (F8) ----------
+
+/**
+ * Material del catálogo global del Usuario/Titular (docs/03 §6): nombre y
+ * unidad requeridos, descripción opcional, archivado sin efectos de stock.
+ * `NUEVO`/`USADO` es una dimensión del stock del material — no son dos
+ * materiales separados. Entidad documental con concurrencia optimista.
+ */
+@Entity(tableName = "materials", indices = [Index("userId")])
+data class MaterialEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val name: String,
+    val unit: String,
+    val description: String = "",
+    val archived: Boolean = false,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Saldo proyectado por Material (F8): fila espejo de la entidad
+ * `inventory_stock` del servidor — la fuente de verdad son los movimientos
+ * append-only y el servidor recalcula este saldo atómicamente con cada
+ * movimiento. El cliente jamás la escribe ni la encola (solo la recibe
+ * por pull); el stock mostrado en pantalla suma además los movimientos
+ * locales pendientes.
+ */
+@Entity(tableName = "material_stocks")
+data class MaterialStockEntity(
+    @PrimaryKey val materialId: String,
+    val stockNew: String = "0",
+    val stockUsed: String = "0",
+    val updatedAt: Long,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Compra documental (docs/03 §6): numeración provisional `COM-PEND-XXXX`
+ * local → oficial `COM-AAAAMM-NNN` en el primer registro aceptado por el
+ * servidor sobre el mismo `entity_id`. Ciclo BORRADOR (sin movimientos) →
+ * CONFIRMADA (entradas por línea, editable por diferencia) → ANULADA
+ * terminal con movimientos inversos; `archived` es acción separada que no
+ * revierte nada. `currency` es la moneda global del titular (el servidor
+ * la fija) y `totalAmount` es derivado por el servidor.
+ */
+@Entity(
+    tableName = "purchases",
+    indices = [
+        Index("userId"),
+        Index(value = ["provisionalNumber"], unique = true),
+    ],
+)
+data class PurchaseEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val provisionalNumber: String,
+    val status: String,
+    val purchaseDateEpochDay: Long,
+    val supplierPlace: String = "",
+    val reference: String = "",
+    val notes: String = "",
+    val currency: String,
+    val totalAmount: String = "0.00",
+    val archived: Boolean = false,
+    val officialNumber: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Línea de Compra: identifica Material, cantidad, unidad, precio unitario
+ * y condición de stock. `materialNameSnapshot` fotografía el nombre al
+ * registrarla — el historial no cambia si el catálogo se edita después.
+ * Las filas viajan dentro del payload de la Compra (mismo patrón que las
+ * líneas de la Cuenta de Cobro) y se reconstruyen desde el pull.
+ */
+@Entity(tableName = "purchase_items", indices = [Index("purchaseId"), Index("materialId")])
+data class PurchaseItemEntity(
+    @PrimaryKey val id: String,
+    val purchaseId: String,
+    val position: Int,
+    val materialId: String,
+    val materialNameSnapshot: String = "",
+    val quantity: String,
+    val unit: String,
+    val unitPrice: String,
+    val lineTotal: String = "",
+    val condition: String = "NUEVO",
+    val createdAt: Long,
+)
+
+/**
+ * Movimiento de inventario (append-only, fuente de verdad del stock):
+ * nunca se edita ni se borra. `movementType` ∈ {PURCHASE_IN,
+ * JOB_CONSUMPTION, ADJUSTMENT_IN, ADJUSTMENT_OUT}; `origin` explica el
+ * evento ∈ {COMPRA, TRABAJO, SOBRANTE, AJUSTE}; la condición NUEVO/USADO
+ * dimensiona el saldo. El stock negativo está permitido (control interno,
+ * no restrictivo).
+ */
+@Entity(
+    tableName = "inventory_movements",
+    indices = [Index("materialId"), Index("purchaseId"), Index("jobId"), Index("userId")],
+)
+data class InventoryMovementEntity(
+    @PrimaryKey val id: String,
+    val userId: String,
+    val materialId: String,
+    val condition: String,
+    val movementType: String,
+    val origin: String,
+    val quantity: String,
+    val unit: String,
+    val unitCost: String? = null,
+    val purchaseId: String? = null,
+    val jobId: String? = null,
+    val jobMaterialId: String? = null,
+    val note: String = "",
+    val occurredAt: Long,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+@Dao
+interface MaterialDao {
+    @Query("SELECT * FROM materials WHERE userId = :userId ORDER BY name")
+    fun observeForUser(userId: String): Flow<List<MaterialEntity>>
+
+    @Query("SELECT * FROM materials WHERE userId = :userId AND archived = 0 ORDER BY name")
+    fun observeActiveForUser(userId: String): Flow<List<MaterialEntity>>
+
+    @Query("SELECT * FROM materials WHERE id = :id")
+    fun observeOne(id: String): Flow<MaterialEntity?>
+
+    @Query("SELECT * FROM materials WHERE id = :id")
+    suspend fun get(id: String): MaterialEntity?
+
+    @Query("UPDATE materials SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(material: MaterialEntity)
+}
+
+@Dao
+interface MaterialStockDao {
+    @Query("SELECT * FROM material_stocks WHERE materialId = :materialId")
+    fun observeOne(materialId: String): Flow<MaterialStockEntity?>
+
+    @Query("SELECT * FROM material_stocks WHERE materialId = :materialId")
+    suspend fun get(materialId: String): MaterialStockEntity?
+
+    @Query("SELECT * FROM material_stocks")
+    fun observeAll(): Flow<List<MaterialStockEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(stock: MaterialStockEntity)
+}
+
+@Dao
+interface PurchaseDao {
+    @Query("SELECT * FROM purchases WHERE userId = :userId ORDER BY createdAt DESC")
+    fun observeForUser(userId: String): Flow<List<PurchaseEntity>>
+
+    @Query("SELECT * FROM purchases WHERE id = :id")
+    fun observeOne(id: String): Flow<PurchaseEntity?>
+
+    @Query("SELECT * FROM purchases WHERE id = :id")
+    suspend fun get(id: String): PurchaseEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM purchases WHERE provisionalNumber = :number)")
+    suspend fun provisionalNumberExists(number: String): Boolean
+
+    @Query("SELECT * FROM purchases WHERE userId = :userId AND pendingSync = 1")
+    fun observePendingForUser(userId: String): Flow<List<PurchaseEntity>>
+
+    @Query("UPDATE purchases SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Query("UPDATE purchases SET officialNumber = :num, updatedAt = :now WHERE id = :id")
+    suspend fun updateOfficial(id: String, num: String?, now: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(purchase: PurchaseEntity)
+}
+
+@Dao
+interface PurchaseItemDao {
+    @Query("SELECT * FROM purchase_items WHERE purchaseId = :purchaseId ORDER BY position, createdAt")
+    fun observeForPurchase(purchaseId: String): Flow<List<PurchaseItemEntity>>
+
+    @Query("SELECT * FROM purchase_items WHERE purchaseId = :purchaseId ORDER BY position, createdAt")
+    suspend fun forPurchase(purchaseId: String): List<PurchaseItemEntity>
+
+    @Query("DELETE FROM purchase_items WHERE purchaseId = :purchaseId")
+    suspend fun deleteForPurchase(purchaseId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<PurchaseItemEntity>)
+}
+
+@Dao
+interface InventoryMovementDao {
+    @Query("SELECT * FROM inventory_movements WHERE materialId = :materialId ORDER BY occurredAt, createdAt, id")
+    fun observeForMaterial(materialId: String): Flow<List<InventoryMovementEntity>>
+
+    @Query("SELECT * FROM inventory_movements WHERE purchaseId = :purchaseId ORDER BY occurredAt, createdAt, id")
+    fun observeForPurchase(purchaseId: String): Flow<List<InventoryMovementEntity>>
+
+    @Query("SELECT * FROM inventory_movements WHERE jobId = :jobId ORDER BY occurredAt, createdAt, id")
+    fun observeForJob(jobId: String): Flow<List<InventoryMovementEntity>>
+
+    @Query("SELECT * FROM inventory_movements WHERE userId = :userId ORDER BY occurredAt DESC, createdAt DESC")
+    fun observeForUser(userId: String): Flow<List<InventoryMovementEntity>>
+
+    @Query("SELECT * FROM inventory_movements WHERE materialId = :materialId AND pendingSync = 1")
+    suspend fun pendingForMaterial(materialId: String): List<InventoryMovementEntity>
+
+    @Query("SELECT * FROM inventory_movements WHERE purchaseId = :purchaseId AND pendingSync = 1")
+    suspend fun pendingForPurchase(purchaseId: String): List<InventoryMovementEntity>
+
+    @Query("SELECT * FROM inventory_movements WHERE id = :id")
+    suspend fun get(id: String): InventoryMovementEntity?
+
+    @Query("UPDATE inventory_movements SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Query("DELETE FROM inventory_movements WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(movement: InventoryMovementEntity)
+}
+
 // ---------- Cola durable de sincronización (F3) ----------
 
 /**
@@ -1103,6 +1347,10 @@ interface SyncDao {
 
     @Query("SELECT * FROM sync_operations WHERE entityType = :type AND entityId = :id AND state IN ('PENDING','RETRY','PAUSED') ORDER BY seq ASC")
     suspend fun pendingOpsForEntity(type: String, id: String): List<SyncOperationEntity>
+
+    /** Último payload aplicado por el servidor (para proyectar deltas locales). */
+    @Query("SELECT payloadJson FROM sync_operations WHERE entityType = :type AND entityId = :id AND state = 'DONE' AND resultJson IS NOT NULL ORDER BY seq DESC LIMIT 1")
+    suspend fun lastAppliedPayload(type: String, id: String): String?
 
     @Query("SELECT COUNT(*) FROM sync_operations WHERE entityType = :type AND entityId = :id AND state IN ('PENDING','RETRY')")
     suspend fun activeOpsForEntity(type: String, id: String): Int
@@ -1232,10 +1480,13 @@ interface QuoteVersionDao {
         CollectionMethodEntity::class, PaymentEntity::class, PaymentAssignmentEntity::class,
         ConsolidatedCollectionEntity::class, ConsolidatedCollectionAccountEntity::class,
         PaymentAdjustmentEntity::class, PaymentRefundEntity::class,
+        MaterialEntity::class, MaterialStockEntity::class,
+        PurchaseEntity::class, PurchaseItemEntity::class,
+        InventoryMovementEntity::class,
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1264,6 +1515,11 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun consolidatedCollectionAccountDao(): ConsolidatedCollectionAccountDao
     abstract fun paymentAdjustmentDao(): PaymentAdjustmentDao
     abstract fun paymentRefundDao(): PaymentRefundDao
+    abstract fun materialDao(): MaterialDao
+    abstract fun materialStockDao(): MaterialStockDao
+    abstract fun purchaseDao(): PurchaseDao
+    abstract fun purchaseItemDao(): PurchaseItemDao
+    abstract fun inventoryMovementDao(): InventoryMovementDao
     abstract fun syncDao(): SyncDao
 
     companion object {
@@ -1695,6 +1951,76 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * F8 — Inventario y Compras (docs/03 §6): conserva íntegramente los
+         * datos F1–F7 (solo ALTER ADD/CREATE). Vínculo opcional JobMaterial→
+         * Material (historiales intactos), catálogo de Materiales, saldo
+         * proyectado, Compras con líneas y movimientos append-only.
+         */
+        internal val MIGRATION_8_9 = object : androidx.room.migration.Migration(8, 9) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `job_materials` ADD COLUMN `materialId` TEXT")
+                db.execSQL("ALTER TABLE `job_materials` ADD COLUMN `condition` TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_job_materials_materialId` ON `job_materials` (`materialId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `materials` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `name` TEXT NOT NULL, `unit` TEXT NOT NULL,
+                        `description` TEXT NOT NULL, `archived` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_materials_userId` ON `materials` (`userId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `material_stocks` (
+                        `materialId` TEXT NOT NULL PRIMARY KEY,
+                        `stockNew` TEXT NOT NULL, `stockUsed` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `purchases` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL,
+                        `purchaseDateEpochDay` INTEGER NOT NULL,
+                        `supplierPlace` TEXT NOT NULL, `reference` TEXT NOT NULL,
+                        `notes` TEXT NOT NULL, `currency` TEXT NOT NULL,
+                        `totalAmount` TEXT NOT NULL, `archived` INTEGER NOT NULL,
+                        `officialNumber` TEXT,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchases_userId` ON `purchases` (`userId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_purchases_provisionalNumber` ON `purchases` (`provisionalNumber`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `purchase_items` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `purchaseId` TEXT NOT NULL,
+                        `position` INTEGER NOT NULL, `materialId` TEXT NOT NULL,
+                        `materialNameSnapshot` TEXT NOT NULL,
+                        `quantity` TEXT NOT NULL, `unit` TEXT NOT NULL,
+                        `unitPrice` TEXT NOT NULL, `lineTotal` TEXT NOT NULL,
+                        `condition` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_items_purchaseId` ON `purchase_items` (`purchaseId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_items_materialId` ON `purchase_items` (`materialId`)")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `inventory_movements` (
+                        `id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL,
+                        `materialId` TEXT NOT NULL, `condition` TEXT NOT NULL,
+                        `movementType` TEXT NOT NULL, `origin` TEXT NOT NULL,
+                        `quantity` TEXT NOT NULL, `unit` TEXT NOT NULL,
+                        `unitCost` TEXT, `purchaseId` TEXT, `jobId` TEXT,
+                        `jobMaterialId` TEXT, `note` TEXT NOT NULL,
+                        `occurredAt` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_inventory_movements_materialId` ON `inventory_movements` (`materialId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_inventory_movements_purchaseId` ON `inventory_movements` (`purchaseId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_inventory_movements_jobId` ON `inventory_movements` (`jobId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_inventory_movements_userId` ON `inventory_movements` (`userId`)")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -1703,7 +2029,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "cotixgo.db",
                 ).addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
                 ).build().also { instance = it }
             }
     }

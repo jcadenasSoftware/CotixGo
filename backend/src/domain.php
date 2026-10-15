@@ -104,6 +104,84 @@ const PAYMENT_ADJUSTMENT_KINDS = ['CORRECTION', 'ANNULMENT'];
 const PAYMENT_TARGET_TYPES = ['account', 'consolidated'];
 
 /**
+ * F8 — Inventario y Compras (docs/03 §6): la Compra nace en BORRADOR sin
+ * movimientos; CONFIRMADA genera entradas por línea y admite edición
+ * diferencial con trazabilidad; ANULADA es terminal e irreversible con
+ * movimientos inversos. Archivar es acción separada y no revierte nada.
+ */
+const PURCHASE_STATUSES = ['BORRADOR', 'CONFIRMADA', 'ANULADA'];
+
+const PURCHASE_TRANSITIONS = [
+    'BORRADOR'   => ['CONFIRMADA', 'ANULADA'],
+    'CONFIRMADA' => ['ANULADA'],
+    'ANULADA'    => [],
+];
+
+/**
+ * Tipos de movimiento de inventario (append-only, fuente de verdad del
+ * stock): entradas por compra/sobrante/ajuste y salidas por consumo
+ * explícito registrado en un Trabajo o por ajuste.
+ */
+const MOVEMENT_TYPES = ['PURCHASE_IN', 'JOB_CONSUMPTION', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT'];
+
+/** Tipos que suman al saldo proyectado; los demás restan. */
+const MOVEMENT_IN_TYPES = ['PURCHASE_IN', 'ADJUSTMENT_IN'];
+
+/**
+ * Origen explicable del movimiento: compra registrada, consumo en Trabajo,
+ * sobrante manual (puede referenciar un Trabajo, sin flujo automático) o
+ * ajuste manual.
+ */
+const MOVEMENT_ORIGINS = ['COMPRA', 'TRABAJO', 'SOBRANTE', 'AJUSTE'];
+
+/**
+ * Condición como dimensión del stock del mismo Material (NUEVO/USADO no son
+ * materiales separados).
+ */
+const MATERIAL_CONDITIONS = ['NUEVO', 'USADO'];
+
+function validPurchaseTransition(string $from, string $to): bool
+{
+    if ($from === $to) {
+        return true; // edición sin cambio de estado
+    }
+    return in_array($to, PURCHASE_TRANSITIONS[$from] ?? [], true);
+}
+
+/**
+ * Cantidad decimal de inventario: positiva, con fracciones permitidas — la
+ * precisión fina quedó como elección técnica (docs/03 §6), así que se
+ * admite cualquier decimal positivo con hasta 6 cifras fraccionarias.
+ */
+function isPositiveDecimal(string $q): bool
+{
+    return preg_match('/^\d+(\.\d{1,6})?$/', trim($q)) === 1 && bccomp(trim($q), '0', 6) > 0;
+}
+
+/** Normaliza un decimal a texto canónico: sin exponente ni ceros finales. */
+function decNorm(string $d): string
+{
+    $d = trim($d);
+    if (strpos($d, '.') !== false) {
+        $d = rtrim(rtrim($d, '0'), '.');
+    }
+    return $d === '' || $d === '-' || $d === '-0' ? '0' : $d;
+}
+
+/**
+ * Total de línea de Compra en centavos: cantidad (decimal libre) × precio
+ * unitario (dos cifras) redondeado HALF_UP a dos decimales — mismo motor de
+ * redondeo que el cálculo compartido Android (QuoteCalc, BigDecimal).
+ */
+function purchaseLineCents(string $qty, string $price): int
+{
+    $raw = bcmul(trim($qty), trim($price), 8);
+    // HALF_UP para valores no negativos: sumar media centena y truncar.
+    $rounded = bcadd($raw, '0.005', 2);
+    return toCents($rounded);
+}
+
+/**
  * Dinero en centavos: los importes viajan como cadenas decimales de dos
  * cifras (BigDecimal/HALF_UP del lado Android); el servidor los compara y
  * suma en enteros para evitar flotantes.
