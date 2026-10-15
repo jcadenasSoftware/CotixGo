@@ -179,6 +179,28 @@ class InventoryRepositoryTest {
     }
 
     @Test
+    fun compra_guardarYConfirmar_encadena_alta_y_confirmacion() = runTest {
+        val userId = seedUser()
+        val m1 = repo.saveMaterial(MaterialInput(name = "Cemento", unit = "kg"))!!
+
+        // "Guardar y confirmar" en una compra nueva: nace BORRADOR y queda
+        // CONFIRMADA local con create+confirm encolados — el push envía la
+        // confirmación rebasada tras aplicar el alta; la intención no se
+        // descarta aunque quede offline.
+        assertNull(repo.savePurchase(purchaseInput(m1), confirm = true))
+        val p = db.purchaseDao().observeForUser(userId).first().first()
+        assertEquals("CONFIRMADA", p.status)
+        val ops = db.syncDao().pendingOpsForEntity(EntityTypes.PURCHASE, p.id)
+        assertEquals(2, ops.size)
+        assertTrue(ops[0].payloadJson.contains("\"status\":\"BORRADOR\""))
+        assertTrue(ops[1].payloadJson.contains("\"status\":\"CONFIRMADA\""))
+        // Sin movimientos encolados: los de compra los deriva el servidor.
+        assertNull(db.syncDao().pendingOps().firstOrNull {
+            it.entityType == EntityTypes.INVENTORY_MOVEMENT
+        })
+    }
+
+    @Test
     fun compra_numeracion_provisional_unica() = runTest {
         val userId = seedUser()
         val m1 = repo.saveMaterial(MaterialInput(name = "Arena", unit = "m3"))!!

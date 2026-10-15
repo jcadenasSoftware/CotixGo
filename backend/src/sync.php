@@ -2158,7 +2158,16 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
     $prevItems = $prevData['items'] ?? [];
     $derived = [];
     if ($oldStatus === 'BORRADOR' && $newStatus === 'CONFIRMADA') {
-        foreach ($normItems as $it) {
+        // Los locks de Material se adquieren en orden canónico de id (igual
+        // que en edición/anulación); el orden declarado de las líneas solo
+        // se conserva en el documento persistido, no en la adquisición de
+        // bloqueos — dos confirmaciones concurrentes con líneas en orden
+        // opuesto serializan sin interbloqueo.
+        $ordered = $normItems;
+        usort($ordered, fn ($a, $b) =>
+            strcmp((string) ($a['materialId'] ?? ''), (string) ($b['materialId'] ?? ''))
+                ?: strcmp((string) ($a['condition'] ?? ''), (string) ($b['condition'] ?? '')));
+        foreach ($ordered as $it) {
             $derived[] = purchaseMovementPayload($it, 'PURCHASE_IN', $it['quantity'],
                 $entityId, 'Entrada por compra confirmada');
         }
@@ -2192,6 +2201,24 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
             $derived[] = purchaseMovementPayload($it, 'ADJUSTMENT_OUT', $it['quantity'] ?? '0',
                 $entityId, 'Movimiento inverso por anulación de compra');
         }
+    }
+
+    // La anulación es terminal y conserva el documento exactamente como lo
+    // persistió el servidor — las mismas líneas, instantáneas y total que
+    // originan los movimientos inversos. Una operación que pretenda anular
+    // cambiando líneas o datos del documento se rechaza entera: la Compra
+    // queda en su estado previo. Solo `archived` puede variar (acción
+    // aprobada separada de la anulación).
+    if ($newStatus === 'ANULADA' && !purchaseDocMatches($payload, $prevData)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La anulación conserva el documento persistido; no admite cambios de líneas ni datos.',
+            (int) $locked['server_version'], serverState($locked));
+    }
+    if ($newStatus === 'ANULADA') {
+        $archived = (bool) ($payload['archived'] ?? false);
+        $payload = $prevData;
+        $payload['archived'] = $archived;
+        $normItems = $prevItems; // trazabilidad del audit
     }
 
     // Identidad, titular, numeración provisional y creación se restauran
@@ -2238,6 +2265,40 @@ function purchaseMovementPayload(array $item, string $type, string $qty,
         'createdAt' => $nowMs,
         'updatedAt' => $nowMs,
     ];
+}
+
+/**
+ * ¿El documento entrante coincide con lo persistido en los campos de
+ * contenido? Se usa para la anulación: la operación terminal conserva las
+ * líneas e instantáneas que originaron los movimientos, así que líneas y
+ * datos deben ser los mismos (campos derivados como snapshots/totales e
+ * identidad se omiten — el servidor los restaura desde lo persistido).
+ */
+function purchaseDocMatches(array $payload, array $prev): bool
+{
+    foreach (['purchaseDateEpochDay', 'supplierPlace', 'reference', 'notes'] as $f) {
+        if ((string) ($payload[$f] ?? '') !== (string) ($prev[$f] ?? '')) {
+            return false;
+        }
+    }
+    $items = $payload['items'] ?? [];
+    $prevItems = $prev['items'] ?? [];
+    if (!is_array($items) || count($items) !== count($prevItems)) {
+        return false;
+    }
+    foreach (array_values($prevItems) as $i => $p) {
+        $it = is_array($items[$i] ?? null) ? $items[$i] : [];
+        if ((string) ($it['materialId'] ?? '') !== (string) ($p['materialId'] ?? '')
+            || (string) ($it['unit'] ?? '') !== (string) ($p['unit'] ?? '')
+            || strtoupper((string) ($it['condition'] ?? 'NUEVO'))
+                !== strtoupper((string) ($p['condition'] ?? 'NUEVO'))
+            || decNorm((string) ($it['quantity'] ?? '')) !== decNorm((string) ($p['quantity'] ?? ''))
+            || toCents((string) ($it['unitPrice'] ?? '')) !== toCents((string) ($p['unitPrice'] ?? ''))
+        ) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -2313,6 +2374,9 @@ function applyInventoryMovement(PDO $pdo, string $userId, string $deviceId, stri
     $payload['jobId'] = trim((string) ($payload['jobId'] ?? ''));
     $payload['jobMaterialId'] = trim((string) ($payload['jobMaterialId'] ?? ''));
     $payload['note'] = trim((string) ($payload['note'] ?? ''));
+    // `unit` se normaliza igual que en la escritura para que un replay con
+    // solo espacios distintos deduplique en lugar de caer en inmutable.
+    $payload['unit'] = trim((string) ($payload['unit'] ?? ''));
     if (($payload['occurredAt'] ?? null) === null) {
         $payload['occurredAt'] = $payload['createdAt'] ?? null;
     }
@@ -2346,7 +2410,7 @@ function applyInventoryMovement(PDO $pdo, string $userId, string $deviceId, stri
         return result($opId, 'REJECTED', 'VALIDATION_ERROR',
             'El movimiento requiere una cantidad positiva.');
     }
-    $unit = trim((string) ($payload['unit'] ?? ''));
+    $unit = $payload['unit']; // ya normalizada antes del dedupe
     if ($unit === '') {
         return result($opId, 'REJECTED', 'VALIDATION_ERROR',
             'El movimiento requiere una unidad.');
@@ -2391,7 +2455,12 @@ function applyInventoryMovement(PDO $pdo, string $userId, string $deviceId, stri
                 return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
                     'El trabajo referenciado pertenece a otra cuenta.');
             }
-            $jm = entityRow($pdo, 'job_material', $jobMaterialId);
+            // La fila del consumo se bloquea ANTES que la del Material
+            // (orden canónico job_material → material → stock): serializa
+            // todas las operaciones que declaran este jobMaterialId y hace
+            // atómica la unicidad 1:1 — un segundo movimiento fabricado con
+            // otro entity_id espera el lock y ve el ya aplicado.
+            $jm = entityRowForUpdate($pdo, 'job_material', $jobMaterialId);
             if ($jm === null) {
                 return result($opId, 'REJECTED', 'DEPENDENCY',
                     'El registro de consumo referenciado no existe.');
@@ -2405,6 +2474,28 @@ function applyInventoryMovement(PDO $pdo, string $userId, string $deviceId, stri
                 || ($jmData['materialId'] ?? '') !== $materialId) {
                 return result($opId, 'REJECTED', 'VALIDATION_ERROR',
                     'El registro de consumo no corresponde al trabajo y material declarados.');
+            }
+            // El movimiento debe ser el reflejo exacto del consumo
+            // persistido: cantidad, unidad y condición no se declaran por
+            // separado — se contrastan con la fila del Trabajo.
+            if (decNorm((string) ($jmData['quantity'] ?? '')) !== $payload['quantity']
+                || trim((string) ($jmData['unit'] ?? '')) !== $payload['unit']
+                || strtoupper((string) ($jmData['condition'] ?? '')) !== $payload['condition']) {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El movimiento no coincide con la cantidad, unidad o condición del consumo registrado.');
+            }
+            // Unicidad 1:1 con el job_material: lectura de bloqueo (FOR
+            // UPDATE = lectura vigente) bajo el lock ya retenido — un
+            // segundo movimiento concurrente queda serializado por la fila
+            // del consumo y encuentra el ya confirmado.
+            $dup = $pdo->prepare(
+                "SELECT id FROM entities WHERE entity_type = 'inventory_movement'
+                  AND JSON_VALUE(payload, '$.jobMaterialId') = ? FOR UPDATE"
+            );
+            $dup->execute([$jobMaterialId]);
+            if ($dup->fetch() !== false) {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El consumo vinculado ya tiene su movimiento de inventario registrado.');
             }
             break;
         case 'SOBRANTE':

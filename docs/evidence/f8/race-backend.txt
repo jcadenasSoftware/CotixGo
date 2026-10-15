@@ -29,5 +29,13 @@ PASS race8_seed_applied
 PASS race8_confirm_blocked_on_material
 PASS race8_confirm_APPLIED_atomic
 PASS race8_movement_and_stock_together
+PASS race9_materials_APPLIED
+PASS race9_drafts_APPLIED
+PASS race9_both_confirms_APPLIED_no_deadlock
+PASS race9_stock_y_movimientos_correctos
+PASS race9_orden_lineas_conservado
+PASS race10_seed_APPLIED
+PASS race10_exactamente_uno_APPLIED
+PASS race10_un_solo_movimiento_y_stock_una_vez
 
-31 passed, 0 failed
+39 passed, 0 failed

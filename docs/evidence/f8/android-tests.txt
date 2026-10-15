@@ -17,7 +17,7 @@ Suites ejecutadas: 4 clases, 41 casos, 0 fallos:
 
 == Pruebas instrumentadas (am instrument, emulador-5554) ==
 
-Corrida completa del paquete com.cotixgo.app.test:
+Primera corrida del paquete com.cotixgo.app.test (88 casos):
 
   adb -s emulator-5554 shell am instrument -w -r
     com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
@@ -38,23 +38,37 @@ Re-corrida de la clase corregida sobre APKs recompilados e instalados:
     -e class com.cotixgo.app.InventoryRepositoryTest
     com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
 
-  Resultado: OK (6 tests) — material_validacion_archivado_yEncolado,
-  compra_ciclo_completo_yEncolado, compra_numeracion_provisional_unica,
-  consumo_vinculado_crea_movimiento_appendOnly,
-  movimientos_manuales_notas_yCombos,
-  stock_observado_combina_espejo_y_pendientes.
+  Resultado: OK (6 tests).
 
-Cobertura F8 instrumentada dentro de la corrida de 88:
+Revisión posterior del PR: se corrigieron los hallazgos (orden canónico
+de locks en confirmación, unicidad 1:1 de consumo, coherencia documental
+de la anulación, normalización de unidad en dedupe, "Guardar y confirmar"
+encadenado alta→confirmación) y se añadió el caso
+InventoryRepositoryTest.compra_guardarYConfirmar_encadena_alta_y_confirmacion.
+
+Corrida completa final del paquete sobre el HEAD corregido — UNA SOLA
+corrida ininterrumpida:
+
+  adb -s emulator-5554 shell am instrument -w -r
+    com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+
+  Resultado: OK (89 tests) — Time: 276.222s — verde completa en una
+  sola ejecución, incluidos InventoryRepositoryTest (7 casos),
+  MigrationTest (incluye migrate8To9 real) y SyncE2eTest completo
+  contra el API local.
+
+Cobertura F8 instrumentada dentro de la corrida de 89:
 - MigrationTest.migrate8To9_preservesRowsAndCreatesF8Tables: PASS —
   migración real v8→v9 con MigrationTestHelper sobre base v8 sembrada
   (filas F1–F7 conservadas, job_material histórico sin vínculo, tablas
   materials/material_stocks/purchases/purchase_items/inventory_movements
   creadas, índices y unicidad de COM-PEND verificados).
-- InventoryRepositoryTest: 6 casos F8 (catálogo global, ciclo completo
+- InventoryRepositoryTest: 7 casos F8 (catálogo global, ciclo completo
   de Compra con encolado y sin movimientos de compra empujados por el
-  cliente, consumo vinculado append-only job_material+inventory_movement,
-  movimientos manuales con nota/combos, saldo observado espejo+pendientes
-  con negativo permitido).
+  cliente, "Guardar y confirmar" que encadena alta+confirmación sin
+  descartar la intención, consumo vinculado append-only
+  job_material+inventory_movement, movimientos manuales con nota/combos,
+  saldo observado espejo+pendientes con negativo permitido).
 - SyncE2eTest: suite de sincronización completa contra el API local
   (push/pull, conflictos, numeración oficial, reinstalación limpia).
 

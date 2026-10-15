@@ -2377,6 +2377,13 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             sync?.enqueue(EntityTypes.PURCHASE, purchase.id,
                 SyncPayloads.purchase(purchase, itemsWithId), existing?.serverVersion ?: 0)
         }
+        if (existing == null && confirm) {
+            // "Guardar y confirmar" en el alta: el documento nace en
+            // BORRADOR y la confirmación se encola como segunda operación
+            // de la misma entidad; el push la envía tras aplicar el alta
+            // con la base rebasada. La intención nunca se descarta.
+            confirmPurchase(purchase.id)?.let { return it }
+        }
         return null
     }
 

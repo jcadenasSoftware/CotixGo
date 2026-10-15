@@ -1799,6 +1799,27 @@ check('f8_purchase_stale_CONFLICT', ($r['results'][0]['status'] ?? '') === 'CONF
     && ($r['results'][0]['code'] ?? '') === 'STALE_BASE_VERSION'
     && isset($r['results'][0]['server_state']), json_encode($r));
 
+// Anular sustituyendo líneas → rechazo entero: el documento terminal debe
+// conservar las líneas que originaron los movimientos; la compra sigue
+// CONFIRMADA y el stock intacto.
+$lATampered = array_merge($lA2, ['quantity' => '99']);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200085'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 3,
+        'payload' => $purPayload('ANULADA', [$lATampered])]]], $token);
+check('f8_anular_con_lineas_distintas_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+$byId = $pullById();
+check('f8_anulacion_adulterada_no_aplica',
+    ($byId["purchase:$pur1"]['payload']['status'] ?? '') === 'CONFIRMADA'
+    && ($byId["purchase:$pur1"]['payload']['items'][0]['quantity'] ?? '') === '12'
+    && ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '12'
+    && count(array_filter($byId,
+        fn($ch) => $ch['entity_type'] === 'inventory_movement'
+            && ($ch['payload']['purchaseId'] ?? null) === $pur1)) === 4,
+    json_encode([$byId["purchase:$pur1"]['payload']['status'] ?? null,
+        $byId["inventory_stock:$matA"]['payload'] ?? null]));
+
 // Anulación: movimientos inversos atómicos; ANULADA es terminal y solo
 // admite el cambio de `archived` (que no revierte nada).
 [$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
@@ -1927,6 +1948,14 @@ check('f8_mov_dedupe_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
 check('f8_mov_inmutable_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
     && ($r['results'][0]['code'] ?? '') === 'IMMUTABLE_FINANCIAL', json_encode($r));
 
+// Replay con diferencia solo de espacios en la unidad → deduplica (no
+// rechaza): la normalización se aplica antes de comparar campos estables.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300094'), $u('f8300090'),
+        array_merge($movFix, ['unit' => ' kg ']))], $token);
+check('f8_mov_dedupe_espacios_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+
 // ---- Consumo explícito en Trabajo (vínculo job_material → Material) ----
 // jmDesc: histórico descriptivo (sin materialId); jmLink: consumo nuevo vinculado.
 $jmDesc = $u('f8400001');
@@ -1990,6 +2019,35 @@ $cons2 = $u('f8400051');
                   'note' => '']))], $token);
 check('f8_consumo_vinculo_incoherente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED',
     json_encode($r));
+
+// Consumo con cantidad distinta a la del job_material persistido → rechazo
+// (el servidor contrasta cantidad/unidad/condición, no solo el vínculo).
+$consBad = $u('f8400052');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8400053'), $consBad,
+        $movBase(['id' => $consBad, 'movementType' => 'JOB_CONSUMPTION', 'origin' => 'TRABAJO',
+                  'quantity' => '9', 'jobId' => $job1, 'jobMaterialId' => $jmLink,
+                  'note' => '']))], $token);
+check('f8_consumo_cantidad_adulterada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Duplicado de consumo con entity_id y operation_id nuevos → rechazo:
+// unicidad 1:1 movimiento ↔ job_material bajo lock del consumo.
+$consDup = $u('f8400054');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8400055'), $consDup,
+        $movBase(['id' => $consDup, 'movementType' => 'JOB_CONSUMPTION', 'origin' => 'TRABAJO',
+                  'quantity' => '4', 'jobId' => $job1, 'jobMaterialId' => $jmLink,
+                  'note' => '']))], $token);
+check('f8_consumo_duplicado_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+$byId = $pullById();
+check('f8_consumo_unico_en_stock',
+    ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '2.5'
+    && count(array_filter($byId,
+        fn($ch) => $ch['entity_type'] === 'inventory_movement'
+            && ($ch['payload']['jobMaterialId'] ?? null) === $jmLink)) === 1,
+    json_encode($byId["inventory_stock:$matA"]['payload'] ?? null));
 
 // Stock negativo permitido: ajuste de salida mayor que el saldo.
 [$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,

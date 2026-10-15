@@ -213,6 +213,8 @@ PASS f8_edicion_confirmada_APPLIED
 PASS f8_edicion_diferencial
 PASS f8_stock_tras_edicion
 PASS f8_purchase_stale_CONFLICT
+PASS f8_anular_con_lineas_distintas_REJECTED
+PASS f8_anulacion_adulterada_no_aplica
 PASS f8_anular_APPLIED
 PASS f8_anulacion_inversa
 PASS f8_stock_cero_tras_anular
@@ -234,14 +236,18 @@ PASS f8_mov_creado_APPLIED
 PASS f8_mov_cantidad_normalizada
 PASS f8_mov_dedupe_APPLIED
 PASS f8_mov_inmutable_REJECTED
+PASS f8_mov_dedupe_espacios_APPLIED
 PASS f8_job_material_vinculado_APPLIED
 PASS f8_historico_no_vinculable_REJECTED
 PASS f8_vinculo_inmutable_REJECTED
 PASS f8_consumo_trabajo_APPLIED
 PASS f8_stock_tras_consumo
 PASS f8_consumo_vinculo_incoherente_REJECTED
+PASS f8_consumo_cantidad_adulterada_REJECTED
+PASS f8_consumo_duplicado_REJECTED
+PASS f8_consumo_unico_en_stock
 PASS f8_stock_negativo_permitido
 PASS f8_stock_negativo_proyectado
 PASS f8_aislamiento_titular
 
-245 passed, 0 failed
+251 passed, 0 failed
