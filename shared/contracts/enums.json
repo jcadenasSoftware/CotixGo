@@ -52,6 +52,18 @@
     "payment_adjustment_type": {
       "description": "Tipo de ajuste de un Pago (PaymentAdjustment): corrección de monto o anulación.",
       "values": ["CORRECTION", "ANNULMENT"]
+    },
+    "purchase_status": {
+      "description": "Estados de Compra (F8): nace BORRADOR sin movimientos, CONFIRMADA registra entradas de stock por línea (editable por diferencia con trazabilidad), ANULADA es terminal e irreversible con movimientos inversos; el archivado es acción separada.",
+      "values": ["BORRADOR", "CONFIRMADA", "ANULADA"]
+    },
+    "inventory_movement_type": {
+      "description": "Tipo de movimiento de inventario (F8, append-only): entrada por compra (PURCHASE_IN), salida por consumo explícito en un Trabajo (JOB_CONSUMPTION), entrada manual por ajuste o sobrante (ADJUSTMENT_IN) y salida manual o inversa (ADJUSTMENT_OUT).",
+      "values": ["PURCHASE_IN", "JOB_CONSUMPTION", "ADJUSTMENT_IN", "ADJUSTMENT_OUT"]
+    },
+    "inventory_movement_origin": {
+      "description": "Origen explicable del movimiento de inventario (F8): compra registrada, consumo en Trabajo, sobrante manual (referencia opcional a un Trabajo, sin flujo automático) o ajuste manual.",
+      "values": ["COMPRA", "TRABAJO", "SOBRANTE", "AJUSTE"]
     }
   }
 }

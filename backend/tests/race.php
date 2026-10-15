@@ -519,5 +519,69 @@ foreach ($byId as $key => $ch) {
 check('race7_single_active_membership', $consWithM === ["consolidated_collection:$cons7"],
     json_encode($consWithM));
 
+// =====================  Escenario 8 (F8): serialización sobre Material  =====================
+// Una Compra CONFIRMADA deriva movimientos y saldo proyectado en la misma
+// transacción, bloqueando la fila del Material (orden canónico). El
+// orquestador retiene ese lock como "ganadora"; el trabajador empuja la
+// confirmación y debe quedar bloqueado en el FOR UPDATE del movimiento
+// derivado — tras el commit todo aplica junto: transición + movimiento
+// PURCHASE_IN + saldo, nunca a medias.
+$matR = $uid('mat-r');
+$purR = $uid('pur-r');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $uid('op-mat-r'), 'entity_type' => 'material', 'entity_id' => $matR,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $matR, 'userId' => $userId, 'name' => 'Material Race',
+            'unit' => 'kg', 'description' => '', 'archived' => false,
+            'createdAt' => $now, 'updatedAt' => $now]],
+        ['operation_id' => $uid('op-pur-r'), 'entity_type' => 'purchase', 'entity_id' => $purR,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $purR, 'userId' => $userId, 'provisionalNumber' => 'COM-PEND-RA8',
+            'status' => 'BORRADOR', 'purchaseDateEpochDay' => 21005,
+            'supplierPlace' => '', 'reference' => '', 'notes' => '', 'currency' => 'COP',
+            'totalAmount' => '0.00', 'archived' => false,
+            'items' => [['id' => $purR . '-i', 'position' => 1, 'materialId' => $matR,
+                'quantity' => '7', 'unit' => 'kg', 'unitPrice' => '10.00',
+                'lineTotal' => '70.00', 'condition' => 'NUEVO', 'createdAt' => $now]],
+            'createdAt' => $now, 'updatedAt' => $now]],
+    ]], $token);
+check('race8_seed_applied', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'],
+    json_encode($r));
+
+$pdo->beginTransaction();
+$pdo->prepare('SELECT id FROM entities WHERE entity_type = ? AND id = ? FOR UPDATE')
+    ->execute(['material', $matR]);
+$w = spawnWorker($base, $token, $device,
+    [['operation_id' => $uid('op-pur-r-confirm'), 'entity_type' => 'purchase', 'entity_id' => $purR,
+      'type' => 'upsert', 'base_server_version' => 1,
+      'payload' => ['id' => $purR, 'userId' => $userId, 'provisionalNumber' => 'COM-PEND-RA8',
+        'status' => 'CONFIRMADA', 'purchaseDateEpochDay' => 21005,
+        'supplierPlace' => '', 'reference' => '', 'notes' => '', 'currency' => 'COP',
+        'totalAmount' => '70.00', 'archived' => false,
+        'items' => [['id' => $purR . '-i', 'position' => 1, 'materialId' => $matR,
+            'quantity' => '7', 'unit' => 'kg', 'unitPrice' => '10.00',
+            'lineTotal' => '70.00', 'condition' => 'NUEVO', 'createdAt' => $now]],
+        'createdAt' => $now, 'updatedAt' => $now]]]);
+$blockedThreads = waitForWorkerBlocked($pdo);
+check('race8_confirm_blocked_on_material', $blockedThreads !== [],
+    'la confirmación no apareció esperando el lock del material');
+$pdo->commit();
+[$res, $err] = finishWorker($w);
+check('race8_confirm_APPLIED_atomic',
+    ($res['results'][0]['status'] ?? '') === 'APPLIED', json_encode($res) . $err);
+$byId = pullById($base, $token);
+$movR = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['purchaseId'] ?? null) === $purR));
+check('race8_movement_and_stock_together',
+    ($byId["purchase:$purR"]['payload']['status'] ?? '') === 'CONFIRMADA'
+    && count($movR) === 1
+    && ($movR[0]['payload']['movementType'] ?? '') === 'PURCHASE_IN'
+    && ($movR[0]['payload']['quantity'] ?? '') === '7'
+    && ($byId["inventory_stock:$matR"]['payload']['stockNew'] ?? '') === '7',
+    json_encode([$byId["purchase:$purR"]['payload']['status'] ?? null,
+        count($movR), $byId["inventory_stock:$matR"]['payload'] ?? null]));
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

@@ -26,6 +26,8 @@ const ENTITY_TYPES = [
     'collection_account', 'collection_method', 'payment', 'payment_assignment',
     // F7
     'consolidated_collection', 'payment_adjustment', 'payment_refund',
+    // F8
+    'material', 'purchase', 'inventory_movement', 'inventory_stock',
 ];
 
 /** Dependencias: la entidad padre debe existir en el servidor antes de aplicar. */
@@ -57,6 +59,15 @@ const DEPENDENCIES = [
     // Ajuste y Reembolso cuelgan del Pago (append-only, auditados).
     'payment_adjustment' => [['payment', 'paymentId']],
     'payment_refund'     => [['payment', 'paymentId']],
+    // F8: el catálogo de Materiales es global por titular (sin Perfil);
+    // las líneas de la Compra referencian Materiales validados con datos
+    // persistidos en applyPurchase; el movimiento exige su Material y las
+    // referencias opcionales por origen se validan en el handler.
+    'material'            => [],
+    'purchase'            => [],
+    'inventory_movement'  => [['material', 'materialId']],
+    // Proyección derivada del servidor: solo lectura para los clientes.
+    'inventory_stock'     => [],
 ];
 
 /** Estado remoto para resultados CONFLICT/REJECTED: el payload persistido
@@ -259,6 +270,26 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
         return applyPaymentRefund($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current);
     }
 
+    // F8 — Inventario y Compras.
+    if ($type === 'material') {
+        return applyMaterial($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
+    }
+
+    if ($type === 'purchase') {
+        return applyPurchase($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current, $base);
+    }
+
+    if ($type === 'inventory_movement') {
+        return applyInventoryMovement($pdo, $userId, $deviceId, $opId, $entityId, $payload, $current);
+    }
+
+    // La proyección de stock es derivada por el servidor (append-only de
+    // movimientos → saldo); nunca se escribe desde el cliente.
+    if ($type === 'inventory_stock') {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'El saldo proyectado de inventario lo deriva el servidor.');
+    }
+
     // Métodos de Cobro (F6): nombre requerido; el resto sigue la vía
     // genérica de entidad maestra con concurrencia optimista.
     if ($type === 'collection_method' && trim((string) ($payload['name'] ?? '')) === '') {
@@ -317,6 +348,60 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
     if ($type === 'job_material'
         && !in_array((string) ($payload['origin'] ?? ''), JOB_MATERIAL_ORIGINS, true)) {
         return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Origen de material desconocido.');
+    }
+
+    // Vínculo a Material inventariado (F8): solo consumos NUEVOS — un
+    // job_material histórico no puede ganar materialId al editarse —; el
+    // consumo siempre es de material propio (PROFESIONAL) con cantidad
+    // positiva y condición de stock conocida; los campos del vínculo
+    // (materialId, cantidad, unidad, condición) son inmutables porque la
+    // salida de inventario es un evento append-only ya registrado.
+    if ($type === 'job_material') {
+        $linkId = trim((string) ($payload['materialId'] ?? ''));
+        $prevLink = $current === null
+            ? ''
+            : trim((string) (json_decode($current['payload'], true)['materialId'] ?? ''));
+        if ($linkId === '' && $prevLink !== '') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'El consumo vinculado a inventario no admite desvinculación.');
+        }
+        if ($linkId !== '') {
+            if ($prevLink === '' && $current !== null) {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'Un registro descriptivo existente no puede vincularse a inventario.');
+            }
+            if ((string) ($payload['origin'] ?? '') !== 'PROFESIONAL') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El consumo de inventario solo aplica a material propio (PROFESIONAL).');
+            }
+            if (!isPositiveDecimal((string) ($payload['quantity'] ?? ''))) {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El consumo vinculado requiere una cantidad positiva.');
+            }
+            if (!in_array(strtoupper((string) ($payload['condition'] ?? '')),
+                    MATERIAL_CONDITIONS, true)) {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'La condición de stock (NUEVO/USADO) es obligatoria en el consumo.');
+            }
+            $mat = entityRow($pdo, 'material', $linkId);
+            if ($mat === null) {
+                return result($opId, 'REJECTED', 'DEPENDENCY',
+                    'El material de inventario referenciado no existe.');
+            }
+            if ($mat['user_id'] !== $userId) {
+                return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
+                    'El material referenciado pertenece a otra cuenta.');
+            }
+            if ($prevLink !== '') {
+                $prev = json_decode($current['payload'], true) ?: [];
+                foreach (['materialId', 'quantity', 'unit', 'condition'] as $f) {
+                    if (($prev[$f] ?? null) !== ($payload[$f] ?? null)) {
+                        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                            'El consumo vinculado es append-only; registra un ajuste de inventario para corregirlo.');
+                    }
+                }
+            }
+        }
     }
 
     // Entidades maestras: concurrencia optimista por base_server_version.
@@ -1849,6 +1934,534 @@ function applyPaymentRefund(PDO $pdo, string $userId, string $deviceId, string $
         ['payment_id' => (string) $payload['paymentId'],
          'amount' => fromCents($amount),
          'reason' => (string) ($payload['reason'] ?? '')]);
+    return result($opId, 'APPLIED', null, null, 1);
+}
+
+/**
+ * F8 — Material del catálogo global del Usuario/Titular (docs/03 §6):
+ * nombre y unidad obligatorios, descripción opcional, archivado sin
+ * efectos de stock. Entidad documental: concurrencia optimista por
+ * base_server_version con ambas copias preservadas en conflicto.
+ */
+function applyMaterial(PDO $pdo, string $userId, string $deviceId, string $opId,
+                       string $entityId, array $payload, ?array $current, int $base): array
+{
+    if (trim((string) ($payload['name'] ?? '')) === ''
+        || trim((string) ($payload['unit'] ?? '')) === '') {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'El material requiere nombre y unidad.');
+    }
+    if ($current === null) {
+        if ($base !== 0) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'La entidad no existe en el servidor pero la base no es cero.', 0, null);
+        }
+        $payload = normalizeIdentityCreate($payload, $entityId, $userId);
+        insertEntity($pdo, 'material', $entityId, $userId, $payload);
+        audit($pdo, $userId, $deviceId, $opId, 'material', $entityId, 'CREATE', []);
+        return result($opId, 'APPLIED', null, null, 1);
+    }
+    if ($base !== (int) $current['server_version']) {
+        return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+            'El material cambió desde la versión conocida por el dispositivo.',
+            (int) $current['server_version'], serverState($current));
+    }
+    $prev = json_decode($current['payload'], true) ?: [];
+    $payload['id'] = $prev['id'] ?? $entityId;
+    $payload['userId'] = $prev['userId'] ?? $userId;
+    $payload['createdAt'] = $prev['createdAt'] ?? ($payload['createdAt'] ?? null);
+    updateEntity($pdo, 'material', $entityId, $current, $payload);
+    audit($pdo, $userId, $deviceId, $opId, 'material', $entityId, 'UPDATE',
+        ['archived' => (bool) ($payload['archived'] ?? false)]);
+    return result($opId, 'APPLIED', null, null, (int) $current['server_version'] + 1);
+}
+
+/**
+ * F8 — Compra documental (docs/03 §6): nace en BORRADOR sin movimientos;
+ * la confirmación exige fecha y al menos una línea válida y registra
+ * entradas; la edición en CONFIRMADA es por diferencia con trazabilidad y
+ * ANULADA es terminal e irreversible (solo `archived` puede cambiar). Los
+ * movimientos de origen COMPRA los deriva SIEMPRE el servidor en la misma
+ * transacción de la Compra — nunca se aceptan como operaciones del cliente:
+ * así transición, movimientos y saldo proyectado confirman o revierten
+ * juntos. El total y la moneda los deriva el servidor; el número oficial
+ * `COM-AAAAMM-NNN` se asigna de forma idempotente en el primer registro
+ * aceptado. Las líneas fotografían el nombre del material persistido para
+ * que el historial no cambie con ediciones posteriores del catálogo.
+ */
+function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
+                       string $entityId, array $payload, ?array $current,
+                       int $base): array
+{
+    $newStatus = (string) ($payload['status'] ?? '');
+    if (!in_array($newStatus, PURCHASE_STATUSES, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Estado de compra desconocido.');
+    }
+    // La fecha es un mínimo aprobado: requerida en cualquier estado.
+    $purchaseDate = $payload['purchaseDateEpochDay'] ?? null;
+    if (!is_numeric($purchaseDate) || (int) $purchaseDate <= 0) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La fecha de la compra es obligatoria.');
+    }
+    $itemsRaw = $payload['items'] ?? [];
+    if (!is_array($itemsRaw)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'Las líneas de la compra deben ser un arreglo.');
+    }
+
+    // Moneda global del titular: el servidor la fija, no el cliente.
+    $userRow = entityRow($pdo, 'user', $userId);
+    $currency = $userRow === null
+        ? 'COP'
+        : (string) ((json_decode($userRow['payload'], true) ?: [])['mainCurrency'] ?? 'COP');
+    if ($currency === '') {
+        $currency = 'COP';
+    }
+
+    // Líneas validadas con datos persistidos: el material existe y es del
+    // titular; cantidad positiva, unidad y precio unitario requeridos;
+    // condición de stock NUEVO/USADO (NUEVO por omisión). El nombre del
+    // material queda fotografiado desde la fila persistida (trazabilidad
+    // histórica); el total de línea y el total del documento se derivan
+    // aquí — nunca se confía en los importes declarados.
+    $normItems = [];
+    $totalCents = 0;
+    foreach (array_values($itemsRaw) as $i => $raw) {
+        $it = is_array($raw) ? $raw : [];
+        $matId = trim((string) ($it['materialId'] ?? ''));
+        if ($matId === '') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Cada línea de la compra debe identificar un material.');
+        }
+        $mat = entityRow($pdo, 'material', $matId);
+        if ($mat === null) {
+            return result($opId, 'REJECTED', 'DEPENDENCY',
+                'El material de una línea no existe en el servidor.');
+        }
+        if ($mat['user_id'] !== $userId) {
+            return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
+                'Una línea referencia un material de otra cuenta.');
+        }
+        $qty = decNorm((string) ($it['quantity'] ?? ''));
+        if (!isPositiveDecimal($qty)) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Cada línea requiere una cantidad positiva.');
+        }
+        $unit = trim((string) ($it['unit'] ?? ''));
+        if ($unit === '') {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Cada línea requiere una unidad.');
+        }
+        $price = trim((string) ($it['unitPrice'] ?? ''));
+        if (toCents($price) < 0) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Cada línea requiere un precio unitario válido (≥ 0).');
+        }
+        $condition = strtoupper(trim((string) ($it['condition'] ?? 'NUEVO')));
+        if ($condition === '') {
+            $condition = 'NUEVO';
+        }
+        if (!in_array($condition, MATERIAL_CONDITIONS, true)) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Condición de línea desconocida (NUEVO/USADO).');
+        }
+        $lineCents = purchaseLineCents($qty, $price);
+        $totalCents += $lineCents;
+        $matData = json_decode($mat['payload'], true) ?: [];
+        $normItems[] = [
+            'id' => (string) ($it['id'] ?? ''),
+            'position' => $i + 1,
+            'materialId' => $matId,
+            'materialNameSnapshot' => (string) ($matData['name'] ?? ''),
+            'quantity' => $qty,
+            'unit' => $unit,
+            'unitPrice' => fromCents(toCents($price)),
+            'lineTotal' => fromCents($lineCents),
+            'condition' => $condition,
+            'createdAt' => $it['createdAt'] ?? null,
+        ];
+    }
+    if ($newStatus === 'CONFIRMADA' && $normItems === []) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'Confirmar la compra requiere al menos una línea.');
+    }
+
+    $payload['items'] = $normItems;
+    $payload['currency'] = $currency;
+    $payload['totalAmount'] = fromCents($totalCents);
+    $payload['purchaseDateEpochDay'] = (int) $purchaseDate;
+
+    if ($current === null) {
+        if ($base !== 0) {
+            return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+                'La entidad no existe en el servidor pero la base no es cero.', 0, null);
+        }
+        if ($newStatus !== 'BORRADOR') {
+            return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                'La compra nace en BORRADOR; confirmarla es una transición posterior.');
+        }
+        $payload['status'] = 'BORRADOR';
+        $payload = normalizeIdentityCreate($payload, $entityId, $userId);
+        // El primer registro aceptado fija el número oficial COM-AAAAMM-NNN.
+        $official = ensureOfficialNumber($pdo, $userId, $entityId, 'COM');
+        insertEntity($pdo, 'purchase', $entityId, $userId, $payload, 'BORRADOR', $official);
+        audit($pdo, $userId, $deviceId, $opId, 'purchase', $entityId, 'CREATE',
+            ['lines' => count($normItems), 'official' => $official]);
+        return result($opId, 'APPLIED', null, null, 1, null, $official);
+    }
+
+    // La fila propia se bloquea y la base/estado se revalidan con la
+    // versión bloqueada — la lectura inicial del despacho pudo quedar
+    // obsoleta durante la espera de otro push concurrente.
+    $locked = entityRowForUpdate($pdo, 'purchase', $entityId);
+    if ($locked === null || $base !== (int) $locked['server_version']) {
+        return result($opId, 'CONFLICT', 'STALE_BASE_VERSION',
+            'La compra cambió desde la versión conocida por el dispositivo.',
+            (int) ($locked['server_version'] ?? $current['server_version']),
+            $locked === null ? serverState($current) : serverState($locked));
+    }
+    $oldStatus = (string) $locked['status'];
+    $prevData = json_decode($locked['payload'], true) ?: [];
+
+    // ANULADA es terminal e irreversible: solo `archived` puede cambiar;
+    // todo lo demás se restaura desde lo persistido.
+    if ($oldStatus === 'ANULADA') {
+        if ($newStatus !== 'ANULADA') {
+            return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+                'La compra está ANULADA (terminal) y no puede reactivarse.',
+                (int) $locked['server_version'], serverState($locked));
+        }
+        $archived = (bool) ($payload['archived'] ?? false);
+        $payload = $prevData;
+        $payload['archived'] = $archived;
+        updateEntity($pdo, 'purchase', $entityId, $locked, $payload,
+            'ANULADA', $locked['official_number']);
+        audit($pdo, $userId, $deviceId, $opId, 'purchase', $entityId, 'UPDATE',
+            ['archived' => $archived]);
+        return result($opId, 'APPLIED', null, null, (int) $locked['server_version'] + 1);
+    }
+
+    if (!validPurchaseTransition($oldStatus, $newStatus)) {
+        return result($opId, 'REJECTED', 'INVALID_TRANSITION',
+            "Transición no permitida $oldStatus → $newStatus; estado actual $oldStatus.",
+            (int) $locked['server_version'], serverState($locked));
+    }
+
+    // Movimientos derivados por el servidor (misma transacción): la
+    // confirmación registra entradas por línea; la edición en CONFIRMADA
+    // calcula la diferencia neta por (material, condición) contra las
+    // líneas persistidas — positiva PURCHASE_IN, negativa ADJUSTMENT_OUT —;
+    // la anulación de una CONFIRMADA invierte cada línea. Los Materiales
+    // afectados se bloquean en orden de id (orden canónico: purchase ya
+    // bloqueada → material → inventory_stock), serializando las operaciones
+    // de stock sobre el mismo Material.
+    $prevItems = $prevData['items'] ?? [];
+    $derived = [];
+    if ($oldStatus === 'BORRADOR' && $newStatus === 'CONFIRMADA') {
+        foreach ($normItems as $it) {
+            $derived[] = purchaseMovementPayload($it, 'PURCHASE_IN', $it['quantity'],
+                $entityId, 'Entrada por compra confirmada');
+        }
+    } elseif ($oldStatus === 'CONFIRMADA' && $newStatus === 'CONFIRMADA') {
+        $byKey = [];
+        foreach ($prevItems as $it) {
+            $key = ($it['materialId'] ?? '') . '|' . ($it['condition'] ?? 'NUEVO');
+            $byKey[$key]['prev'] = bcadd($byKey[$key]['prev'] ?? '0', (string) ($it['quantity'] ?? '0'), 6);
+            $byKey[$key]['item'] = $it;
+        }
+        foreach ($normItems as $it) {
+            $key = ($it['materialId'] ?? '') . '|' . ($it['condition'] ?? 'NUEVO');
+            $byKey[$key]['next'] = bcadd($byKey[$key]['next'] ?? '0', (string) ($it['quantity'] ?? '0'), 6);
+            $byKey[$key]['item'] = $it;
+        }
+        ksort($byKey);
+        foreach ($byKey as $group) {
+            $delta = bcsub($group['next'] ?? '0', $group['prev'] ?? '0', 6);
+            if (bccomp($delta, '0', 6) === 0) {
+                continue;
+            }
+            $isIn = bccomp($delta, '0', 6) > 0;
+            $derived[] = purchaseMovementPayload($group['item'],
+                $isIn ? 'PURCHASE_IN' : 'ADJUSTMENT_OUT', decNorm($isIn ? $delta : bcsub('0', $delta, 6)),
+                $entityId, 'Edición diferencial de compra confirmada');
+        }
+    } elseif ($oldStatus === 'CONFIRMADA' && $newStatus === 'ANULADA') {
+        $inverse = $prevItems;
+        usort($inverse, fn ($a, $b) => strcmp((string) ($a['materialId'] ?? ''), (string) ($b['materialId'] ?? '')));
+        foreach ($inverse as $it) {
+            $derived[] = purchaseMovementPayload($it, 'ADJUSTMENT_OUT', $it['quantity'] ?? '0',
+                $entityId, 'Movimiento inverso por anulación de compra');
+        }
+    }
+
+    // Identidad, titular, numeración provisional y creación se restauran
+    // desde lo persistido; líneas/total/moneda ya fueron normalizados.
+    $payload['id'] = $prevData['id'] ?? $entityId;
+    $payload['userId'] = $prevData['userId'] ?? $userId;
+    $payload['provisionalNumber'] = $prevData['provisionalNumber'] ?? ($payload['provisionalNumber'] ?? '');
+    $payload['createdAt'] = $prevData['createdAt'] ?? ($payload['createdAt'] ?? null);
+    updateEntity($pdo, 'purchase', $entityId, $locked, $payload,
+        $newStatus, $locked['official_number']);
+    audit($pdo, $userId, $deviceId, $opId, 'purchase', $entityId,
+        $oldStatus === $newStatus ? 'UPDATE' : 'TRANSITION',
+        ['from' => $oldStatus, 'to' => $newStatus, 'lines' => count($normItems),
+         'movements' => count($derived)]);
+    foreach ($derived as $mov) {
+        recordMovementAndStock($pdo, $userId, $deviceId, $opId, $mov);
+    }
+    return result($opId, 'APPLIED', null, null,
+        (int) $locked['server_version'] + 1, null, $locked['official_number']);
+}
+
+/**
+ * Payload de un movimiento derivado de una línea de Compra (entrada,
+ * diferencial o inverso): mismo formato que `inventory_movement`.
+ */
+function purchaseMovementPayload(array $item, string $type, string $qty,
+                                 string $purchaseId, string $note): array
+{
+    $nowMs = (int) round(microtime(true) * 1000);
+    return [
+        'id' => uuid(),
+        'materialId' => (string) ($item['materialId'] ?? ''),
+        'condition' => (string) ($item['condition'] ?? 'NUEVO'),
+        'movementType' => $type,
+        'origin' => 'COMPRA',
+        'quantity' => decNorm((string) $qty),
+        'unit' => (string) ($item['unit'] ?? ''),
+        'unitCost' => (string) ($item['unitPrice'] ?? ''),
+        'purchaseId' => $purchaseId,
+        'jobId' => null,
+        'jobMaterialId' => null,
+        'note' => $note,
+        'occurredAt' => $nowMs,
+        'createdAt' => $nowMs,
+        'updatedAt' => $nowMs,
+    ];
+}
+
+/**
+ * Registra un movimiento append-only y actualiza el saldo proyectado en la
+ * misma transacción: bloquea la fila del Material (serializa todas las
+ * operaciones de stock sobre él) y luego la proyección `inventory_stock`
+ * (orden canónico material → stock). Devuelve el id del movimiento.
+ */
+function recordMovementAndStock(PDO $pdo, string $userId, string $deviceId,
+                                ?string $opId, array $payload): string
+{
+    $materialId = (string) $payload['materialId'];
+    $entityId = (string) $payload['id'];
+    $mat = entityRowForUpdate($pdo, 'material', $materialId);
+    if ($mat === null || $mat['user_id'] !== $userId) {
+        throw new RuntimeException('Movimiento derivado sobre material inexistente o ajeno.');
+    }
+    insertEntity($pdo, 'inventory_movement', $entityId, $userId, $payload,
+        (string) $payload['movementType']);
+    audit($pdo, $userId, $deviceId, $opId, 'inventory_movement', $entityId,
+        'INVENTORY_MOVEMENT',
+        ['material_id' => $materialId, 'type' => $payload['movementType'],
+         'origin' => $payload['origin'], 'condition' => $payload['condition'],
+         'quantity' => $payload['quantity']]);
+
+    $stock = entityRowForUpdate($pdo, 'inventory_stock', $materialId);
+    $sd = $stock === null
+        ? ['id' => $materialId, 'materialId' => $materialId, 'userId' => $userId,
+           'stockNew' => '0', 'stockUsed' => '0']
+        : (json_decode($stock['payload'], true) ?: []);
+    $field = $payload['condition'] === 'NUEVO' ? 'stockNew' : 'stockUsed';
+    $delta = in_array($payload['movementType'], MOVEMENT_IN_TYPES, true)
+        ? $payload['quantity'] : '-' . $payload['quantity'];
+    $sd[$field] = decNorm(bcadd((string) ($sd[$field] ?? '0'), $delta, 6));
+    $sd['id'] = $materialId;
+    $sd['materialId'] = $materialId;
+    $sd['userId'] = $userId;
+    $sd['updatedAt'] = $payload['updatedAt'] ?? ($payload['createdAt'] ?? null);
+    if ($stock === null) {
+        insertEntity($pdo, 'inventory_stock', $materialId, $userId, $sd);
+    } else {
+        updateEntity($pdo, 'inventory_stock', $materialId, $stock, $sd);
+    }
+    return $entityId;
+}
+
+/**
+ * F8 — Movimiento de inventario (`inventory_movement`, append-only):
+ * fuente de verdad del stock. Una vez aplicado no admite mutación — un
+ * replay con campos estables idénticos se deduplica; con campos distintos
+ * se rechaza IMMUTABLE_FINANCIAL. La fila del Material se bloquea FOR
+ * UPDATE (serializa compras, consumos y ajustes concurrentes sobre el
+ * mismo Material — orden canónico: material antes que inventory_stock) y
+ * la proyección `inventory_stock` se actualiza en la misma transacción, de
+ * modo que el saldo siempre puede reconstruirse desde los movimientos.
+ * Stock negativo permitido: el inventario es control interno y nunca
+ * bloquea la operación. Orígenes aceptados desde el cliente: TRABAJO
+ * (consumo explícito), SOBRANTE y AJUSTE (manuales); los de origen COMPRA
+ * los deriva el servidor dentro de la transacción de la Compra.
+ */
+function applyInventoryMovement(PDO $pdo, string $userId, string $deviceId, string $opId,
+                                string $entityId, array $payload, ?array $current): array
+{
+    // Normalización previa al dedupe: el replay compara contra el payload
+    // ya normalizado, así que las mismas reglas se aplican a lo entrante
+    // antes de contrastar campos estables.
+    $payload['materialId'] = trim((string) ($payload['materialId'] ?? ''));
+    $payload['condition'] = strtoupper(trim((string) ($payload['condition'] ?? '')));
+    $payload['quantity'] = decNorm((string) ($payload['quantity'] ?? ''));
+    $unitCostRaw = trim((string) ($payload['unitCost'] ?? ''));
+    $payload['unitCost'] = $unitCostRaw === '' ? null : fromCents(toCents($unitCostRaw));
+    $payload['purchaseId'] = trim((string) ($payload['purchaseId'] ?? ''));
+    $payload['jobId'] = trim((string) ($payload['jobId'] ?? ''));
+    $payload['jobMaterialId'] = trim((string) ($payload['jobMaterialId'] ?? ''));
+    $payload['note'] = trim((string) ($payload['note'] ?? ''));
+    if (($payload['occurredAt'] ?? null) === null) {
+        $payload['occurredAt'] = $payload['createdAt'] ?? null;
+    }
+
+    if ($current !== null) {
+        $prev = json_decode($current['payload'], true) ?: [];
+        foreach (['materialId', 'condition', 'movementType', 'origin', 'quantity', 'unit',
+                  'unitCost', 'purchaseId', 'jobId', 'jobMaterialId', 'note', 'occurredAt'] as $f) {
+            if (($prev[$f] ?? null) !== ($payload[$f] ?? null)) {
+                return result($opId, 'REJECTED', 'IMMUTABLE_FINANCIAL',
+                    'El movimiento de inventario es append-only y no admite edición.');
+            }
+        }
+        return result($opId, 'APPLIED', null, null, (int) $current['server_version']);
+    }
+
+    $materialId = $payload['materialId'];
+    $mType = (string) ($payload['movementType'] ?? '');
+    if (!in_array($mType, MOVEMENT_TYPES, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Tipo de movimiento desconocido.');
+    }
+    $origin = (string) ($payload['origin'] ?? '');
+    if (!in_array($origin, MOVEMENT_ORIGINS, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR', 'Origen de movimiento desconocido.');
+    }
+    if (!in_array($payload['condition'], MATERIAL_CONDITIONS, true)) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La condición de stock debe ser NUEVO o USADO.');
+    }
+    if (!isPositiveDecimal($payload['quantity'])) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'El movimiento requiere una cantidad positiva.');
+    }
+    $unit = trim((string) ($payload['unit'] ?? ''));
+    if ($unit === '') {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'El movimiento requiere una unidad.');
+    }
+    if ($payload['unitCost'] !== null && toCents((string) $payload['unitCost']) < 0) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'El costo unitario histórico debe ser un importe válido.');
+    }
+
+    $purchaseId = $payload['purchaseId'];
+    $jobId = $payload['jobId'];
+    $jobMaterialId = $payload['jobMaterialId'];
+    $note = $payload['note'];
+
+    // Consistencia tipo ↔ origen y referencias validadas con datos
+    // persistidos — nunca con datos declarados por el cliente.
+    switch ($origin) {
+        case 'COMPRA':
+            // Los movimientos de compra (entradas, diferenciales e inversos)
+            // los deriva el servidor dentro de la transacción de la Compra;
+            // un cliente nunca los empuja directamente.
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Los movimientos de origen COMPRA los deriva el servidor junto a la compra.');
+        case 'TRABAJO':
+            if ($mType !== 'JOB_CONSUMPTION') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El consumo en Trabajo usa el tipo JOB_CONSUMPTION.');
+            }
+            if ($jobId === '' || $jobMaterialId === '') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El consumo en Trabajo requiere el trabajo y el registro de consumo.');
+            }
+            if ($purchaseId !== '') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'Un movimiento de TRABAJO no referencia compras.');
+            }
+            $job = entityRow($pdo, 'job', $jobId);
+            if ($job === null) {
+                return result($opId, 'REJECTED', 'DEPENDENCY', 'El trabajo referenciado no existe.');
+            }
+            if ($job['user_id'] !== $userId) {
+                return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
+                    'El trabajo referenciado pertenece a otra cuenta.');
+            }
+            $jm = entityRow($pdo, 'job_material', $jobMaterialId);
+            if ($jm === null) {
+                return result($opId, 'REJECTED', 'DEPENDENCY',
+                    'El registro de consumo referenciado no existe.');
+            }
+            if ($jm['user_id'] !== $userId) {
+                return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
+                    'El registro de consumo pertenece a otra cuenta.');
+            }
+            $jmData = json_decode($jm['payload'], true) ?: [];
+            if (($jmData['jobId'] ?? '') !== $jobId
+                || ($jmData['materialId'] ?? '') !== $materialId) {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El registro de consumo no corresponde al trabajo y material declarados.');
+            }
+            break;
+        case 'SOBRANTE':
+            if ($mType !== 'ADJUSTMENT_IN') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El sobrante se registra como entrada ADJUSTMENT_IN.');
+            }
+            if ($note === '') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'La entrada manual de sobrante requiere una nota explicativa.');
+            }
+            if ($purchaseId !== '' || $jobMaterialId !== '') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'Un sobrante no referencia compras ni consumos.');
+            }
+            if ($jobId !== '') {
+                $job = entityRow($pdo, 'job', $jobId);
+                if ($job === null) {
+                    return result($opId, 'REJECTED', 'DEPENDENCY',
+                        'El trabajo referenciado por el sobrante no existe.');
+                }
+                if ($job['user_id'] !== $userId) {
+                    return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
+                        'El trabajo referenciado pertenece a otra cuenta.');
+                }
+            }
+            break;
+        default: // AJUSTE
+            if (!in_array($mType, ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'], true)) {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El ajuste manual usa ADJUSTMENT_IN o ADJUSTMENT_OUT.');
+            }
+            if ($note === '') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'El ajuste de inventario requiere una nota explicativa.');
+            }
+            if ($purchaseId !== '' || $jobId !== '' || $jobMaterialId !== '') {
+                return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                    'Un ajuste manual no referencia otros documentos.');
+            }
+            break;
+    }
+
+    // Existencia y titular del Material se validan antes de bloquear;
+    // recordMovementAndStock vuelve a verificarlas con el lock retenido.
+    $matCheck = entityRow($pdo, 'material', $materialId);
+    if ($matCheck === null) {
+        return result($opId, 'REJECTED', 'DEPENDENCY', 'El material del movimiento no existe.');
+    }
+    if ($matCheck['user_id'] !== $userId) {
+        return result($opId, 'REJECTED', 'FORBIDDEN_ENTITY',
+            'El material del movimiento pertenece a otra cuenta.');
+    }
+
+    $payload['unit'] = $unit;
+    $payload = normalizeIdentityCreate($payload, $entityId, $userId);
+    recordMovementAndStock($pdo, $userId, $deviceId, $opId, $payload);
     return result($opId, 'APPLIED', null, null, 1);
 }
 

@@ -188,7 +188,8 @@ components:
                  job, job_quote, job_activity, job_material,
                  report, report_job, report_version,
                  collection_account, collection_method, payment, payment_assignment,
-                 consolidated_collection, payment_adjustment, payment_refund]
+                 consolidated_collection, payment_adjustment, payment_refund,
+                 material, purchase, inventory_movement, inventory_stock]
         entity_id:
           type: string
           format: uuid

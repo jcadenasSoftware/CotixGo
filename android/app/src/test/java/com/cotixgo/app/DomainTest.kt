@@ -10,14 +10,21 @@ import com.cotixgo.app.core.JobTransitions
 import com.cotixgo.app.core.ConsolidatedTransitions
 import com.cotixgo.app.core.PaymentAssignmentStatus
 import com.cotixgo.app.core.PaymentTargetKind
+import com.cotixgo.app.core.PurchaseStatus
+import com.cotixgo.app.core.PurchaseTransitions
+import com.cotixgo.app.core.MovementType
 import com.cotixgo.app.core.ReportStatus
 import com.cotixgo.app.core.ReportTransitions
 import com.cotixgo.app.core.availableForRefundOrAssign
 import com.cotixgo.app.core.deriveAssignmentStatus
 import com.cotixgo.app.core.deriveCollectionStatus
+import com.cotixgo.app.core.isPositiveQuantity
+import com.cotixgo.app.core.movementIsInbound
+import com.cotixgo.app.core.normDecimal
 import com.cotixgo.app.core.paymentIsLive
 import com.cotixgo.app.core.validateClient
 import com.cotixgo.app.core.validateCollectionMethod
+import com.cotixgo.app.core.validateMaterial
 import com.cotixgo.app.core.validateOnboarding
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -276,5 +283,79 @@ class DomainTest {
         assertEquals(2, PaymentTargetKind.entries.size)
         assertNotNull(PaymentTargetKind.ACCOUNT)
         assertNotNull(PaymentTargetKind.CONSOLIDATED)
+    }
+
+    // ---------- Matriz de Compra aprobada (F8, docs/03 §6) ----------
+
+    @Test
+    fun `purchase transition matrix matches the approved F8 decision`() {
+        // BORRADOR → CONFIRMADA | ANULADA
+        assertTrue(PurchaseTransitions.canTransition(PurchaseStatus.BORRADOR, PurchaseStatus.CONFIRMADA))
+        assertTrue(PurchaseTransitions.canTransition(PurchaseStatus.BORRADOR, PurchaseStatus.ANULADA))
+        // CONFIRMADA → ANULADA (con movimientos inversos del lado servidor)
+        assertTrue(PurchaseTransitions.canTransition(PurchaseStatus.CONFIRMADA, PurchaseStatus.ANULADA))
+        assertFalse(PurchaseTransitions.canTransition(PurchaseStatus.CONFIRMADA, PurchaseStatus.BORRADOR))
+        // ANULADA es terminal e irreversible
+        PurchaseStatus.entries.forEach { to ->
+            assertFalse(
+                "ANULADA no debe transicionar a $to",
+                PurchaseTransitions.canTransition(PurchaseStatus.ANULADA, to) && to != PurchaseStatus.ANULADA,
+            )
+        }
+        // Mismo estado permitido (edición / archivado sin transición)
+        assertTrue(PurchaseTransitions.canTransition(PurchaseStatus.BORRADOR, PurchaseStatus.BORRADOR))
+        assertTrue(PurchaseTransitions.canTransition(PurchaseStatus.CONFIRMADA, PurchaseStatus.CONFIRMADA))
+        assertTrue(PurchaseTransitions.canTransition(PurchaseStatus.ANULADA, PurchaseStatus.ANULADA))
+    }
+
+    @Test
+    fun `purchase editable except ANULADA`() {
+        assertTrue(PurchaseTransitions.isEditable(PurchaseStatus.BORRADOR))
+        assertTrue(PurchaseTransitions.isEditable(PurchaseStatus.CONFIRMADA)) // edición diferencial
+        assertFalse(PurchaseTransitions.isEditable(PurchaseStatus.ANULADA))
+    }
+
+    @Test
+    fun `purchase confirm requires at least one line`() {
+        assertFalse(PurchaseTransitions.canConfirm(PurchaseStatus.BORRADOR, 0))
+        assertTrue(PurchaseTransitions.canConfirm(PurchaseStatus.BORRADOR, 1))
+        assertFalse(PurchaseTransitions.canConfirm(PurchaseStatus.CONFIRMADA, 3))
+    }
+
+    @Test
+    fun `material requires name and unit`() {
+        assertNotNull(validateMaterial("", "kg"))
+        assertNotNull(validateMaterial("Cemento", ""))
+        assertNotNull(validateMaterial("  ", "kg"))
+        assertNull(validateMaterial("Cemento", "kg"))
+    }
+
+    @Test
+    fun `movement inbound only for IN types`() {
+        assertTrue(movementIsInbound(MovementType.PURCHASE_IN))
+        assertTrue(movementIsInbound(MovementType.ADJUSTMENT_IN))
+        assertFalse(movementIsInbound(MovementType.JOB_CONSUMPTION))
+        assertFalse(movementIsInbound(MovementType.ADJUSTMENT_OUT))
+    }
+
+    @Test
+    fun `positive quantity accepts decimals and rejects zero or text`() {
+        assertTrue(isPositiveQuantity("1"))
+        assertTrue(isPositiveQuantity("2.5"))
+        assertTrue(isPositiveQuantity("0.000001"))
+        assertFalse(isPositiveQuantity("0"))
+        assertFalse(isPositiveQuantity("-3"))
+        assertFalse(isPositiveQuantity("abc"))
+        assertFalse(isPositiveQuantity(""))
+        assertFalse(isPositiveQuantity("1.0000001")) // más de 6 cifras fraccionarias
+    }
+
+    @Test
+    fun `normDecimal canonicalizes trailing zeros`() {
+        assertEquals("1.5", normDecimal("1.500000"))
+        assertEquals("2", normDecimal("2.00"))
+        assertEquals("0", normDecimal("0.000"))
+        assertEquals("0", normDecimal("-0"))
+        assertEquals("0.25", normDecimal("0.250000"))
     }
 }

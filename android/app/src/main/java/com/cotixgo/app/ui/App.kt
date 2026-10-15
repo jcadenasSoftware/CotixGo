@@ -56,6 +56,12 @@ object Routes {
     const val CONSOLIDATED_DETAIL = "consolidateds/{id}"
     const val PAYMENT_NEW = "payments/new"
     const val PAYMENT_DETAIL = "payments/{id}"
+    // F8 — Inventario y Compras
+    const val INVENTORY = "inventory"
+    const val MATERIAL_DETAIL = "materials/{id}"
+    const val PURCHASE_NEW = "purchases/new"
+    const val PURCHASE_EDIT = "purchases/{id}/edit"
+    const val PURCHASE_DETAIL = "purchases/{id}"
     const val SETTINGS = "settings"
     const val SERVICES = "services"
     const val RETENTIONS = "retentions"
@@ -90,6 +96,9 @@ object Routes {
     fun consolidatedEdit(id: String) = "consolidateds/$id/edit"
     fun consolidatedDetail(id: String) = "consolidateds/$id"
     fun paymentDetail(id: String) = "payments/$id"
+    fun materialDetail(id: String) = "materials/$id"
+    fun purchaseEdit(id: String) = "purchases/$id/edit"
+    fun purchaseDetail(id: String) = "purchases/$id"
 }
 
 @Composable
@@ -124,10 +133,14 @@ private fun CotixGoNavHost(
     val payments by vm.payments.collectAsStateWithLifecycle()
     val consolidateds by vm.consolidateds.collectAsStateWithLifecycle()
     val activeMemberships by vm.activeMemberships.collectAsStateWithLifecycle()
+    val inventory by vm.inventory.collectAsStateWithLifecycle()
+    val materials by vm.materials.collectAsStateWithLifecycle()
+    val purchases by vm.purchases.collectAsStateWithLifecycle()
     val currentRoute = backStack?.destination?.route
     val showBar = currentRoute == Routes.DASHBOARD || currentRoute == Routes.CLIENTS ||
         currentRoute == Routes.QUOTES || currentRoute == Routes.JOBS ||
-        currentRoute == Routes.REPORTS || currentRoute == Routes.COLLECTIONS
+        currentRoute == Routes.REPORTS || currentRoute == Routes.COLLECTIONS ||
+        currentRoute == Routes.INVENTORY
 
     Scaffold(
         bottomBar = {
@@ -198,6 +211,17 @@ private fun CotixGoNavHost(
                         },
                         icon = { Text("$") },
                         label = { Text("Cobros") },
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == Routes.INVENTORY,
+                        onClick = {
+                            nav.navigate(Routes.INVENTORY) {
+                                popUpTo(Routes.DASHBOARD)
+                                launchSingleTop = true
+                            }
+                        },
+                        icon = { Text("▦") },
+                        label = { Text("Inventario") },
                     )
                 }
             }
@@ -483,6 +507,9 @@ private fun CotixGoNavHost(
                     onAddActivity = { vm.saveJobActivity(it) },
                     onActivityStatus = { aid, s -> vm.setJobActivityStatus(aid, s) },
                     onAddMaterial = { vm.saveJobMaterial(it) },
+                    inventoryMaterials = inventory
+                        .filter { !it.material.archived }
+                        .map { it.material },
                     onLinkQuote = { qid -> vm.linkQuoteToJob(id, qid) },
                     linkableQuotes = quotes.filter { q ->
                         q.status == com.cotixgo.app.core.QuoteStatus.APROBADA.name &&
@@ -841,6 +868,123 @@ private fun CotixGoNavHost(
                     onRefund = { amt, day, mId, reason, done ->
                         vm.refundPayment(id, amt, day, mId, reason, done)
                     },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            // ---------- F8: Inventario y Compras ----------
+            composable(Routes.INVENTORY) {
+                InventoryScreen(
+                    inventory = inventory,
+                    purchases = purchases.filter { !it.archived },
+                    movements = vm.observeAllMovements(user?.id ?: "")
+                        .collectAsStateWithLifecycle(emptyList()).value,
+                    materialsById = materials.associateBy { it.id },
+                    jobsById = jobs.associateBy { it.id },
+                    activeMaterials = materials.filter { !it.archived },
+                    onOpenMaterial = { nav.navigate(Routes.materialDetail(it)) },
+                    onNewPurchase = { nav.navigate(Routes.PURCHASE_NEW) },
+                    onOpenPurchase = { nav.navigate(Routes.purchaseDetail(it)) },
+                    onSaveMaterial = { input, id -> vm.saveMaterial(input, id) {} },
+                    onSaveMovement = { input, done -> vm.saveInventoryMovement(input, done) },
+                )
+            }
+            composable(
+                Routes.MATERIAL_DETAIL,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val material by vm.observeMaterial(id).collectAsStateWithLifecycle(null)
+                val movements by vm.observeMovementsForMaterial(id)
+                    .collectAsStateWithLifecycle(emptyList())
+                var movementDialog by androidx.compose.runtime.remember {
+                    androidx.compose.runtime.mutableStateOf(false)
+                }
+                if (movementDialog) {
+                    MovementFormDialog(
+                        materials = materials.filter { !it.archived },
+                        jobs = jobs,
+                        preselectedMaterialId = id,
+                        onDismiss = { movementDialog = false },
+                        onSave = { input, done ->
+                            vm.saveInventoryMovement(input) { err ->
+                                done(err)
+                                if (err == null) movementDialog = false
+                            }
+                        },
+                    )
+                }
+                MaterialDetailScreen(
+                    material = material,
+                    stock = inventory.firstOrNull { it.material.id == id },
+                    movements = movements,
+                    purchasesById = purchases.associateBy { it.id },
+                    jobsById = jobs.associateBy { it.id },
+                    onEdit = { input -> vm.saveMaterial(input, id) {} },
+                    onArchive = { archived -> vm.setMaterialArchived(id, archived) },
+                    onNewMovement = { movementDialog = true },
+                    onOpenPurchase = { nav.navigate(Routes.purchaseDetail(it)) },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(Routes.PURCHASE_NEW) {
+                PurchaseEditorScreen(
+                    initial = null,
+                    initialItems = emptyList(),
+                    materials = materials.filter { !it.archived },
+                    confirmError = null,
+                    onSave = { input, confirm, done ->
+                        vm.savePurchase(input, null, confirm) { err ->
+                            if (err == null) nav.popBackStack()
+                            done(err)
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.PURCHASE_EDIT,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val purchase by vm.observePurchase(id).collectAsStateWithLifecycle(null)
+                val items by vm.observePurchaseItems(id).collectAsStateWithLifecycle(emptyList())
+                val p = purchase ?: return@composable
+                PurchaseEditorScreen(
+                    initial = p,
+                    initialItems = items,
+                    materials = materials.filter { !it.archived },
+                    confirmError = null,
+                    onSave = { input, confirm, done ->
+                        vm.savePurchase(input, id, confirm) { err ->
+                            if (err == null) nav.popBackStack()
+                            done(err)
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                Routes.PURCHASE_DETAIL,
+                arguments = listOf(navArgument("id") { type = NavType.StringType }),
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                val purchase by vm.observePurchase(id).collectAsStateWithLifecycle(null)
+                val items by vm.observePurchaseItems(id).collectAsStateWithLifecycle(emptyList())
+                val movements by vm.observePurchaseMovements(id)
+                    .collectAsStateWithLifecycle(emptyList())
+                var actionError by androidx.compose.runtime.remember {
+                    androidx.compose.runtime.mutableStateOf<String?>(null)
+                }
+                PurchaseDetailScreen(
+                    purchase = purchase,
+                    items = items,
+                    movements = movements,
+                    materialsById = materials.associateBy { it.id },
+                    actionError = actionError,
+                    onEdit = { nav.navigate(Routes.purchaseEdit(id)) },
+                    onConfirm = { vm.confirmPurchase(id) { actionError = it } },
+                    onAnnul = { vm.annulPurchase(id) { actionError = it } },
+                    onArchive = { archived -> vm.setPurchaseArchived(id, archived) },
                     onBack = { nav.popBackStack() },
                 )
             }

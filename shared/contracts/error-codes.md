@@ -48,8 +48,8 @@ Dentro de `results[]`, cada operación devuelve `status` (`APPLIED` | `REJECTED`
 | `STALE_BASE_VERSION` | `base_server_version` no coincide con la versión vigente del servidor. |
 | `VERSION_CONFLICT` | Versión de Cotización concurrente conservada; el documento queda marcado para resolución. |
 | `CONFLICT_BLOCKED` | Transición hacia `EMITIDA`/`APROBADA` bloqueada mientras el documento tiene un conflicto de versiones sin resolver. |
-| `IMMUTABLE_FINANCIAL` | Reintento con `entity_id` ya persistido pero campos estables distintos: los eventos financieros (Pago, asignación, ajuste, Reembolso) son append-only y no admiten edición. |
-| `VALIDATION_ERROR` | Payload incompleto o inválido para la entidad. También cubre las reglas F7 (elegibilidad de Cuenta para Consolidado, doble vínculo, remanente de Reembolso, piso de corrección). |
+| `IMMUTABLE_FINANCIAL` | Reintento con `entity_id` ya persistido pero campos estables distintos: los eventos financieros (Pago, asignación, ajuste, Reembolso) y los movimientos de inventario (`inventory_movement`, F8) son append-only y no admiten edición. |
+| `VALIDATION_ERROR` | Payload incompleto o inválido para la entidad. También cubre las reglas F7 (elegibilidad de Cuenta para Consolidado, doble vínculo, remanente de Reembolso, piso de corrección) y las F8 (mínimos de Material/Compra, líneas válidas, confirmación con ≥1 línea, consistencia tipo↔origen del movimiento, consumo vinculado append-only y saldo proyectado `inventory_stock` de solo lectura para el cliente). |
 
 ## Reglas
 

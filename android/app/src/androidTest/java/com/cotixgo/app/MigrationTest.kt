@@ -460,4 +460,118 @@ class MigrationTest {
         db.query("SELECT COUNT(*) FROM payment_refunds WHERE paymentId = 'pay1'")
             .use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
     }
+
+    /**
+     * Migración real v8→v9 (F8): crea una base v8 con datos preexistentes
+     * (usuario, trabajo con material descriptivo histórico y operación de
+     * cola pendiente), migra y verifica que:
+     *  - las filas F1–F7 sobreviven y la cola conserva la operación;
+     *  - el `job_material` histórico gana `materialId`/`condition` nulos
+     *    (sigue siendo descriptivo: nunca se reinterpreta);
+     *  - las tablas F8 (materials, purchases, purchase_items,
+     *    inventory_movements, material_stocks) quedan creadas con sus
+     *    índices, incluido el único de `provisionalNumber` en Compras.
+     */
+    @Test
+    fun migrate8To9_preservesRowsAndCreatesF8Tables() {
+        // Semilla sobre la base v8 real (columnas del esquema exportado 8.json).
+        helper.createDatabase(testDb, 8).apply {
+            execSQL(
+                "INSERT INTO users (id, name, mainCurrency, email, createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('u1', 'Usuario Sintético', 'COP', 'u@synthetic.local', 1, 1, 0, 1)",
+            )
+            execSQL(
+                "INSERT INTO jobs (id, userId, clientId, profileId, provisionalNumber, status," +
+                    " executionAddress, notes, clientNameSnapshot, archived, createdAt, updatedAt," +
+                    " pendingSync, serverVersion) VALUES ('j1', 'u1', 'c1', 'p1', 'TR-PEND-0001'," +
+                    " 'EN_PROCESO', 'Obra', '', 'Cliente Sintético', 0, 1, 1, 1, 3)",
+            )
+            // Material descriptivo histórico F4: sin materialId ni condition.
+            execSQL(
+                "INSERT INTO job_materials (id, jobId, description, origin, quantity, unit, notes," +
+                    " createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('jm1', 'j1', 'Cemento histórico', 'PROFESIONAL', '2', 'kg', ''," +
+                    " 1, 1, 0, 2)",
+            )
+            // Operación de cola pendiente: debe sobrevivir a la migración.
+            execSQL(
+                "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
+                    " payloadJson, supersedesOpId, deviceId, state, resultJson, resultCode, attempts," +
+                    " createdAt, updatedAt) VALUES ('op-pend', 9, 'job_material', 'jm1', 'upsert', 2," +
+                    " '{}', NULL, 'dev1', 'PENDING', NULL, NULL, 0, 1, 1)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(testDb, 9, true, AppDatabase.MIGRATION_8_9)
+
+        // El registro histórico sigue descriptivo: vínculo nulo, datos intactos.
+        db.query("SELECT description, materialId, condition FROM job_materials WHERE id = 'jm1'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("Cemento histórico", c.getString(0))
+            assertTrue("materialId histórico debe quedar NULL", c.isNull(1))
+            assertTrue("condition histórica debe quedar NULL", c.isNull(2))
+        }
+        db.query("SELECT state FROM sync_operations WHERE opId = 'op-pend'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("PENDING", c.getString(0))
+        }
+
+        // Tablas F8 creadas.
+        for (table in listOf(
+            "materials", "purchases", "purchase_items", "inventory_movements", "material_stocks",
+        )) {
+            db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", arrayOf(table))
+                .use { c -> assertTrue("tabla $table creada", c.moveToFirst()) }
+        }
+
+        // Índice único de numeración provisional COM operativo.
+        db.execSQL(
+            "INSERT INTO purchases (id, userId, provisionalNumber, status, purchaseDateEpochDay," +
+                " supplierPlace, reference, notes, currency, totalAmount, archived, officialNumber," +
+                " createdAt, updatedAt, pendingSync, serverVersion) VALUES ('pu1', 'u1'," +
+                " 'COM-PEND-TEST', 'BORRADOR', 21005, '', '', '', 'COP', '0.00', 0, NULL, 1, 1, 1, 0)",
+        )
+        var dupFailed = false
+        try {
+            db.execSQL(
+                "INSERT INTO purchases (id, userId, provisionalNumber, status, purchaseDateEpochDay," +
+                    " supplierPlace, reference, notes, currency, totalAmount, archived, officialNumber," +
+                    " createdAt, updatedAt, pendingSync, serverVersion) VALUES ('pu2', 'u1'," +
+                    " 'COM-PEND-TEST', 'BORRADOR', 21005, '', '', '', 'COP', '0.00', 0, NULL, 1, 1, 1, 0)",
+            )
+        } catch (e: android.database.sqlite.SQLiteConstraintException) {
+            dupFailed = true
+        }
+        assertTrue("índice único provisionalNumber operativo", dupFailed)
+
+        // Las tablas F8 aceptan filas (líneas, movimientos y espejo de stock).
+        db.execSQL(
+            "INSERT INTO materials (id, userId, name, unit, description, archived, createdAt," +
+                " updatedAt, pendingSync, serverVersion) VALUES ('m1', 'u1', 'Cemento', 'kg', ''," +
+                " 0, 1, 1, 1, 0)",
+        )
+        db.execSQL(
+            "INSERT INTO purchase_items (id, purchaseId, position, materialId, materialNameSnapshot," +
+                " quantity, unit, unitPrice, lineTotal, condition, createdAt) VALUES ('pi1', 'pu1'," +
+                " 1, 'm1', 'Cemento', '2', 'kg', '100.00', '200.00', 'NUEVO', 1)",
+        )
+        db.execSQL(
+            "INSERT INTO inventory_movements (id, userId, materialId, condition, movementType, origin," +
+                " quantity, unit, unitCost, purchaseId, jobId, jobMaterialId, note, occurredAt," +
+                " createdAt, updatedAt, pendingSync, serverVersion) VALUES ('mv1', 'u1', 'm1'," +
+                " 'NUEVO', 'PURCHASE_IN', 'COMPRA', '2', 'kg', '100.00', 'pu1', NULL, NULL," +
+                " 'Entrada por compra', 1, 1, 1, 0, 1)",
+        )
+        db.execSQL(
+            "INSERT INTO material_stocks (materialId, stockNew, stockUsed, updatedAt, serverVersion)" +
+                " VALUES ('m1', '2', '0', 1, 1)",
+        )
+        db.query("SELECT COUNT(*) FROM purchase_items WHERE purchaseId = 'pu1'").use { c ->
+            c.moveToFirst(); assertEquals(1, c.getInt(0))
+        }
+        db.query("SELECT stockNew FROM material_stocks WHERE materialId = 'm1'").use { c ->
+            c.moveToFirst(); assertEquals("2", c.getString(0))
+        }
+    }
 }

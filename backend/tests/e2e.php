@@ -1624,4 +1624,390 @@ check('m2_cons_createdAt_declared_preserved',
     ($byId["consolidated_collection:$m2cons2"]['payload']['createdAt'] ?? null) === $declaredTs,
     json_encode($byId["consolidated_collection:$m2cons2"]['payload']['createdAt'] ?? null));
 
+// =====================  F8 — Inventario y Compras  =====================
+// Catálogo global de Materiales, Compras con numeración COM, movimientos
+// append-only derivados por el servidor y saldo proyectado. Sintético.
+
+$matA = $u('f8100001');
+$matB = $u('f8100002');
+$mkMat = fn(string $opId, string $id, array $over = [], int $base = 0) =>
+    [['operation_id' => $opId, 'entity_type' => 'material', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $base,
+      'payload' => array_merge(
+          ['id' => $id, 'userId' => $userId, 'name' => 'Material Sintético',
+           'unit' => 'kg', 'description' => '', 'archived' => false,
+           'createdAt' => $now, 'updatedAt' => $now], $over)]];
+
+// Catálogo: altas válidas y mínimos requeridos.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => array_merge(
+        $mkMat($u('f8100010'), $matA, ['name' => 'Cemento gris']),
+        $mkMat($u('f8100011'), $matB, ['name' => 'Varilla 3/8', 'unit' => 'und']))], $token);
+check('f8_materials_APPLIED', array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'],
+    json_encode($r));
+
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkMat($u('f8100020'), $u('f8100021'), ['unit' => ''])], $token);
+check('f8_material_sin_unidad_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkMat($u('f8100030'), $u('f8100031'), ['name' => '  '])], $token);
+check('f8_material_sin_nombre_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED',
+    json_encode($r));
+
+// Material de la segunda cuenta (aislamiento por titular).
+$matX = $u('f8100091');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkMat($u('f8100090'), $matX, ['userId' => $reg2['user_id'], 'name' => 'Ajeno'])],
+    $reg2['token']);
+check('f8_material_otra_cuenta_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+
+// Compra en BORRADOR: dos líneas, número oficial COM- en el primer
+// registro aceptado, total y moneda derivados por el servidor.
+$pur1 = $u('f8200001');
+$purPayload = fn(string $status, array $items, array $over = []) => array_merge([
+    'id' => $pur1, 'userId' => $userId, 'provisionalNumber' => 'COM-PEND-TST1',
+    'status' => $status, 'purchaseDateEpochDay' => 21005,
+    'supplierPlace' => 'Depósito Sintético', 'reference' => 'FAC-1',
+    'notes' => '', 'currency' => 'USD', 'totalAmount' => '99999.99', 'archived' => false,
+    'items' => $items, 'createdAt' => $now, 'updatedAt' => $now], $over);
+$line = fn(string $id, string $mat, string $qty, string $price, string $cond = 'NUEVO') => [
+    'id' => $id, 'position' => 1, 'materialId' => $mat, 'quantity' => $qty,
+    'unit' => 'kg', 'unitPrice' => $price, 'lineTotal' => '0.00',
+    'condition' => $cond, 'createdAt' => $now];
+$lA = $line($u('f8200011'), $matA, '10', '100.00');
+$lB = array_merge($line($u('f8200012'), $matB, '5', '50.00', 'USADO'), ['position' => 2]);
+
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200000'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => $purPayload('BORRADOR', [$lA, $lB])]]], $token);
+$comNum = $r['results'][0]['official_number'] ?? null;
+check('f8_purchase_borrador_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && is_string($comNum) && preg_match('/^COM-\d{6}-\d{3}$/', $comNum) === 1, json_encode($r));
+$byId = $pullById();
+$p1 = $byId["purchase:$pur1"]['payload'] ?? [];
+check('f8_purchase_total_moneda_derivados',
+    ($p1['totalAmount'] ?? '') === '1250.00' && ($p1['currency'] ?? '') !== 'USD'
+    && ($p1['items'][0]['materialNameSnapshot'] ?? '') === 'Cemento gris'
+    && ($p1['items'][0]['lineTotal'] ?? '') === '1000.00',
+    json_encode([$p1['totalAmount'] ?? null, $p1['currency'] ?? null]));
+check('f8_borrador_sin_movimientos',
+    empty($byId["inventory_stock:$matA"]) && empty($byId["inventory_stock:$matB"])
+    && !array_filter($byId, fn($ch) => $ch['entity_type'] === 'inventory_movement'));
+
+// Rechazos de mínimos y ciclo de vida.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200020'), 'entity_type' => 'purchase',
+        'entity_id' => $u('f8200021'), 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => $purPayload('BORRADOR', [$lA], ['id' => $u('f8200021'),
+            'purchaseDateEpochDay' => 0])]]], $token);
+check('f8_purchase_sin_fecha_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200030'), 'entity_type' => 'purchase',
+        'entity_id' => $u('f8200031'), 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => $purPayload('CONFIRMADA', [$lA], ['id' => $u('f8200031')])]]], $token);
+check('f8_purchase_nace_confirmada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200040'), 'entity_type' => 'purchase',
+        'entity_id' => $u('f8200041'), 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => $purPayload('BORRADOR', [$line($u('f8200042'), $matX, '1', '1.00')],
+            ['id' => $u('f8200041')])]]], $token);
+check('f8_purchase_linea_ajena_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY', json_encode($r));
+
+// Confirmar sin líneas → VALIDATION_ERROR; confirmar p1 → entradas atómicas.
+$pur0 = $u('f8200051');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $u('f8200050'), 'entity_type' => 'purchase', 'entity_id' => $pur0,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => $purPayload('BORRADOR', [], ['id' => $pur0])],
+        ['operation_id' => $u('f8200052'), 'entity_type' => 'purchase', 'entity_id' => $pur0,
+         'type' => 'upsert', 'base_server_version' => 1,
+         'payload' => $purPayload('CONFIRMADA', [], ['id' => $pur0])],
+    ]], $token);
+check('f8_confirmar_sin_lineas_REJECTED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][1]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][1]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+$confirmPayload = $purPayload('CONFIRMADA', [$lA, $lB]);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200060'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 1,
+        'payload' => $confirmPayload]]], $token);
+check('f8_confirmar_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $comNum, json_encode($r));
+$byId = $pullById();
+$movsP1 = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['purchaseId'] ?? null) === $pur1));
+check('f8_confirmar_genera_entradas', count($movsP1) === 2
+    && array_column(array_column($movsP1, 'payload'), 'movementType') === ['PURCHASE_IN', 'PURCHASE_IN']
+    && array_column(array_column($movsP1, 'payload'), 'origin') === ['COMPRA', 'COMPRA'],
+    json_encode(array_column($movsP1, 'payload')));
+check('f8_stock_tras_confirmar',
+    ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '10'
+    && ($byId["inventory_stock:$matB"]['payload']['stockUsed'] ?? '') === '5',
+    json_encode([$byId["inventory_stock:$matA"]['payload'] ?? null,
+                 $byId["inventory_stock:$matB"]['payload'] ?? null]));
+
+// Replay idempotente del mismo op: no duplica movimientos ni cambia número.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200060'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 1,
+        'payload' => $confirmPayload]]], $token);
+check('f8_confirmar_replay_idempotente', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][0]['official_number'] ?? null) === $comNum, json_encode($r));
+$byId = $pullById();
+check('f8_replay_sin_movimientos_extra', count(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['purchaseId'] ?? null) === $pur1)) === 2);
+
+// Edición diferencial en CONFIRMADA (base=2): A 10→12 y B se retira.
+$lA2 = array_merge($lA, ['quantity' => '12']);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200070'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 2,
+        'payload' => $purPayload('CONFIRMADA', [$lA2])]]], $token);
+check('f8_edicion_confirmada_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+$movsP1 = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['purchaseId'] ?? null) === $pur1));
+$diff = array_map(fn($m) => [$m['payload']['materialId'], $m['payload']['movementType'],
+    $m['payload']['quantity']], array_slice($movsP1, 2));
+usort($diff, fn($a, $b) => strcmp($a[0], $b[0]));
+check('f8_edicion_diferencial', $diff === [
+        [$matA, 'PURCHASE_IN', '2'], [$matB, 'ADJUSTMENT_OUT', '5']], json_encode($diff));
+check('f8_stock_tras_edicion',
+    ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '12'
+    && ($byId["inventory_stock:$matB"]['payload']['stockUsed'] ?? '') === '0',
+    json_encode([$byId["inventory_stock:$matA"]['payload'] ?? null,
+                 $byId["inventory_stock:$matB"]['payload'] ?? null]));
+
+// Base obsoleta sobre la compra → CONFLICT con estado servidor.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200080'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 1,
+        'payload' => $purPayload('CONFIRMADA', [$lA2], ['notes' => 'viejo'])]]], $token);
+check('f8_purchase_stale_CONFLICT', ($r['results'][0]['status'] ?? '') === 'CONFLICT'
+    && ($r['results'][0]['code'] ?? '') === 'STALE_BASE_VERSION'
+    && isset($r['results'][0]['server_state']), json_encode($r));
+
+// Anulación: movimientos inversos atómicos; ANULADA es terminal y solo
+// admite el cambio de `archived` (que no revierte nada).
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8200090'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 3,
+        'payload' => $purPayload('ANULADA', [$lA2])]]], $token);
+check('f8_anular_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$movsP1 = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['purchaseId'] ?? null) === $pur1));
+$last = end($movsP1);
+check('f8_anulacion_inversa', count($movsP1) === 5
+    && ($last['payload']['movementType'] ?? '') === 'ADJUSTMENT_OUT'
+    && ($last['payload']['origin'] ?? '') === 'COMPRA'
+    && ($last['payload']['quantity'] ?? '') === '12',
+    json_encode(array_column($movsP1, 'payload')));
+check('f8_stock_cero_tras_anular',
+    ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '0'
+    && ($byId["inventory_stock:$matB"]['payload']['stockUsed'] ?? '') === '0');
+
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f82000a0'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 4,
+        'payload' => $purPayload('BORRADOR', [$lA2])]]], $token);
+check('f8_anulada_terminal_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f82000b0'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 4,
+        'payload' => $purPayload('ANULADA', [$lA2], ['archived' => true])]]], $token);
+check('f8_archivar_anulada_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('f8_archivar_no_revierte',
+    ($byId["purchase:$pur1"]['payload']['archived'] ?? false) === true
+    && ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '0');
+
+// ---- Movimientos append-only ----
+$movOp = fn(string $opId, string $id, array $payload) =>
+    [['operation_id' => $opId, 'entity_type' => 'inventory_movement', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => 0, 'payload' => $payload]];
+$movBase = fn(array $over = []) => array_merge([
+    'id' => $u('f8300099'), 'userId' => $userId, 'materialId' => $matA,
+    'condition' => 'NUEVO', 'movementType' => 'ADJUSTMENT_IN', 'origin' => 'AJUSTE',
+    'quantity' => '3', 'unit' => 'kg', 'unitCost' => null, 'purchaseId' => null,
+    'jobId' => null, 'jobMaterialId' => null, 'note' => 'Conteo físico sintético',
+    'occurredAt' => $now, 'createdAt' => $now, 'updatedAt' => $now], $over);
+
+// Movimiento de origen COMPRA jamás lo empuja el cliente.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300000'), $u('f8300001'),
+        $movBase(['id' => $u('f8300001'), 'origin' => 'COMPRA',
+                  'movementType' => 'PURCHASE_IN', 'purchaseId' => $pur1]))], $token);
+check('f8_movimiento_compra_cliente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// La proyección es solo lectura.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f8300010'), 'entity_type' => 'inventory_stock',
+        'entity_id' => $matA, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $matA, 'materialId' => $matA, 'stockNew' => '99',
+            'stockUsed' => '0', 'createdAt' => $now, 'updatedAt' => $now]]]], $token);
+check('f8_stock_no_escribible_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED',
+    json_encode($r));
+
+// Ajuste sin nota → rechazo; con nota → aplica y proyecta.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300020'), $u('f8300021'),
+        $movBase(['id' => $u('f8300021'), 'note' => '']))], $token);
+check('f8_ajuste_sin_nota_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300030'), $u('f8300031'),
+        $movBase(['id' => $u('f8300031')]))], $token);
+check('f8_ajuste_in_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+check('f8_stock_tras_ajuste', ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '3');
+
+// Sobrante: nota obligatoria; referencia a Trabajo opcional pero debe existir.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300040'), $u('f8300041'),
+        $movBase(['id' => $u('f8300041'), 'origin' => 'SOBRANTE', 'note' => '']))], $token);
+check('f8_sobrante_sin_nota_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED',
+    json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300050'), $u('f8300051'),
+        $movBase(['id' => $u('f8300051'), 'origin' => 'SOBRANTE', 'quantity' => '2',
+                  'jobId' => $u('ffffff51')]))], $token);
+check('f8_sobrante_trabajo_inexistente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'DEPENDENCY', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300060'), $u('f8300061'),
+        $movBase(['id' => $u('f8300061'), 'origin' => 'SOBRANTE', 'quantity' => '2',
+                  'jobId' => $job1]))], $token);
+check('f8_sobrante_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+check('f8_stock_tras_sobrante', ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '5');
+
+// Material ajeno → FORBIDDEN; inexistente → DEPENDENCY.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300070'), $u('f8300071'),
+        $movBase(['id' => $u('f8300071'), 'materialId' => $matX]))], $token);
+check('f8_mov_material_ajeno_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300080'), $u('f8300081'),
+        $movBase(['id' => $u('f8300081'), 'materialId' => $u('ffffff81')]))], $token);
+check('f8_mov_material_inexistente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'DEPENDENCY', json_encode($r));
+
+// Append-only: replay con campos idénticos → dedupe; con cambios → IMMUTABLE.
+$movFix = $movBase(['id' => $u('f8300090'), 'quantity' => '1.500000']);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300091'), $u('f8300090'), $movFix)], $token);
+check('f8_mov_creado_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+check('f8_mov_cantidad_normalizada',
+    ($byId['inventory_movement:' . $u('f8300090')]['payload']['quantity'] ?? '') === '1.5');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300092'), $u('f8300090'), $movFix)], $token);
+check('f8_mov_dedupe_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8300093'), $u('f8300090'),
+        array_merge($movFix, ['quantity' => '2']))], $token);
+check('f8_mov_inmutable_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'IMMUTABLE_FINANCIAL', json_encode($r));
+
+// ---- Consumo explícito en Trabajo (vínculo job_material → Material) ----
+// jmDesc: histórico descriptivo (sin materialId); jmLink: consumo nuevo vinculado.
+$jmDesc = $u('f8400001');
+$jmLink = $u('f8400002');
+$jmOp = fn(string $opId, string $id, array $payload, int $base = 0) =>
+    [['operation_id' => $opId, 'entity_type' => 'job_material', 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $base, 'payload' => $payload]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => array_merge(
+        $jmOp($u('f8400000'), $jmDesc,
+            ['id' => $jmDesc, 'jobId' => $job1, 'description' => 'Material histórico',
+             'origin' => 'PROFESIONAL', 'quantity' => '1', 'unit' => 'und', 'notes' => '',
+             'createdAt' => $now, 'updatedAt' => $now]),
+        $jmOp($u('f8400010'), $jmLink,
+            ['id' => $jmLink, 'jobId' => $job1, 'description' => 'Consumo cemento',
+             'origin' => 'PROFESIONAL', 'quantity' => '4', 'unit' => 'kg', 'notes' => '',
+             'materialId' => $matA, 'condition' => 'NUEVO',
+             'createdAt' => $now, 'updatedAt' => $now]))], $token);
+check('f8_job_material_vinculado_APPLIED',
+    array_column($r['results'] ?? [], 'status') === ['APPLIED', 'APPLIED'], json_encode($r));
+
+// El histórico no gana materialId al editarse (sin reinterpretación).
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jmOp($u('f8400020'), $jmDesc,
+        ['id' => $jmDesc, 'jobId' => $job1, 'description' => 'Material histórico',
+         'origin' => 'PROFESIONAL', 'quantity' => '1', 'unit' => 'und', 'notes' => 'editado',
+         'materialId' => $matA, 'condition' => 'NUEVO',
+         'createdAt' => $now, 'updatedAt' => $now], 1)], $token);
+check('f8_historico_no_vinculable_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// El vínculo ya creado es append-only: cambiar la cantidad se rechaza.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $jmOp($u('f8400030'), $jmLink,
+        ['id' => $jmLink, 'jobId' => $job1, 'description' => 'Consumo cemento',
+         'origin' => 'PROFESIONAL', 'quantity' => '9', 'unit' => 'kg', 'notes' => '',
+         'materialId' => $matA, 'condition' => 'NUEVO',
+         'createdAt' => $now, 'updatedAt' => $now], 1)], $token);
+check('f8_vinculo_inmutable_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED',
+    json_encode($r));
+
+// Consumo JOB_CONSUMPTION referenciando el vínculo: aplica y descuenta.
+$cons1 = $u('f8400041');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8400040'), $cons1,
+        $movBase(['id' => $cons1, 'movementType' => 'JOB_CONSUMPTION', 'origin' => 'TRABAJO',
+                  'quantity' => '4', 'jobId' => $job1, 'jobMaterialId' => $jmLink,
+                  'note' => '']))], $token);
+check('f8_consumo_trabajo_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('f8_stock_tras_consumo', ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '2.5',
+    json_encode($byId["inventory_stock:$matA"]['payload'] ?? null));
+
+// Consumo sin vínculo coherente → rechazo (job_material no corresponde).
+$cons2 = $u('f8400051');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8400050'), $cons2,
+        $movBase(['id' => $cons2, 'movementType' => 'JOB_CONSUMPTION', 'origin' => 'TRABAJO',
+                  'quantity' => '1', 'jobId' => $job1, 'jobMaterialId' => $jmDesc,
+                  'note' => '']))], $token);
+check('f8_consumo_vinculo_incoherente_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED',
+    json_encode($r));
+
+// Stock negativo permitido: ajuste de salida mayor que el saldo.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $movOp($u('f8400060'), $u('f8400061'),
+        $movBase(['id' => $u('f8400061'), 'movementType' => 'ADJUSTMENT_OUT',
+                  'quantity' => '100', 'note' => 'Merma sintética']))], $token);
+check('f8_stock_negativo_permitido', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('f8_stock_negativo_proyectado',
+    ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '-97.5',
+    json_encode($byId["inventory_stock:$matA"]['payload'] ?? null));
+
+// Aislamiento: la otra cuenta no ve el material ni el stock en su pull.
+[, $r2] = http($base, 'GET', '/sync/pull?cursor=0', null, $reg2['token']);
+$foreign = array_filter($r2['changes'] ?? [],
+    fn($ch) => $ch['entity_id'] === $matA || $ch['entity_id'] === $pur1
+        || ($ch['entity_type'] === 'inventory_stock' && $ch['entity_id'] === $matA));
+check('f8_aislamiento_titular', $foreign === []);
+
 echo "\n$pass passed, $fail failed\n";
