@@ -85,6 +85,14 @@ object DbKeyProvider {
         return pass
     }
 
+    /**
+     * true si existe el blob envuelto. Su ausencia junto a una base
+     * cifrada equivale a pérdida de clave: una passphrase nueva no puede
+     * abrir una base creada con otra, por lo que regenerar en ese estado
+     * produciría fallos de apertura fuera del flujo informado de resync.
+     */
+    fun hasPassphraseBlob(context: Context): Boolean = blobFile(context).exists()
+
     @Synchronized
     fun deletePassphrase(context: Context) {
         blobFile(context).delete()

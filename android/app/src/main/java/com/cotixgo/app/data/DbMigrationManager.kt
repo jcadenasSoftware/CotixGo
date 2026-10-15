@@ -133,6 +133,7 @@ object DbMigrationManager {
                     writeState(ctx, State.FAILED, "clear_db_after_migrated")
                     throw DbBlockedException(State.FAILED, "clear_db_after_migrated")
                 }
+                requireBlobIfEncryptedDb(ctx, f)
                 return
             }
             State.FAILED -> throw DbBlockedException(State.FAILED, failureReason(ctx) ?: "failed")
@@ -272,6 +273,20 @@ object DbMigrationManager {
         return out
     }
 
+    /**
+     * Una base cifrada sin su blob de clave es pérdida de clave: bloquea
+     * con [DbKeyProvider.KeyUnavailableException] (la UI muestra
+     * key_unavailable y el resync informado) en lugar de dejar que
+     * [passphrase] genere una clave sustituta incapaz de abrirla.
+     */
+    private fun requireBlobIfEncryptedDb(ctx: Context, f: File) {
+        if (f.exists() && isEncryptedSqlite(f) && !DbKeyProvider.hasPassphraseBlob(ctx)) {
+            throw DbKeyProvider.KeyUnavailableException(
+                IllegalStateException("base cifrada sin blob de clave"),
+            )
+        }
+    }
+
     /** Limpieza bloqueante de todos los artefactos claros accesibles. */
     private fun runCleanup(context: Context) {
         writeState(context, State.CLEANUP_PENDING)
@@ -286,6 +301,7 @@ object DbMigrationManager {
             writeState(context, State.CLEANUP_PENDING, "cleanup_incomplete")
             throw DbBlockedException(State.CLEANUP_PENDING, "cleanup_incomplete")
         }
+        requireBlobIfEncryptedDb(context, db)
         writeState(context, State.MIGRATED)
     }
 

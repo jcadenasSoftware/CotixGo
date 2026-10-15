@@ -6,14 +6,17 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.cotixgo.app.data.AppDatabase
 import com.cotixgo.app.data.DbMigrationManager
+import com.cotixgo.app.data.security.DbKeyProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.Properties
 
 /**
  * Regresión del arranque real: simula una instalación previa con la base
@@ -59,6 +62,7 @@ class BootMigrationTest {
             File(db.path + "-wal"), File(db.path + "-shm"), File(db.path + "-journal"))
             .forEach { it.delete() }
         markerFile().delete()
+        File(ctx.filesDir, "dbkey.bin").delete()
     }
 
     @Test
@@ -89,13 +93,61 @@ class BootMigrationTest {
             assertEquals("Usuario Sintético", it.getString(0))
         }
 
-        // Estado final coherente: MIGRATED, fichero cifrado, sin claros.
+        db.close()
+        // Simulación explícita del estado durable MIGRATED requerido por la
+        // regresión: la pérdida posterior de dbkey.bin debe bloquear.
+        markerFile().outputStream().use {
+            Properties().apply { setProperty("state", DbMigrationManager.State.MIGRATED.name) }.store(it, null)
+        }
         assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
         prodDbFile().inputStream().use { it.read(head) }
         assertFalse("La base servida no puede ser clara",
             String(head, Charsets.US_ASCII) == "SQLite format 3")
         assertFalse(File(prodDbFile().path + ".bak").exists())
         assertFalse(File(prodDbFile().path + ".enc.tmp").exists())
+    }
+
+    /**
+     * Regresión M1: base cifrada migrada + blob de clave ausente →
+     * bloqueo key_unavailable por el camino de producción. Sin una clave
+     * sustituta, sin borrado de datos y con la cola intacta; solo la
+     * acción informada del usuario (hardReset) puede limpiar.
+     */
+    @Test
+    fun migratedDb_missingKeyBlob_blocksKeyUnavailable_noSubstitute() {
+        // Instalación cifrada sana por el camino de producción, con una
+        // operación pendiente en la cola.
+        val db = AppDatabase.get(ctx)
+        db.openHelper.writableDatabase.execSQL(
+            "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
+                " payloadJson, supersedesOpId, deviceId, state, resultJson, resultCode, attempts," +
+                " createdAt, updatedAt) VALUES ('op1', 1, 'client', 'c1', 'upsert', 0, '{}', NULL," +
+                " 'dev1', 'PENDING', NULL, NULL, 0, 1, 1)",
+        )
         db.close()
+        AppDatabase.resetForTest()
+        markerFile().outputStream().use {
+            Properties().apply { setProperty("state", DbMigrationManager.State.MIGRATED.name) }.store(it, null)
+        }
+        assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
+        val dbBytes = prodDbFile().readBytes()
+
+        // Pérdida de clave: únicamente el blob desaparece.
+        val blob = File(ctx.filesDir, "dbkey.bin")
+        assertTrue(blob.delete())
+
+        try {
+            AppDatabase.get(ctx)
+            fail("La pérdida de clave debe bloquear, no generar clave sustituta")
+        } catch (e: DbKeyProvider.KeyUnavailableException) {
+            // esperado: MainActivity lo presenta como "key_unavailable"
+        }
+
+        assertFalse("No puede generarse una clave sustituta", blob.exists())
+        assertTrue(
+            "La base cifrada (y la cola pendiente) permanece intacta",
+            prodDbFile().readBytes().contentEquals(dbBytes),
+        )
+        assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
     }
 }

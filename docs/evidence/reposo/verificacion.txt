@@ -113,3 +113,24 @@ Resultados:
   El dispositivo donde ocurrió el fallo queda verificado.
 - Emulador Pixel_8: suite completa OK (103 tests) en 906.1s —
   BootMigrationTest corrió primero y validó el arranque real.
+
+== Corrida H — corrección M1 (pérdida de blob de clave en base cifrada) ==
+
+Caso: base cifrada ya migrada + `dbkey.bin` ausente.
+Hallazgo corregido: `DbKeyProvider.getOrCreatePassphrase()` ya no
+regenera una passphrase sustituta cuando `DbMigrationManager` detecta
+MIGRATED y la base cifrada existe. El flujo de producción ahora bloquea
+con `DbKeyProvider.KeyUnavailableException`/`key_unavailable`, sin borrar
+la base ni la cola pendiente; la limpieza y el resync quedan a la acción
+informada del usuario.
+
+Verificación ejecutada en esta revisión:
+- `BootMigrationTest` en Xiaomi físico (`021e6d4a0403`, arm64-v8a) —
+  regresión del camino de producción con `MIGRATED` simulado y blob de
+  clave eliminado: PASS.
+- `LocalEncryptionTest` en emulador (`emulator-5554`) — regresiones de
+  `MIGRATED`, `SWAP_PENDING` y `NOT_MIGRATED` con blob ausente: PASS.
+- Builds: `assembleDebug`, `assembleDebugAndroidTest`, `testDebugUnitTest`.
+
+La corrección mantiene la regla de solo datos sintéticos y el comportamiento
+fail-closed informado.

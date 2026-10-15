@@ -64,6 +64,7 @@ class LocalEncryptionTest {
             File(f.path + "-journal").delete()
         }
         markerFile().delete()
+        blobFile().delete()
     }
 
     private fun writeMarker(state: DbMigrationManager.State, reason: String? = null) {
@@ -246,10 +247,12 @@ class LocalEncryptionTest {
         seedClearV9().close()
         DbMigrationManager.ensureReady(ctx)
         val enc2 = dbFile().readBytes()
+        val blobBytes = blobFile().readBytes()
         clean()
         seedClearV9().close()
         bakFile().writeBytes(dbFile().readBytes())
         tmpFile().writeBytes(enc2)
+        blobFile().writeBytes(blobBytes)
         dbFile().delete()
         writeMarker(DbMigrationManager.State.SWAP_PENDING)
         DbMigrationManager.ensureReady(ctx)
@@ -350,6 +353,78 @@ class LocalEncryptionTest {
         assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
         assertFalse(bakFile().exists())
         assertFalse(isClearSqlite(dbFile()))
+    }
+
+    @Test
+    fun migratedEncryptedDb_missingKeyBlob_blocksKeyUnavailable() {
+        // Regresión M1: migrar de verdad → MIGRATED con clave válida;
+        // luego se pierde únicamente el blob.
+        seedClearV9().close()
+        DbMigrationManager.ensureReady(ctx)
+        assertFalse(isClearSqlite(dbFile()))
+        val dbBytes = dbFile().readBytes()
+        writeMarker(DbMigrationManager.State.MIGRATED)
+        assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
+
+        DbKeyProvider.deletePassphrase(ctx)
+        try {
+            DbMigrationManager.ensureReady(ctx)
+            fail("Base cifrada sin blob debe bloquear con key_unavailable")
+        } catch (e: DbKeyProvider.KeyUnavailableException) {
+            // esperado: MainActivity lo muestra como "key_unavailable"
+        }
+        assertFalse("Sin clave sustituta", blobFile().exists())
+        assertTrue("La base cifrada permanece intacta",
+            dbFile().readBytes().contentEquals(dbBytes))
+        assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
+    }
+
+    @Test
+    fun resumeSwapAndNotMigrated_missingKeyBlob_blocksWithoutSubstitute() {
+        // Estado intermedio SWAP_PENDING con cifrada en su lugar + bak:
+        // la falta de clave bloquea sin generar sustituta ni servir claro.
+        seedClearV9().close()
+        DbMigrationManager.ensureReady(ctx)
+        val encBytes = dbFile().readBytes()
+        bakFile().writeBytes(encBytes) // artefacto residual simulado
+        writeMarker(DbMigrationManager.State.SWAP_PENDING)
+        DbKeyProvider.deletePassphrase(ctx)
+        try {
+            DbMigrationManager.ensureReady(ctx)
+            fail("SWAP_PENDING sin blob debe bloquear")
+        } catch (e: DbKeyProvider.KeyUnavailableException) {
+            // esperado
+        }
+        assertFalse(blobFile().exists())
+        assertTrue(dbFile().readBytes().contentEquals(encBytes))
+        assertEquals(DbMigrationManager.State.CLEANUP_PENDING,
+            DbMigrationManager.currentState(ctx))
+
+        // Estado NOT_MIGRATED con base ya cifrada y sin blob: el forense
+        // no puede regenerar la clave — bloquea igualmente.
+        writeMarker(DbMigrationManager.State.NOT_MIGRATED)
+        try {
+            DbMigrationManager.ensureReady(ctx)
+            fail("NOT_MIGRATED con cifrada sin blob debe bloquear")
+        } catch (e: DbKeyProvider.KeyUnavailableException) {
+            // esperado
+        }
+        assertFalse(blobFile().exists())
+        assertTrue(dbFile().readBytes().contentEquals(encBytes))
+    }
+
+    @Test
+    fun clearDb_missingKeyBlob_migratesWithFreshKey() {
+        // Contraste: fuente en claro verificada SÍ puede generar una
+        // clave nueva (no hay nada cifrado que proteger).
+        seedClearV9().close()
+        assertTrue(blobFile().delete() || !blobFile().exists())
+        DbMigrationManager.ensureReady(ctx)
+        assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
+        assertTrue(blobFile().exists())
+        assertFalse(isClearSqlite(dbFile()))
+        val enc = openEncrypted(dbFile(), passphraseOf())
+        assertEquals(1L, tableCount(enc, "users")); enc.close()
     }
 
     @Test
