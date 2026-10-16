@@ -46,14 +46,20 @@ class CollectionRepositoryTest {
     private lateinit var db: AppDatabase
     private lateinit var sync: SyncRepository
     private lateinit var repo: AppRepository
+    private lateinit var prodBefore: Map<String, String?>
+
+    // Preferencias exclusivas de prueba (D2): la sesión nunca toca
+    // cotixgo.session ni los artefactos reales de la app.
+    private val prefsName = TestIsolation.name("e2e-session-collection")
 
     @Before
     fun setUp() {
         val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        prodBefore = TestIsolation.snapshotProd(ctx)
         db = Room.inMemoryDatabaseBuilder(ctx, AppDatabase::class.java).build()
         // SyncRepository sin red: solo para verificar el encolado durable en
         // la misma transacción; nunca se llama push/pull en estas pruebas.
-        val session = com.cotixgo.app.data.Session(ctx, db).apply {
+        val session = com.cotixgo.app.data.Session(ctx, db, prefsName).apply {
             apiBaseUrl = "http://127.0.0.1:1"
         }
         sync = SyncRepository(db, session)
@@ -61,7 +67,13 @@ class CollectionRepositoryTest {
     }
 
     @After
-    fun tearDown() = db.close()
+    fun tearDown() {
+        db.close()
+        TestIsolation.deletePrefs(
+            ApplicationProvider.getApplicationContext(), prefsName)
+        TestIsolation.assertProdUntouched(
+            ApplicationProvider.getApplicationContext(), prodBefore)
+    }
 
     private suspend fun seed(): Triple<String, String, String> {
         repo.completeOnboarding("Test User", "Perfil Test")

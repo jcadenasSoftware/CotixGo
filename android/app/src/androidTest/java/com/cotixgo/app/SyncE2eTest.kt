@@ -46,6 +46,9 @@ import java.time.LocalDate
 /**
  * E2E real Android → PHP/MariaDB local con datos sintéticos (D4).
  * Requiere `php -S` en la máquina anfitriona (emulador → 10.0.2.2:8080).
+ *
+ * Aislamiento (D2): base, sesión y preferencias exclusivas de prueba;
+ * el snapshot de artefactos de producción falla si algo los tocó.
  */
 @RunWith(AndroidJUnit4::class)
 class SyncE2eTest {
@@ -56,15 +59,19 @@ class SyncE2eTest {
     private lateinit var repo: AppRepository
     private lateinit var api: ApiClient
     private lateinit var dbPath: String
+    private lateinit var prefsName: String
+    private lateinit var prodBefore: Map<String, String?>
     private val ctx get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     private fun newDb(name: String) = Room.databaseBuilder(ctx, AppDatabase::class.java, name).build()
 
     @Before
     fun setUp() = runBlocking {
-        dbPath = "cotixgo-e2e-${Ids.new()}.db"
+        prodBefore = TestIsolation.snapshotProd(ctx)
+        dbPath = TestIsolation.name("e2e-sync-${Ids.new()}.db")
+        prefsName = TestIsolation.name("e2e-session-${Ids.new().take(8)}")
         db = newDb(dbPath)
-        session = Session(ctx, db).apply {
+        session = Session(ctx, db, prefsName).apply {
             apiBaseUrl = "http://10.0.2.2:8080"
             clearSession() // cada corrida usa una cuenta sintética nueva
         }
@@ -76,14 +83,15 @@ class SyncE2eTest {
         val email = "e2e-${Ids.new().take(8)}@synthetic.local"
         val res = api.register("E2E Bot", email, "synthetic-pass-123",
             localUserId = db.userDao().get()!!.id)
-        sync.bindAccount(res.str("user_id")!!, email, res.str("token")!!)
+        assertNull(sync.bindAccount(res.str("user_id")!!, email, res.str("token")!!))
     }
 
     @After
     fun tearDown() {
         db.close()
-        ctx.deleteDatabase(dbPath)
-        session.clearSession()
+        TestIsolation.deleteDb(ctx, dbPath)
+        TestIsolation.deletePrefs(ctx, prefsName)
+        TestIsolation.assertProdUntouched(ctx, prodBefore)
     }
 
     private suspend fun seedQuote(): String {
@@ -335,7 +343,8 @@ class SyncE2eTest {
         val email = "e2e-re-${Ids.new().take(8)}@synthetic.local"
         val res = anon.register("Reasignado", email, "pass-re-789")
         val canonical = res.str("user_id")!!
-        sync.bindAccount(canonical, email, res.str("token")!!)
+        // Datos nunca sincronizados → adopción permitida (regla aprobada).
+        assertNull(sync.bindAccount(canonical, email, res.str("token")!!))
 
         val userOp = db.syncDao().pendingOpsForEntity(EntityTypes.USER, canonical).singleOrNull()
         assertNotNull("la op user se regeneró con el id canónico", userOp)

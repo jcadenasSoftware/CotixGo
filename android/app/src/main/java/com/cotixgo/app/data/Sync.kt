@@ -65,15 +65,21 @@ object EntityTypes {
  * guardados con EncryptedSharedPreferences en versiones anteriores no
  * se migran: tras la actualización el usuario inicia sesión de nuevo.
  */
-class Session(context: Context, private val db: AppDatabase) {
+class Session(
+    context: Context,
+    private val db: AppDatabase,
+    prefsName: String = PREFS_NAME,
+) {
     private val appContext = context.applicationContext
     private val plain: SharedPreferences =
-        appContext.getSharedPreferences("cotixgo.session", Context.MODE_PRIVATE)
+        appContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
 
     init {
         // Limpieza del archivo de preferencias cifradas legado
         // (EncryptedSharedPreferences de security-crypto, ya sin uso).
-        appContext.deleteSharedPreferences("cotixgo.secure")
+        // Solo aplica a la sesión de producción: una sesión con nombre de
+        // prueba no debe tocar ningún archivo real de la app.
+        if (prefsName == PREFS_NAME) appContext.deleteSharedPreferences("cotixgo.secure")
     }
 
     var token: String?
@@ -110,6 +116,10 @@ class Session(context: Context, private val db: AppDatabase) {
         // Emulador Android → máquina anfitriona. Dispositivo físico/dev:
         // configurar la IP del equipo en Ajustes (solo desarrollo local).
         const val DEFAULT_API_BASE = "http://10.0.2.2:8080"
+
+        /** SharedPreferences de la sesión de producción. Las pruebas
+         *  instrumentadas deben usar otro nombre (ver TestIsolation). */
+        const val PREFS_NAME = "cotixgo.session"
     }
 }
 
@@ -1275,10 +1285,30 @@ class SyncRepository(
      * servidor conservando los UUID de las entidades. Las operaciones
      * encoladas se regeneran con nuevos operation_id (misma secuencia,
      * supersedes → operación original) y el historial queda preservado.
+     *
+     * Guarda de titularidad (D3): la adopción local solo es válida para datos
+     * que nunca se sincronizaron. Si la copia local ya fue reconocida por el
+     * servidor bajo una cuenta distinta (entidades con serverVersion > 0 o
+     * cursor de pull consumido), vincular otra cuenta las haría aparecer como
+     * propias mientras el servidor las sigue atribuyendo a la cuenta original;
+     * las escrituras posteriores serían rechazadas con FORBIDDEN_ENTITY y
+     * quedarían pausadas sin vía de resolución. En ese estado el vínculo a
+     * otra cuenta se rechaza sin tocar filas, cola ni sesión: el usuario debe
+     * recuperar la sesión de la cuenta original (mismo userId: siempre
+     * permitido) y desde ella ejecutar el flujo seguro de Cambiar de cuenta.
+     * Esto también cubre el estado residual de un cierre inesperado durante
+     * switchAccount entre clearSession() y wipeLocalData().
+     *
+     * Devuelve null en éxito o el mensaje de bloqueo para la interfaz.
      */
-    suspend fun bindAccount(userId: String, email: String, token: String) {
+    suspend fun bindAccount(userId: String, email: String, token: String): String? {
         val localUser = db.userDao().get()
         val oldId = localUser?.id
+        if (oldId != userId && (session.cursor() > 0L || syncedEntityCount() > 0)) {
+            return "Los datos locales ya pertenecen a otra cuenta sincronizada " +
+                "y se conservan intactos. Inicia sesión con esa cuenta para " +
+                "recuperar la sesión; el cambio de cuenta se realiza desde ella."
+        }
         db.withTransaction {
             if (localUser != null && oldId != userId) {
                 // Reasignar user_id en todas las tablas sin tocar UUIDs.
@@ -1332,6 +1362,9 @@ class SyncRepository(
                     )
                     db.syncDao().updateOpResult(op.opId, "DONE", null, "SUPERSEDED", now)
                 }
+                // La cuenta nueva puede traer datos de otros dispositivos:
+                // reasignar a otra identidad reinicia el pull completo.
+                session.setCursor(0)
             } else if (localUser == null) {
                 // Fila local para la UI tras login en instalación limpia:
                 // pendingSync=false evita un conflicto fantasma cuando el
@@ -1343,14 +1376,41 @@ class SyncRepository(
                         pendingSync = false,
                     ),
                 )
+                session.setCursor(0)
             } else {
+                // Mismo usuario canónico (re-login tras pérdida de sesión):
+                // solo se refresca el correo — conservar el cursor evita una
+                // descarga completa innecesaria.
                 db.userDao().insert(localUser.copy(email = email, updatedAt = nowEpochMillis()))
             }
-            session.setCursor(0) // la cuenta puede traer datos de otros dispositivos
         }
         session.accountUserId = userId
         session.accountEmail = email
         session.token = token
+        return null
+    }
+
+    /**
+     * Entidades que el servidor ya reconoció (serverVersion > 0): pertenecen
+     * a la cuenta que las sincronizó. Las tablas sin serverVersion (versiones,
+     * líneas y vínculos) dependen de un padre sí contado — el servidor valida
+     * cada referencia — por lo que no pueden divergir solas.
+     */
+    private suspend fun syncedEntityCount(): Int {
+        var n = 0
+        for (t in listOf(
+            "users", "professional_profiles", "clients", "services", "retention_configs",
+            "quotes", "jobs", "job_quotes", "job_activities", "job_materials",
+            "reports", "report_jobs",
+            "collection_accounts", "collection_methods", "payments", "payment_assignments",
+            "consolidated_collections", "payment_adjustments", "payment_refunds",
+            "materials", "material_stocks", "purchases", "inventory_movements",
+        )) {
+            db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $t WHERE serverVersion > 0").use { c ->
+                if (c.moveToFirst()) n += c.getInt(0)
+            }
+        }
+        return n
     }
 
     // ---------- Cambio de cuenta (regla aprobada) ----------

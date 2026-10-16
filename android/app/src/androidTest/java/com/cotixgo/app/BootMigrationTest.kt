@@ -19,18 +19,22 @@ import java.io.File
 import java.util.Properties
 
 /**
- * Regresión del arranque real: simula una instalación previa con la base
- * `cotixgo.db` EN CLARO (nombre de producción, esquema Room v9 real) y
- * entra por el camino de producción `AppDatabase.get()` — exactamente lo
- * que hace MainActivity.onCreate. Esta clase NO llama a
- * System.loadLibrary("sqlcipher") en su setup: la carga nativa debe
- * ocurrir dentro de DbMigrationManager antes de tocar clases SQLCipher
- * (bug detectado en dispositivo físico: UnsatisfiedLinkError en
+ * Regresión del arranque real: simula una instalación previa con una base
+ * EN CLARO (esquema Room v9 real) y entra por el camino de producción
+ * `AppDatabase.get()` — exactamente lo que hace MainActivity.onCreate. Esta
+ * clase NO llama a System.loadLibrary("sqlcipher") en su setup: la carga
+ * nativa debe ocurrir dentro de DbMigrationManager antes de tocar clases
+ * SQLCipher (bug detectado en dispositivo físico: UnsatisfiedLinkError en
  * SQLiteConnection.nativeOpen al migrar).
  *
  * Corre primero en la ordenación alfabética de clases de la suite; si la
  * librería no estuviera cargada por el camino de producción, esta prueba
  * fallaría igual que en el Xiaomi.
+ *
+ * Aislamiento (D2): los artefactos usan nombres exclusivos de prueba —
+ * ni la base, ni el marcador, ni el blob de clave reales de la app se
+ * tocan; la cobertura del camino de producción se conserva porque la
+ * migración es agnóstica al nombre del fichero.
  */
 @RunWith(AndroidJUnit4::class)
 class BootMigrationTest {
@@ -38,12 +42,23 @@ class BootMigrationTest {
     private val ctx: Context
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
-    private fun prodDbFile() = ctx.getDatabasePath("cotixgo.db")
-    private fun markerFile() = File(ctx.filesDir, "db_migration.state")
+    private val testDbName = TestIsolation.name("e2e-boot-fixture.db")
+    private val testMarker = TestIsolation.name("e2e-boot-migration.state")
+    private val testBlob = TestIsolation.name("e2e-boot-dbkey.bin")
+    private val testAlias = TestIsolation.name("e2e-boot-db-key")
+
+    private lateinit var prodBefore: Map<String, String?>
+
+    private fun testDbFile() = ctx.getDatabasePath(testDbName)
+    private fun markerFile() = File(ctx.filesDir, testMarker)
+    private fun blobFile() = File(ctx.filesDir, testBlob)
 
     @Before
     fun setUp() {
         // Estado de instalación previa: base clara existente, sin marcador.
+        prodBefore = TestIsolation.snapshotProd(ctx)
+        DbMigrationManager.setTestHooks(dbName = testDbName, markerName = testMarker)
+        DbKeyProvider.setTestHooks(blobName = testBlob, keyAlias = testAlias)
         AppDatabase.resetForTest()
         wipeAll()
     }
@@ -53,23 +68,26 @@ class BootMigrationTest {
         // Restaura el sandbox: sin base, sin marcador — las pruebas
         // siguientes obtienen una base cifrada nueva por el camino normal.
         AppDatabase.resetForTest()
+        DbMigrationManager.setTestHooks()
+        DbKeyProvider.setTestHooks()
         wipeAll()
+        TestIsolation.assertProdUntouched(ctx, prodBefore)
     }
 
     private fun wipeAll() {
-        val db = prodDbFile()
+        val db = testDbFile()
         listOf(db, File(db.path + ".bak"), File(db.path + ".enc.tmp"),
             File(db.path + "-wal"), File(db.path + "-shm"), File(db.path + "-journal"))
             .forEach { it.delete() }
         markerFile().delete()
-        File(ctx.filesDir, "dbkey.bin").delete()
+        blobFile().delete()
     }
 
     @Test
     fun coldStart_migratesClearDbToEncrypted_viaProductionPath() {
         // Base clara v9 real con una fila sintética — se crea con Room SIN
         // fábrica cifrada (instalación previa a esta versión).
-        val clear = Room.databaseBuilder(ctx, AppDatabase::class.java, "cotixgo.db")
+        val clear = Room.databaseBuilder(ctx, AppDatabase::class.java, testDbName)
             .addMigrations(*AppDatabase.ALL_MIGRATIONS)
             .build()
         clear.openHelper.writableDatabase.execSQL(
@@ -80,7 +98,7 @@ class BootMigrationTest {
 
         // Comprobación de premisa: el archivo es SQLite en claro.
         val head = ByteArray(15)
-        prodDbFile().inputStream().use { it.read(head) }
+        testDbFile().inputStream().use { it.read(head) }
         assertEquals("SQLite format 3", String(head, Charsets.US_ASCII))
 
         // Camino de producción: AppDatabase.get() → ensureReady → migrate
@@ -95,16 +113,16 @@ class BootMigrationTest {
 
         db.close()
         // Simulación explícita del estado durable MIGRATED requerido por la
-        // regresión: la pérdida posterior de dbkey.bin debe bloquear.
+        // regresión: la pérdida posterior del blob de clave debe bloquear.
         markerFile().outputStream().use {
             Properties().apply { setProperty("state", DbMigrationManager.State.MIGRATED.name) }.store(it, null)
         }
         assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
-        prodDbFile().inputStream().use { it.read(head) }
+        testDbFile().inputStream().use { it.read(head) }
         assertFalse("La base servida no puede ser clara",
             String(head, Charsets.US_ASCII) == "SQLite format 3")
-        assertFalse(File(prodDbFile().path + ".bak").exists())
-        assertFalse(File(prodDbFile().path + ".enc.tmp").exists())
+        assertFalse(File(testDbFile().path + ".bak").exists())
+        assertFalse(File(testDbFile().path + ".enc.tmp").exists())
     }
 
     /**
@@ -130,10 +148,10 @@ class BootMigrationTest {
             Properties().apply { setProperty("state", DbMigrationManager.State.MIGRATED.name) }.store(it, null)
         }
         assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
-        val dbBytes = prodDbFile().readBytes()
+        val dbBytes = testDbFile().readBytes()
 
         // Pérdida de clave: únicamente el blob desaparece.
-        val blob = File(ctx.filesDir, "dbkey.bin")
+        val blob = blobFile()
         assertTrue(blob.delete())
 
         try {
@@ -146,7 +164,7 @@ class BootMigrationTest {
         assertFalse("No puede generarse una clave sustituta", blob.exists())
         assertTrue(
             "La base cifrada (y la cola pendiente) permanece intacta",
-            prodDbFile().readBytes().contentEquals(dbBytes),
+            testDbFile().readBytes().contentEquals(dbBytes),
         )
         assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
     }

@@ -47,17 +47,29 @@ class InventoryRepositoryTest {
 
     private lateinit var db: AppDatabase
     private lateinit var repo: AppRepository
+    private lateinit var prodBefore: Map<String, String?>
+
+    // Preferencias exclusivas de prueba (D2): la sesión nunca toca
+    // cotixgo.session ni los artefactos reales de la app.
+    private val prefsName = TestIsolation.name("e2e-session-inventory")
 
     @Before
     fun setUp() {
         val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        prodBefore = TestIsolation.snapshotProd(ctx)
         db = Room.inMemoryDatabaseBuilder(ctx, AppDatabase::class.java).build()
-        val session = Session(ctx, db).apply { apiBaseUrl = "http://127.0.0.1:1" }
+        val session = Session(ctx, db, prefsName).apply { apiBaseUrl = "http://127.0.0.1:1" }
         repo = AppRepository(db, SyncRepository(db, session))
     }
 
     @After
-    fun tearDown() = db.close()
+    fun tearDown() {
+        db.close()
+        TestIsolation.deletePrefs(
+            ApplicationProvider.getApplicationContext(), prefsName)
+        TestIsolation.assertProdUntouched(
+            ApplicationProvider.getApplicationContext(), prodBefore)
+    }
 
     private suspend fun seedUser(): String {
         repo.completeOnboarding("Test User", "Perfil Test")
