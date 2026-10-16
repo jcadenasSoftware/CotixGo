@@ -203,16 +203,19 @@ Resultado: 260 passed, 0 failed.
 
 == Pruebas instrumentadas (SOLO emulator-5556, esta corrida) ==
 
-PausedOpResolutionTest: OK (25 tests) — 9 casos nuevos:
-  discard_quote_blockedByCollectionAccountLink
-  discard_quote_unreferenced_deletesVersionsAndLinks
+PausedOpResolutionTest: OK (25 tests) — 8 casos nuevos:
+  discard_quoteLinkedByAccount_blockedKeepsRows
+  discard_unlinkedQuote_deletesCascadeVersions
   discard_collectionAccount_deletesUntypedDetailRows
-  discard_consolidatedCollection_deletesUntypedLinks
+  discard_consolidated_deletesMembershipRows
   discard_purchase_deletesUntypedItems
   discard_accountInConsolidated_blockedByUntypedLink
-  discardPreview_listsPhysicalRows_staleSignatureAborts
   discardInsideTx_rootNoLongerPaused_abortsBeforeMutations
   discardInsideTx_signatureDrift_abortsBeforeMutations
+(la enumeracion de filas fisicas queda cubierta por las aserciones de
+rows en los casos de cascada, y la firma obsoleta por
+discard_signatureChanged_abortsWithoutDeleting y
+discard_pendingOpSwappedAfterPreview_abortsWithoutMutations)
 Suite completa: OK (137 tests), 0 fallos.
   Time: 390.27s
 
