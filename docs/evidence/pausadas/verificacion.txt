@@ -1,0 +1,77 @@
+Evidencia de verificación — Resolución de operaciones PAUSED (16/10/2026)
+Rama: feat/paused-op-resolution, base main e6c7e5a (merge del PR #23).
+Entorno: Windows, JDK 21, Gradle 8.11.1, emulador dedicado E2eIsolated
+(emulator-5556) con la app apuntando al API local http://10.0.2.2:8080
+(php -S sobre MariaDB local). Solo datos sintéticos; sin dispositivos del
+titular, sin credenciales reales, sin servicios externos.
+
+== Backend E2E ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 256 passed, 0 failed (esta corrida).
+Incluye los 5 casos nuevos del cambio:
+  pr_svc_applied
+  pr_dependency_own_row_has_server_state
+  pr_forbidden_entity_foreign_scope_no_state
+  pr_forbidden_reference_scope
+  pr_rejected_own_row_state_present
+
+== Pruebas instrumentadas (am instrument, SOLO emulator-5556) ==
+
+adb -s emulator-5556 shell am instrument -w
+  com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Resultado de la corrida completa: OK (123 tests), 0 fallos.
+
+Desglose por clase (esta corrida):
+  BindAccountGuardTest: 4
+  BootMigrationTest: 2
+  CollectionRepositoryTest: 6
+  ConsolidatedDetailScreenTest: 1
+  ConsolidatedRepositoryTest: 4
+  InventoryRepositoryTest: 7
+  JobFormScreenTest: 5
+  JobRepositoryTest: 9
+  LocalEncryptionTest: 16
+  MigrationTest: 6  (incluye migrate9To10_backfillsConfirmedMirrors_onlyForSyncedRows)
+  PausedOpResolutionTest: 11  (NUEVO)
+  PaymentDetailScreenTest: 4
+  QuoteRepositoryTest: 12
+  ReportRepositoryTest: 7
+  SyncE2eTest: 29  (contra php -S local real)
+
+PausedOpResolutionTest usa un FakeSyncApi determinista (nueva costura
+SyncApi) para forzar rechazos sin backend:
+  - internalError_retriesWithSameOpId_untilBudgetExhausted
+  - internalError_exhaustedGoesManual_thenManualRetryRestartsBudget
+  - validationError_correctEntity_reissuesCurrentState_preservesHistory
+  - dependency_waitsForParent_thenAutoReissuesAfterProgress
+  - dependency_noProgress_noInfiniteAutoReissue
+  - snapshotPaused_supersededByLaterAppliedUpsert_onlyForSnapshotTypes
+  - appendOnlyRejection_acknowledgeKeepsHistory_neverResent
+  - forbiddenEntity_foreign_noResend_noStateExposure
+  - forbiddenEntity_ownRow_restoreFromAuthoritativeServerState
+  - discardPreview_cascadeAndBlockers_explicitOnly
+  - switchBlocked_untilQueuePausedAndPendingResolved
+  (y el caso financiero de saldo confirmado intacto tras asignación
+  rechazada: rejectedAssignment_confirmedBalanceUnchanged_acknowledgeKeepsHistory)
+
+Nota: durante el desarrollo la primera corrida completa expuso una
+espera circular real (report_job esperaba al propio `emit` de Informe,
+que necesita el vínculo aplicado; y job_quote viajaba antes de la
+APROBADA remota de la Cotización). Corregido con gating seq-aware: las
+ops del referido anteriores al hijo bloquean, las posteriores no.
+Regresión completa verde tras la corrección (123/123).
+
+== JVM unitarias ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL (esta corrida).
+
+== Builds ==
+
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+./gradlew :app:assembleRelease — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos en el commit):
+android/gradle.properties, android/settings.gradle.kts,
+android/gradle/gradle-daemon-jvm.properties.

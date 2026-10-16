@@ -2068,4 +2068,71 @@ $foreign = array_filter($r2['changes'] ?? [],
         || ($ch['entity_type'] === 'inventory_stock' && $ch['entity_id'] === $matA));
 check('f8_aislamiento_titular', $foreign === []);
 
+// --- PAUSED-resolution: server_state autoritativo y forbidden_scope ---
+
+// Rechazo sobre fila propia existente: DEPENDENCY en un service que ya
+// existe del titular (referencia a profile inexistente) → server_state
+// incluye el estado persistido y su server_version.
+$svcId = $u('e9a00001');
+$mk2 = fn(string $op, string $id, string $et, array $payload, int $base = 0) =>
+    [['operation_id' => $op, 'entity_type' => $et, 'entity_id' => $id,
+      'type' => 'upsert', 'base_server_version' => $base, 'payload' => $payload]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mk2($u('e9a00000'), $svcId, 'service',
+        ['id' => $svcId, 'userId' => $userId, 'profileId' => $u('20000001'),
+         'name' => 'Svc Propio', 'suggestedPrice' => '10',
+         'createdAt' => $now, 'updatedAt' => $now])], $token);
+check('pr_svc_applied', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mk2($u('e9a00002'), $svcId, 'service',
+        ['id' => $svcId, 'userId' => $userId, 'profileId' => $u('99999998'),
+         'name' => 'Svc Propio', 'suggestedPrice' => '10',
+         'createdAt' => $now, 'updatedAt' => $now], 1)], $token);
+check('pr_dependency_own_row_has_server_state',
+    ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'DEPENDENCY'
+    && isset($r['results'][0]['server_state'])
+    && ($r['results'][0]['server_state']['id'] ?? '') === $svcId
+    && ($r['results'][0]['server_state']['server_version'] ?? 0) >= 1,
+    json_encode($r));
+
+// FORBIDDEN_ENTITY sobre entidad de otra cuenta: scope entity_foreign y
+// JAMÁS server_state (no se expone la fila ajena).
+$ops = [['operation_id' => $u('e9b00000'), 'entity_type' => 'client', 'entity_id' => $u('30000001'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('30000001'), 'userId' => $reg2['user_id'], 'type' => 'EMPRESA',
+             'name' => 'Intruso', 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
+check('pr_forbidden_entity_foreign_scope_no_state',
+    ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY'
+    && ($r['results'][0]['forbidden_scope'] ?? '') === 'entity_foreign'
+    && !isset($r['results'][0]['server_state']), json_encode($r));
+
+// FORBIDDEN_ENTITY por referencia ajena sobre entidad nueva → scope
+// foreign_reference, sin fila propia → sin server_state.
+$ops = [['operation_id' => $u('e9b00001'), 'entity_type' => 'quote', 'entity_id' => $u('e9b00002'),
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => ['id' => $u('e9b00002'), 'userId' => $reg2['user_id'], 'clientId' => $u('30000001'),
+             'profileId' => $u('e9b00003'), 'provisionalNumber' => 'COT-PEND-FR', 'status' => 'BORRADOR',
+             'issueDateEpochDay' => 21000, 'validityDays' => 15, 'expiryDateEpochDay' => 21015,
+             'currency' => 'COP', 'currentVersion' => 1, 'emittedVersion' => 0,
+             'gross' => '1', 'totalRetained' => '0', 'net' => '1', 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $reg2['token']);
+check('pr_forbidden_reference_scope',
+    ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY'
+    && ($r['results'][0]['forbidden_scope'] ?? '') === 'foreign_reference'
+    && !isset($r['results'][0]['server_state']), json_encode($r));
+
+// VALIDATION_ERROR sobre fila propia existente también lleva server_state.
+$ops = [['operation_id' => $u('e9c00000'), 'entity_type' => 'job', 'entity_id' => $job1 ?? $u('e9c00001'),
+         'type' => 'upsert', 'base_server_version' => 99,
+         'payload' => ['id' => $job1 ?? $u('e9c00001'), 'userId' => $userId,
+             'clientId' => $u('30000001'), 'profileId' => $u('20000001'),
+             'provisionalNumber' => 'TR-PEND-SS', 'status' => 'PROGRAMADO',
+             'executionAddress' => '', 'createdAt' => $now, 'updatedAt' => $now]]];
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device, 'operations' => $ops], $token);
+check('pr_rejected_own_row_state_present',
+    ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && isset($r['results'][0]['server_state']['server_version']), json_encode($r));
+
 echo "\n$pass passed, $fail failed\n";

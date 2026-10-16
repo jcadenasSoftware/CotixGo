@@ -624,6 +624,8 @@ private fun CotixGoNavHost(
                 )
             }
             composable(Routes.COLLECTIONS) {
+                val effects by vm.destinationEffects.collectAsStateWithLifecycle()
+                val latestOps by vm.latestOpStates.collectAsStateWithLifecycle()
                 CollectionsScreen(
                     accounts = collectionAccounts,
                     consolidateds = consolidateds,
@@ -631,6 +633,8 @@ private fun CotixGoNavHost(
                     methods = collectionMethods,
                     clients = clients,
                     accountsById = collectionAccounts.associateBy { it.id },
+                    effects = effects,
+                    latestOps = latestOps,
                     onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
                     onOpenConsolidated = { nav.navigate(Routes.consolidatedDetail(it)) },
                     onOpenPayment = { nav.navigate(Routes.paymentDetail(it)) },
@@ -694,12 +698,14 @@ private fun CotixGoNavHost(
                 val members by vm.observeConsolidatedMembers(id).collectAsStateWithLifecycle(emptyList())
                 val consPayments by vm.observePaymentsForConsolidated(id)
                     .collectAsStateWithLifecycle(emptyList())
+                val consEffects by vm.destinationEffects.collectAsStateWithLifecycle()
                 val accountsById = collectionAccounts.associateBy { it.id }
                 ConsolidatedDetailScreen(
                     consolidated = consolidated,
                     memberAccounts = members.sortedBy { it.position }
                         .mapNotNull { accountsById[it.accountId] },
                     payments = consPayments,
+                    effects = consEffects,
                     onEdit = { nav.navigate(Routes.consolidatedEdit(id)) },
                     onCancelConsolidated = { done -> vm.cancelConsolidated(id, done) },
                     onSetArchived = { archived -> vm.setConsolidatedArchived(id, archived) },
@@ -786,6 +792,8 @@ private fun CotixGoNavHost(
                 val quoteLinks by vm.observeCollectionAccountQuotes(id).collectAsStateWithLifecycle(emptyList())
                 val assignments by vm.observeAccountAssignments(id).collectAsStateWithLifecycle(emptyList())
                 val activeConsolidatedId = activeMemberships[id]
+                val accountEffects by vm.destinationEffects.collectAsStateWithLifecycle()
+                val accountOps by vm.latestOpStates.collectAsStateWithLifecycle()
                 CollectionAccountDetailScreen(
                     account = account,
                     items = items,
@@ -796,6 +804,8 @@ private fun CotixGoNavHost(
                     assignments = assignments,
                     payments = payments,
                     activeConsolidated = consolidateds.firstOrNull { it.id == activeConsolidatedId },
+                    effects = accountEffects,
+                    latestOps = accountOps,
                     onEdit = { nav.navigate(Routes.collectionEdit(id)) },
                     onCancelAccount = { vm.cancelCollectionAccount(id) {} },
                     onSetArchived = { archived -> vm.setCollectionAccountArchived(id, archived) },
@@ -831,6 +841,7 @@ private fun CotixGoNavHost(
                 val refunds by vm.observePaymentRefunds(id).collectAsStateWithLifecycle(emptyList())
                 val accountsById = collectionAccounts.associateBy { it.id }
                 val consById = consolidateds.associateBy { it.id }
+                val payOps by vm.latestOpStates.collectAsStateWithLifecycle()
                 PaymentDetailScreen(
                     payment = payment,
                     clientName = clients.firstOrNull { it.id == payment?.clientId }?.name ?: "",
@@ -856,6 +867,7 @@ private fun CotixGoNavHost(
                     accountsById = accountsById,
                     consolidatedsById = consById,
                     methods = collectionMethods,
+                    latestOps = payOps,
                     onAssign = { kind, targetId, amount, reason, done ->
                         vm.assignPaymentToTarget(id, kind, targetId, amount, reason, done)
                     },
@@ -873,11 +885,13 @@ private fun CotixGoNavHost(
             }
             // ---------- F8: Inventario y Compras ----------
             composable(Routes.INVENTORY) {
+                val invOps by vm.latestOpStates.collectAsStateWithLifecycle()
                 InventoryScreen(
                     inventory = inventory,
                     purchases = purchases.filter { !it.archived },
                     movements = vm.observeAllMovements(user?.id ?: "")
                         .collectAsStateWithLifecycle(emptyList()).value,
+                    latestOps = invOps,
                     materialsById = materials.associateBy { it.id },
                     jobsById = jobs.associateBy { it.id },
                     activeMaterials = materials.filter { !it.archived },
@@ -1044,9 +1058,14 @@ private fun CotixGoNavHost(
                     paused = pausedList,
                     versionConflictQuotes = vcQuotes.map { it.id to (it.officialNumber ?: it.provisionalNumber) },
                     versionConflictReports = vcReports.map { it.id to (it.officialNumber ?: it.provisionalNumber) },
+                    detailOf = { op -> vm.pausedDetail(op) },
+                    previewOf = { op -> vm.discardPreview(op) },
                     onKeepLocal = { vm.resolveKeepLocal(it) },
                     onKeepRemote = { vm.resolveKeepRemote(it) },
                     onRetry = { vm.retryPaused(it) },
+                    onRestoreRemote = { vm.restorePausedRemote(it) },
+                    onAcknowledge = { vm.acknowledgeRejected(it) },
+                    onDiscard = { opId, rows -> vm.discardPaused(opId, rows) },
                     onResolveVersions = { nav.navigate(Routes.resolveVersions(it)) },
                     onResolveReportVersions = { nav.navigate(Routes.resolveReportVersions(it)) },
                     onBack = { nav.popBackStack() },

@@ -574,4 +574,106 @@ class MigrationTest {
             c.moveToFirst(); assertEquals("2", c.getString(0))
         }
     }
+
+    /**
+     * Migración real v9→v10 (resolución de PAUSED): las columnas espejo
+     * `server*` se crean en payments, collection_accounts y
+     * consolidated_collections. El backfill copia el derivado vigente solo
+     * en filas ya confirmadas (pendingSync=0 y serverVersion>0); las filas
+     * con efectos en vuelo quedan en el piso '0.00' hasta que el servidor
+     * los confirme — sus efectos se muestran aparte.
+     */
+    @Test
+    fun migrate9To10_backfillsConfirmedMirrors_onlyForSyncedRows() {
+        helper.createDatabase(testDb, 9).apply {
+            execSQL(
+                "INSERT INTO users (id, name, mainCurrency, email, createdAt, updatedAt, pendingSync, serverVersion)" +
+                    " VALUES ('u1', 'Usuario Sintético', 'COP', 'u@synthetic.local', 1, 1, 0, 1)",
+            )
+            // Cuenta confirmada: el espejo copia los derivados vigentes.
+            execSQL(
+                "INSERT INTO collection_accounts (id, userId, clientId, profileId, provisionalNumber," +
+                    " status, currency, gross, totalRetained, net, appliedAmount, balance, issuedAt," +
+                    " dueDateEpochDay, conditions, clientSnapshotJson, profileSnapshotJson," +
+                    " retentionsSnapshotJson, clientNameSnapshot, archived, officialNumber, createdAt," +
+                    " updatedAt, pendingSync, serverVersion) VALUES ('cc1', 'u1', 'c1', 'p1'," +
+                    " 'CC-PEND-0001', 'PARCIAL', 'COP', '200.00', '0.00', '200.00', '30.00', '170.00'," +
+                    " 1, NULL, '', '', '', '', 'Cliente', 0, 'CC-202610-001', 1, 1, 0, 2)",
+            )
+            // Pago confirmado con derivados; pago en vuelo queda en '0.00'.
+            execSQL(
+                "INSERT INTO payments (id, userId, clientId, collectionMethodId, amount, paidAtEpochDay," +
+                    " reference, notes, appliedAmount, unassignedAmount, effectiveAmount, refundedAmount," +
+                    " annulled, assignedAccountId, assignedConsolidatedId, assignedTargetType," +
+                    " assignmentStatus, createdAt, updatedAt, pendingSync, serverVersion) VALUES" +
+                    " ('pay1', 'u1', 'c1', NULL, '50.00', 20000, '', '', '30.00', '20.00', '50.00'," +
+                    " '5.00', 0, 'cc1', NULL, 'ACCOUNT', 'ASSIGNED', 1, 1, 0, 2)",
+            )
+            execSQL(
+                "INSERT INTO payments (id, userId, clientId, collectionMethodId, amount, paidAtEpochDay," +
+                    " reference, notes, appliedAmount, unassignedAmount, effectiveAmount, refundedAmount," +
+                    " annulled, assignedAccountId, assignedConsolidatedId, assignedTargetType," +
+                    " assignmentStatus, createdAt, updatedAt, pendingSync, serverVersion) VALUES" +
+                    " ('pay2', 'u1', 'c1', NULL, '80.00', 20001, '', '', '80.00', '0.00', '80.00'," +
+                    " '0.00', 0, 'cc1', NULL, 'ACCOUNT', 'ASSIGNED', 1, 1, 1, 0)",
+            )
+            // Consolidado confirmado.
+            execSQL(
+                "INSERT INTO consolidated_collections (id, userId, clientId, provisionalNumber, status," +
+                    " currency, totalAmount, appliedAmount, balance, clientNameSnapshot, archived," +
+                    " officialNumber, createdAt, updatedAt, pendingSync, serverVersion) VALUES" +
+                    " ('cons1', 'u1', 'c1', 'CONS-PEND-0001', 'PENDIENTE', 'COP', '300.00', '10.00'," +
+                    " '290.00', 'Cliente', 0, 'CONS-202610-001', 1, 1, 0, 4)",
+            )
+            // Operación de cola pendiente: debe sobrevivir a la migración.
+            execSQL(
+                "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
+                    " payloadJson, supersedesOpId, deviceId, state, resultJson, resultCode, attempts," +
+                    " createdAt, updatedAt) VALUES ('op-p10', 9, 'payment', 'pay2', 'upsert', 0," +
+                    " '{}', NULL, 'dev1', 'PENDING', NULL, NULL, 0, 1, 1)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(testDb, 10, true, AppDatabase.MIGRATION_9_10)
+
+        // Confirmada → espejo = derivados vigentes.
+        db.query(
+            "SELECT serverAppliedAmount, serverBalance FROM collection_accounts WHERE id = 'cc1'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("30.00", c.getString(0))
+            assertEquals("170.00", c.getString(1))
+        }
+        db.query(
+            "SELECT serverAppliedAmount, serverUnassignedAmount, serverRefundedAmount" +
+                " FROM payments WHERE id = 'pay1'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("30.00", c.getString(0))
+            assertEquals("20.00", c.getString(1))
+            assertEquals("5.00", c.getString(2))
+        }
+        // En vuelo → espejo en el piso confirmado, sin fingir efecto aceptado.
+        db.query(
+            "SELECT serverAppliedAmount, serverUnassignedAmount, serverRefundedAmount" +
+                " FROM payments WHERE id = 'pay2'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("0.00", c.getString(0))
+            assertEquals("0.00", c.getString(1))
+            assertEquals("0.00", c.getString(2))
+        }
+        db.query(
+            "SELECT serverAppliedAmount, serverBalance FROM consolidated_collections WHERE id = 'cons1'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("10.00", c.getString(0))
+            assertEquals("290.00", c.getString(1))
+        }
+        db.query("SELECT state FROM sync_operations WHERE opId = 'op-p10'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("PENDING", c.getString(0))
+        }
+    }
 }

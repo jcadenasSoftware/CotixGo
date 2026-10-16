@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -25,6 +26,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -194,13 +196,73 @@ fun ConflictsScreen(
     paused: List<SyncOperationEntity>,
     versionConflictQuotes: List<Pair<String, String>>, // (quoteId, número)
     versionConflictReports: List<Pair<String, String>>, // (reportId, número)
+    detailOf: suspend (SyncOperationEntity) -> com.cotixgo.app.data.SyncRepository.PausedOpView,
+    previewOf: suspend (SyncOperationEntity) -> com.cotixgo.app.data.SyncRepository.DiscardPreview,
     onKeepLocal: (Long) -> Unit,
     onKeepRemote: (Long) -> Unit,
     onRetry: (String) -> Unit,
+    onRestoreRemote: (String) -> Unit,
+    onAcknowledge: (String) -> Unit,
+    onDiscard: (String, Int) -> Unit,
     onResolveVersions: (quoteId: String) -> Unit,
     onResolveReportVersions: (reportId: String) -> Unit,
     onBack: () -> Unit,
 ) {
+    var discardOp by remember { mutableStateOf<SyncOperationEntity?>(null) }
+    val discardOpNow = discardOp
+    if (discardOpNow != null) {
+        val preview by produceState<com.cotixgo.app.data.SyncRepository.DiscardPreview?>(
+            null, discardOpNow.opId,
+        ) { value = previewOf(discardOpNow) }
+        AlertDialog(
+            onDismissRequest = { discardOp = null },
+            title = { Text("Descartar datos locales") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val pv = preview
+                    if (pv == null) {
+                        Text("Calculando vista previa…")
+                    } else {
+                        Text(
+                            "Se eliminarán ${pv.rows.size} fila(s) locales de esta entidad y sus dependencias. El historial de operaciones se conserva.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        pv.rows.take(8).forEach { row ->
+                            Text(
+                                "· ${row.entityType} — ${row.id.take(8)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.tertiary,
+                            )
+                        }
+                        if (pv.rows.size > 8) {
+                            Text("… y ${pv.rows.size - 8} más",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (pv.waitingDependents.isNotEmpty()) {
+                            Text(
+                                "${pv.waitingDependents.size} operación(es) que esperaban este dato quedarán marcadas como sin prerequisito.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        pv.blockers.forEach {
+                            Text(it, color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                val pv = preview
+                Button(
+                    enabled = pv != null && pv.blockers.isEmpty(),
+                    onClick = { onDiscard(discardOpNow.opId, pv?.rows?.size ?: 0); discardOp = null },
+                ) { Text("Descartar definitivamente") }
+            },
+            dismissButton = {
+                TextButton(onClick = { discardOp = null }) { Text("Cancelar") }
+            },
+        )
+    }
     Scaffold(topBar = { TopAppBar(title = { Text("Sincronización: atención requerida") }) }) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
@@ -243,16 +305,65 @@ fun ConflictsScreen(
                 }
             }
             items(paused) { op ->
+                val detail by produceState<com.cotixgo.app.data.SyncRepository.PausedOpView?>(
+                    null, op.opId, op.updatedAt,
+                ) { value = detailOf(op) }
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("${op.entityType} · ${op.resultCode ?: "PAUSED"}",
+                        Text("${op.entityType} · ${detail?.label ?: op.entityId.take(8)}",
                             style = MaterialTheme.typography.titleMedium)
-                        Text("Intentos: ${op.attempts}", color = MaterialTheme.colorScheme.secondary)
+                        Text(
+                            when (op.resultCode) {
+                                "INTERNAL_ERROR" ->
+                                    if (detail?.internalExhausted == true) {
+                                        "Fallo interno del servidor tras ${op.attempts} intentos automáticos; no es un rechazo de negocio."
+                                    } else {
+                                        "Fallo interno del servidor (reintento automático programado)."
+                                    }
+                                "DEPENDENCY" -> "Espera un prerequisito que aún no se aplica en el servidor."
+                                "CONFLICT_BLOCKED" -> "Bloqueada por un conflicto de versiones sin resolver."
+                                "VALIDATION_ERROR" -> "El servidor rechazó los datos; corrige la entidad o descarta."
+                                "INVALID_TRANSITION" -> "El estado pedido no aplica sobre el estado actual del servidor."
+                                "FORBIDDEN_ENTITY" -> "La entidad pertenece a otra cuenta; no se reenvía ni se copia."
+                                "IMMUTABLE_FINANCIAL" -> "Evento financiero inmutable: la corrección es un evento nuevo."
+                                "IDEMPOTENCY_KEY_REUSED" -> "La operación ya fue procesada con otro contenido."
+                                "PREREQUISITE_DISCARDED" -> "Su prerequisito fue descartado; resuélvela por separado."
+                                else -> op.resultCode ?: "Pausada"
+                            },
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                        if ((detail?.waitingDependents ?: 0) > 0) {
+                            Text("${detail!!.waitingDependents} operación(es) esperan a esta.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                         op.resultJson?.let {
                             Text(it.take(300), style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.tertiary)
                         }
-                        OutlinedButton(onClick = { onRetry(op.opId) }) { Text("Reintentar") }
+                        detail?.let { d ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (d.canReissue || op.resultCode == "INTERNAL_ERROR") {
+                                    OutlinedButton(onClick = { onRetry(op.opId) }) {
+                                        Text(if (op.resultCode == "INTERNAL_ERROR") "Reintentar ahora" else "Reintentar")
+                                    }
+                                }
+                                if (d.canRestoreRemote) {
+                                    OutlinedButton(onClick = { onRestoreRemote(op.opId) }) {
+                                        Text("Restaurar remoto")
+                                    }
+                                }
+                                if (d.canAcknowledge) {
+                                    OutlinedButton(onClick = { onAcknowledge(op.opId) }) {
+                                        Text("Marcar rechazado")
+                                    }
+                                }
+                                if (d.canDiscard) {
+                                    TextButton(onClick = { discardOp = op }) {
+                                        Text("Descartar…", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

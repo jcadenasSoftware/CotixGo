@@ -213,6 +213,7 @@ fun ConsolidatedDetailScreen(
     consolidated: ConsolidatedCollectionEntity?,
     memberAccounts: List<CollectionAccountEntity>,
     payments: List<PaymentEntity>,
+    effects: Map<String, com.cotixgo.app.data.DestEffect>,
     onEdit: () -> Unit,
     onCancelConsolidated: ((Boolean) -> Unit) -> Unit,
     onSetArchived: (Boolean) -> Unit,
@@ -285,6 +286,17 @@ fun ConsolidatedDetailScreen(
                     "Total: ${consolidated.currency} ${consolidated.totalAmount} · " +
                         "Aplicado: ${consolidated.appliedAmount} · Saldo: ${consolidated.balance}",
                     style = MaterialTheme.typography.titleSmall,
+                )
+                val eff = effects["CONSOLIDATED:${consolidated.id}"]
+                Text(
+                    "Confirmado por el servidor: saldo ${consolidated.serverBalance} · " +
+                        "aplicado ${consolidated.serverAppliedAmount}" +
+                        (eff?.let {
+                            (if (it.pending.signum() != 0) " · pendiente ${it.pending.toPlainString()}" else "") +
+                                (if (it.rejected.signum() != 0) " · rechazado ${it.rejected.toPlainString()}" else "")
+                        } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
                 )
             }
             item { Text("Cuentas miembro", style = MaterialTheme.typography.titleSmall) }

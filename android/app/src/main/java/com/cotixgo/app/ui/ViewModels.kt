@@ -38,6 +38,8 @@ import com.cotixgo.app.data.RetentionConfigEntity
 import com.cotixgo.app.data.RetentionInput
 import com.cotixgo.app.data.ServiceEntity
 import com.cotixgo.app.data.ServiceInput
+import com.cotixgo.app.data.DestEffect
+import com.cotixgo.app.data.LatestOpState
 import com.cotixgo.app.data.SyncConflictEntity
 import com.cotixgo.app.data.SyncOperationEntity
 import com.cotixgo.app.data.SyncRepository
@@ -105,6 +107,23 @@ class AppViewModel(
 
     val paused: StateFlow<List<SyncOperationEntity>> = sync.observePaused()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Última op por entidad: insignias pendiente/rechazado en listas. */
+    val latestOpStates: StateFlow<Map<Pair<String, String>, LatestOpState>> =
+        repo.observeLatestOpStates()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /** Efecto pendiente/rechazado por destino de cobro (ACCOUNT:id / CONSOLIDATED:id). */
+    val destinationEffects: StateFlow<Map<String, DestEffect>> = user.flatMapLatest { u ->
+        if (u == null) flowOf(emptyMap()) else repo.observeDestinationEffects(u.id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /** Detalle de acciones para una op pausada (pantalla de atención). */
+    suspend fun pausedDetail(op: SyncOperationEntity): SyncRepository.PausedOpView =
+        sync.pausedDetail(op)
+
+    suspend fun discardPreview(op: SyncOperationEntity): SyncRepository.DiscardPreview =
+        sync.discardPreview(op)
 
     val versionConflictQuotes: StateFlow<List<QuoteEntity>> = user.flatMapLatest { u ->
         if (u == null) flowOf(emptyList()) else repo.observeVersionConflictQuotes(u.id)
@@ -458,7 +477,38 @@ class AppViewModel(
     }
 
     fun retryPaused(opId: String) {
-        viewModelScope.launch { sync.retryPaused(opId); syncNow() }
+        viewModelScope.launch {
+            val err = sync.retryPaused(opId)
+            lastSyncMessage.value = err ?: "Reintentando operación."
+            if (err == null) syncNow()
+        }
+    }
+
+    /** Restaura el estado remoto autoritativo de una pausada (explícito). */
+    fun restorePausedRemote(opId: String) {
+        viewModelScope.launch {
+            val err = sync.restorePausedRemote(opId)
+            lastSyncMessage.value = err ?: "Estado remoto restaurado."
+            if (err == null) syncNow()
+        }
+    }
+
+    /** Reconoce un evento rechazado (append-only: la fila nunca se borra). */
+    fun acknowledgeRejected(opId: String) {
+        viewModelScope.launch {
+            val err = sync.acknowledgeRejectedOp(opId)
+            lastSyncMessage.value = err ?: "Evento marcado como rechazado."
+            if (err == null) syncNow()
+        }
+    }
+
+    /** Descarte confirmado con vista previa verificada (pérdida explícita). */
+    fun discardPaused(opId: String, expectedRows: Int) {
+        viewModelScope.launch {
+            val err = sync.discardPaused(opId, expectedRows)
+            lastSyncMessage.value = err ?: "Datos locales descartados; historial conservado."
+            if (err == null) syncNow()
+        }
     }
 
     fun resolveQuoteVersions(quoteId: String, keepVersionRowId: String, onDone: (Boolean) -> Unit) {

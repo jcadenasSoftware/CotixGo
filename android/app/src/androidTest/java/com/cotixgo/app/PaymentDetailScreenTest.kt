@@ -54,6 +54,7 @@ class PaymentDetailScreenTest {
                 accountsById = emptyMap(),
                 consolidatedsById = emptyMap(),
                 methods = emptyList(),
+                latestOps = emptyMap(),
                 onAssign = { _, _, _, _, d -> d(null) },
                 onUnassign = { _, d -> d(null) },
                 onReassign = { _, _, _, d -> d(null) },

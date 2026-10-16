@@ -527,6 +527,9 @@ data class CollectionAccountEntity(
     val clientNameSnapshot: String = "",
     val archived: Boolean = false,
     val officialNumber: String? = null,
+    // Espejo autoritativo de derivados (F-pausadas): ver PaymentEntity.
+    val serverAppliedAmount: String = "0.00",
+    val serverBalance: String = "0.00",
     val createdAt: Long,
     val updatedAt: Long,
     val pendingSync: Boolean = true,
@@ -629,6 +632,13 @@ data class PaymentEntity(
     /** ACCOUNT | CONSOLIDATED (enum wire `account`/`consolidated`). */
     val assignedTargetType: String? = null,
     val assignmentStatus: String = "UNASSIGNED",
+    // Espejo de los derivados confirmados por el servidor (F-pausadas):
+    // los campos aplicado/sinAsignar/reembolsado de la fila son optimistas;
+    // estos guardan el último estado autoritativo recibido por pull o
+    // incluido en el resultado aplicado.
+    val serverAppliedAmount: String = "0.00",
+    val serverUnassignedAmount: String = "0.00",
+    val serverRefundedAmount: String = "0.00",
     val createdAt: Long,
     val updatedAt: Long,
     val pendingSync: Boolean = true,
@@ -703,6 +713,9 @@ data class ConsolidatedCollectionEntity(
     val clientNameSnapshot: String = "",
     val archived: Boolean = false,
     val officialNumber: String? = null,
+    // Espejo autoritativo de derivados (F-pausadas): ver PaymentEntity.
+    val serverAppliedAmount: String = "0.00",
+    val serverBalance: String = "0.00",
     val createdAt: Long,
     val updatedAt: Long,
     val pendingSync: Boolean = true,
@@ -896,6 +909,9 @@ interface PaymentDao {
 
 @Dao
 interface PaymentAssignmentDao {
+    @Query("SELECT * FROM payment_assignments WHERE userId = :userId ORDER BY createdAt, id")
+    fun observeForUser(userId: String): Flow<List<PaymentAssignmentEntity>>
+
     @Query("SELECT * FROM payment_assignments WHERE paymentId = :paymentId ORDER BY createdAt, id")
     fun observeForPayment(paymentId: String): Flow<List<PaymentAssignmentEntity>>
 
@@ -1306,6 +1322,15 @@ data class SyncConflictEntity(
     val resolved: Boolean = false,
 )
 
+/** Estado de la última operación de una entidad (proyección para UI). */
+data class LatestOpState(
+    val entityType: String,
+    val entityId: String,
+    val state: String,
+    val resultCode: String?,
+    val resultJson: String?,
+)
+
 /** Par clave-valor de metadatos de sincronización (cursor, device_id, cuenta). */
 @Entity(tableName = "sync_meta")
 data class SyncMetaEntity(
@@ -1347,6 +1372,49 @@ interface SyncDao {
 
     @Query("SELECT * FROM sync_operations WHERE entityType = :type AND entityId = :id AND state IN ('PENDING','RETRY','PAUSED') ORDER BY seq ASC")
     suspend fun pendingOpsForEntity(type: String, id: String): List<SyncOperationEntity>
+
+    /** Todas las operaciones de la entidad (historial completo, cualquier estado). */
+    @Query("SELECT * FROM sync_operations WHERE entityType = :type AND entityId = :id ORDER BY seq ASC")
+    suspend fun allOpsForEntity(type: String, id: String): List<SyncOperationEntity>
+
+    /** Todas las operaciones sin resolver (en cola o pausadas), en orden. */
+    @Query("SELECT * FROM sync_operations WHERE state IN ('PENDING','RETRY','PAUSED') ORDER BY seq ASC")
+    suspend fun unresolvedOps(): List<SyncOperationEntity>
+
+    @Query("SELECT * FROM sync_operations WHERE state = 'PAUSED' ORDER BY seq ASC")
+    suspend fun pausedOpsNow(): List<SyncOperationEntity>
+
+    @Query("SELECT * FROM sync_operations WHERE opId = :opId")
+    suspend fun opById(opId: String): SyncOperationEntity?
+
+    /** Suma 1 al contador de intentos sin tocar el resultado registrado. */
+    @Query("UPDATE sync_operations SET attempts = attempts + 1, updatedAt = :now WHERE opId = :opId")
+    suspend fun bumpOpAttempts(opId: String, now: Long)
+
+    /** Reinicia el presupuesto de reintentos (reintento manual de INTERNAL_ERROR). */
+    @Query("UPDATE sync_operations SET attempts = 0, updatedAt = :now WHERE opId = :opId")
+    suspend fun resetOpAttempts(opId: String, now: Long)
+
+    /** Reintento programado: state=RETRY conservando código/resultado del último fallo. */
+    @Query("UPDATE sync_operations SET state = 'RETRY', resultJson = :resultJson, updatedAt = :now WHERE opId = :opId")
+    suspend fun rescheduleOp(opId: String, resultJson: String?, now: Long)
+
+    /**
+     * Última operación registrada por entidad (cualquier estado): base para
+     * mostrar el estado de sincronización de cada fila y para separar el
+     * efecto pendiente del rechazado en los agregados financieros.
+     */
+    @Query(
+        """SELECT o.entityType AS entityType, o.entityId AS entityId,
+                  o.state AS state, o.resultCode AS resultCode, o.resultJson AS resultJson
+           FROM sync_operations o
+           INNER JOIN (
+               SELECT entityType, entityId, MAX(seq) AS mseq
+               FROM sync_operations GROUP BY entityType, entityId
+           ) t ON o.entityType = t.entityType AND o.entityId = t.entityId
+              AND o.seq = t.mseq""",
+    )
+    fun observeLatestOpStates(): Flow<List<LatestOpState>>
 
     /** Último payload aplicado por el servidor (para proyectar deltas locales). */
     @Query("SELECT payloadJson FROM sync_operations WHERE entityType = :type AND entityId = :id AND state = 'DONE' AND resultJson IS NOT NULL ORDER BY seq DESC LIMIT 1")
@@ -1486,7 +1554,7 @@ interface QuoteVersionDao {
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -2022,9 +2090,50 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v10 — espejo autoritativo de derivados financieros (resolución de
+         * operaciones PAUSED): los campos `appliedAmount`/`balance`/
+         * `unassignedAmount`/`refundedAmount` de la fila son optimistas y
+         * pueden incluir efectos de eventos aún no aceptados o rechazados
+         * por el servidor. Las columnas `server*` conservan el último valor
+         * que el servidor reportó como aplicado (vía pull o `server_state`
+         * del resultado). El backfill solo copia el valor vigente en filas
+         * ya confirmadas (pendingSync=0 con versión de servidor); las filas
+         * con efectos en vuelo quedan en el piso confirmado '0.00' hasta
+         * que el servidor los aplique — sus efectos se muestran aparte.
+         */
+        internal val MIGRATION_9_10 = object : androidx.room.migration.Migration(9, 10) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `payments` ADD COLUMN `serverAppliedAmount` TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL("ALTER TABLE `payments` ADD COLUMN `serverUnassignedAmount` TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL("ALTER TABLE `payments` ADD COLUMN `serverRefundedAmount` TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL(
+                    """UPDATE `payments` SET `serverAppliedAmount` = `appliedAmount`,
+                        `serverUnassignedAmount` = `unassignedAmount`,
+                        `serverRefundedAmount` = `refundedAmount`
+                        WHERE `pendingSync` = 0 AND `serverVersion` > 0""",
+                )
+                db.execSQL("ALTER TABLE `collection_accounts` ADD COLUMN `serverAppliedAmount` TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL("ALTER TABLE `collection_accounts` ADD COLUMN `serverBalance` TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL(
+                    """UPDATE `collection_accounts` SET `serverAppliedAmount` = `appliedAmount`,
+                        `serverBalance` = `balance`
+                        WHERE `pendingSync` = 0 AND `serverVersion` > 0""",
+                )
+                db.execSQL("ALTER TABLE `consolidated_collections` ADD COLUMN `serverAppliedAmount` TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL("ALTER TABLE `consolidated_collections` ADD COLUMN `serverBalance` TEXT NOT NULL DEFAULT '0.00'")
+                db.execSQL(
+                    """UPDATE `consolidated_collections` SET `serverAppliedAmount` = `appliedAmount`,
+                        `serverBalance` = `balance`
+                        WHERE `pendingSync` = 0 AND `serverVersion` > 0""",
+                )
+            }
+        }
+
         internal val ALL_MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
             MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+            MIGRATION_9_10,
         )
 
         fun get(context: Context): AppDatabase {

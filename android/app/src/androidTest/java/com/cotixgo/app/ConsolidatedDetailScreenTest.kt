@@ -39,6 +39,7 @@ class ConsolidatedDetailScreenTest {
                 consolidated = consolidated,
                 memberAccounts = emptyList(),
                 payments = emptyList(),
+                effects = emptyMap(),
                 onEdit = {},
                 onCancelConsolidated = { done -> done(false) },
                 onSetArchived = {},

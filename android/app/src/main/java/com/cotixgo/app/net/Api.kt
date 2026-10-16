@@ -27,6 +27,16 @@ class ApiException(
 fun ApiException.isTransient(): Boolean = httpCode >= 500 || httpCode == 0
 
 /**
+ * Superficie push/pull que consume SyncRepository; ApiClient la implementa
+ * y las pruebas pueden inyectar un fake determinista (p. ej. para forzar
+ * INTERNAL_ERROR que el backend real no produce bajo demanda).
+ */
+interface SyncApi {
+    suspend fun push(deviceId: String, operations: List<JsonObject>): JsonObject
+    suspend fun pull(cursor: Long): JsonObject
+}
+
+/**
  * Cliente REST mínimo del contrato F3 (auth + sync). La URL base es
  * configurable (por defecto el emulador → `php -S` local en la máquina
  * anfitriona); HTTPS es obligatorio para cualquier entorno con datos reales.
@@ -34,7 +44,7 @@ fun ApiException.isTransient(): Boolean = httpCode >= 500 || httpCode == 0
 class ApiClient(
     private val baseUrl: String,
     private val token: () -> String?,
-) {
+) : SyncApi {
     private val json = Json { ignoreUnknownKeys = true }
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -82,7 +92,7 @@ class ApiClient(
             request("POST", "/auth/recover", buildJsonObject { put("email", email) }, auth = false)
         }
 
-    suspend fun push(deviceId: String, operations: List<JsonObject>): JsonObject =
+    override suspend fun push(deviceId: String, operations: List<JsonObject>): JsonObject =
         withContext(Dispatchers.IO) {
             request("POST", "/sync/push", buildJsonObject {
                 put("device_id", deviceId)
@@ -90,7 +100,7 @@ class ApiClient(
             })
         }
 
-    suspend fun pull(cursor: Long): JsonObject =
+    override suspend fun pull(cursor: Long): JsonObject =
         withContext(Dispatchers.IO) { request("GET", "/sync/pull?cursor=$cursor") }
 }
 
