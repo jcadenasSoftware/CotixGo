@@ -1136,4 +1136,366 @@ class PausedOpResolutionTest {
         assertNotNull(db.clientDao().get(client.id))
         assertEquals("RESTORED_FROM_REMOTE", db.syncDao().opById(paused.opId)!!.resultCode)
     }
+
+    // ---------- Cascada con tablas detalle/vínculo sin tipo (PR #24) ----------
+
+    private suspend fun seedClientProfile(
+        name: String,
+    ): Pair<com.cotixgo.app.data.ClientEntity, com.cotixgo.app.data.ProfileEntity> {
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = name,
+            ),
+        )
+        val client = db.clientDao().observeForUser(session.accountUserId!!).first().first()
+        val profile = db.profileDao().observeForUser(session.accountUserId!!).first().first()
+        return client to profile
+    }
+
+    private suspend fun seedApprovedQuote(clientId: String, profileId: String): String {
+        val qid = repo.saveQuote(
+            com.cotixgo.app.data.QuoteInput(
+                clientId = clientId, profileId = profileId,
+                issueDateEpochDay = java.time.LocalDate.now().toEpochDay(),
+                validityDays = 15, currency = "COP",
+                lines = listOf(
+                    com.cotixgo.app.data.QuoteLineInput(
+                        conceptType = com.cotixgo.app.core.ConceptType.SERVICIO,
+                        description = "Servicio", quantity = "1",
+                        unit = "u", unitPrice = "100.00",
+                    ),
+                ),
+                retentions = emptyList(),
+            ),
+        )!!
+        repo.emitQuote(qid)
+        repo.setQuoteStatus(qid, com.cotixgo.app.core.QuoteStatus.APROBADA)
+        return qid
+    }
+
+    private fun accountInput(clientId: String, profileId: String) =
+        com.cotixgo.app.data.CollectionAccountInput(
+            clientId = clientId, profileId = profileId, currency = "COP",
+            items = listOf(
+                com.cotixgo.app.data.CollectionItemInput(
+                    conceptType = com.cotixgo.app.core.ConceptType.SERVICIO,
+                    description = "Servicio", quantity = "1",
+                    unit = "u", unitPrice = "100.00",
+                ),
+            ),
+        )
+
+    private fun pauseOpsOf(vararg types: String) {
+        fake.scripted = true
+        fake.respond = { op ->
+            if (op.str("entity_type") in types) {
+                FakeSyncApi.rejected(op, "VALIDATION_ERROR", "rechazo")
+            } else {
+                FakeSyncApi.applied(op)
+            }
+        }
+    }
+
+    @Test
+    fun discard_quoteLinkedByAccount_blockedKeepsRows() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente con cuenta")
+        val quoteId = seedApprovedQuote(client.id, profile.id)
+        val accountId = repo.saveCollectionAccount(
+            accountInput(client.id, profile.id).copy(quoteIds = listOf(quoteId)),
+        )!!
+
+        pauseOpsOf(EntityTypes.QUOTE)
+        sync.syncNow()
+        val quoteOp = db.syncDao().pendingOpsForEntity(EntityTypes.QUOTE, quoteId)
+            .first { it.state == "PAUSED" }
+
+        // El vínculo collection_account_quotes no tiene tipo de entidad:
+        // el bloqueante se resuelve a su padre (la Cuenta) y sí bloquea.
+        val preview = sync.discardPreview(quoteOp)
+        assertTrue(preview.blockers.isNotEmpty())
+        assertTrue(preview.blockers.any { it.contains("collection_accounts") })
+        assertNotNull(sync.discardPaused(quoteOp.opId, preview.signature()))
+        // Nada se borra: cotización, versión, cuenta y vínculo intactos.
+        assertNotNull(db.quoteDao().get(quoteId))
+        assertNotNull(db.collectionAccountDao().get(accountId))
+        assertTrue(db.collectionAccountQuoteDao().forQuote(quoteId).isNotEmpty())
+        assertTrue(db.collectionAccountQuoteDao().forAccount(accountId).isNotEmpty())
+        assertTrue(db.quoteVersionDao().observeForQuote(quoteId).first().isNotEmpty())
+    }
+
+    @Test
+    fun discard_unlinkedQuote_deletesCascadeVersions() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente cotización sola")
+        val qid = repo.saveQuote(
+            com.cotixgo.app.data.QuoteInput(
+                clientId = client.id, profileId = profile.id,
+                issueDateEpochDay = java.time.LocalDate.now().toEpochDay(),
+                validityDays = 15, currency = "COP",
+                lines = listOf(
+                    com.cotixgo.app.data.QuoteLineInput(
+                        conceptType = com.cotixgo.app.core.ConceptType.SERVICIO,
+                        description = "Servicio", quantity = "1",
+                        unit = "u", unitPrice = "100.00",
+                    ),
+                ),
+                retentions = emptyList(),
+            ),
+        )!!
+        pauseOpsOf(EntityTypes.QUOTE)
+        sync.syncNow()
+        val quoteOp = db.syncDao().pendingOpsForEntity(EntityTypes.QUOTE, qid)
+            .first { it.state == "PAUSED" }
+        val preview = sync.discardPreview(quoteOp)
+        // La vista previa enumera exactamente las filas físicas que se
+        // eliminarán: la cotización y su versión (hija tipada).
+        assertTrue(preview.blockers.isEmpty())
+        assertEquals(2, preview.rows.size)
+        assertTrue(preview.rows.any { it.table == "quotes" && it.id == qid })
+        assertTrue(preview.rows.any { it.table == "quote_versions" })
+        assertNull(sync.discardPaused(quoteOp.opId, preview.signature()))
+        assertNull(db.quoteDao().get(qid))
+        assertTrue(db.quoteVersionDao().observeForQuote(qid).first().isEmpty())
+    }
+
+    @Test
+    fun discard_collectionAccount_deletesUntypedDetailRows() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente cuenta")
+        val jobId = repo.saveJob(
+            com.cotixgo.app.data.JobInput(clientId = client.id, profileId = profile.id),
+        )!!
+        val quoteId = seedApprovedQuote(client.id, profile.id)
+        // Dos cuentas: una ligada a un Trabajo y otra a una Cotización —
+        // juntas producen filas en las tres tablas detalle/vínculo sin tipo.
+        val accJob = repo.saveCollectionAccount(
+            accountInput(client.id, profile.id).copy(jobIds = listOf(jobId)),
+        )!!
+        val accQuote = repo.saveCollectionAccount(
+            accountInput(client.id, profile.id).copy(quoteIds = listOf(quoteId)),
+        )!!
+        pauseOpsOf(EntityTypes.COLLECTION_ACCOUNT)
+        sync.syncNow()
+        val accOp = db.syncDao().pendingOpsForEntity(EntityTypes.COLLECTION_ACCOUNT, accJob)
+            .first { it.state == "PAUSED" }
+        val preview = sync.discardPreview(accOp)
+        assertTrue(preview.blockers.isEmpty())
+        assertTrue(preview.rows.any { it.table == "collection_accounts" && it.id == accJob })
+        assertTrue(preview.rows.any { it.table == "collection_account_items" })
+        assertTrue(preview.rows.any { it.table == "collection_account_jobs" })
+        // Sin ops inventadas para filas sin tipo: solo la op de la Cuenta.
+        assertEquals(listOf(accOp.opId), preview.discardedOps.map { it.opId })
+        assertNull(sync.discardPaused(accOp.opId, preview.signature()))
+        assertNull(db.collectionAccountDao().get(accJob))
+        assertTrue(db.collectionAccountItemDao().forAccount(accJob).isEmpty())
+        assertTrue(db.collectionAccountJobDao().forAccount(accJob).isEmpty())
+        // La Cuenta ligada a la Cotización: su fila vínculo también cae.
+        val accOp2 = db.syncDao().pendingOpsForEntity(EntityTypes.COLLECTION_ACCOUNT, accQuote)
+            .first { it.state == "PAUSED" }
+        val preview2 = sync.discardPreview(accOp2)
+        assertTrue(preview2.rows.any { it.table == "collection_account_quotes" })
+        assertNull(sync.discardPaused(accOp2.opId, preview2.signature()))
+        assertNull(db.collectionAccountDao().get(accQuote))
+        assertTrue(db.collectionAccountQuoteDao().forAccount(accQuote).isEmpty())
+        // El Trabajo y la Cotización referenciados no se tocan.
+        assertNotNull(db.jobDao().get(jobId))
+        assertNotNull(db.quoteDao().get(quoteId))
+    }
+
+    @Test
+    fun discard_accountInConsolidated_blockedByUntypedLink() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente consolidado")
+        val jobA = repo.saveJob(
+            com.cotixgo.app.data.JobInput(clientId = client.id, profileId = profile.id),
+        )!!
+        val jobB = repo.saveJob(
+            com.cotixgo.app.data.JobInput(clientId = client.id, profileId = profile.id),
+        )!!
+        val accA = repo.saveCollectionAccount(
+            accountInput(client.id, profile.id).copy(jobIds = listOf(jobA)),
+        )!!
+        val accB = repo.saveCollectionAccount(
+            accountInput(client.id, profile.id).copy(jobIds = listOf(jobB)),
+        )!!
+        val consId = repo.saveConsolidatedCollection(
+            com.cotixgo.app.data.ConsolidatedInput(
+                clientId = client.id, accountIds = listOf(accA, accB), currency = "COP",
+            ),
+        )!!
+
+        pauseOpsOf(EntityTypes.COLLECTION_ACCOUNT)
+        sync.syncNow()
+        val accOp = db.syncDao().pendingOpsForEntity(EntityTypes.COLLECTION_ACCOUNT, accA)
+            .first { it.state == "PAUSED" }
+        // consolidated_collection_accounts no tiene tipo: el bloqueante
+        // se resuelve al Consolidado padre y sí bloquea el descarte.
+        val preview = sync.discardPreview(accOp)
+        assertTrue(preview.blockers.any { it.contains("consolidated_collections") })
+        assertNotNull(sync.discardPaused(accOp.opId, preview.signature()))
+        assertNotNull(db.collectionAccountDao().get(accA))
+        assertTrue(db.consolidatedCollectionAccountDao().forConsolidated(consId).isNotEmpty())
+        assertNotNull(db.consolidatedCollectionDao().get(consId))
+    }
+
+    @Test
+    fun discard_consolidated_deletesMembershipRows() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente consol. descarte")
+        val jobA = repo.saveJob(
+            com.cotixgo.app.data.JobInput(clientId = client.id, profileId = profile.id),
+        )!!
+        val jobB = repo.saveJob(
+            com.cotixgo.app.data.JobInput(clientId = client.id, profileId = profile.id),
+        )!!
+        val accA = repo.saveCollectionAccount(
+            accountInput(client.id, profile.id).copy(jobIds = listOf(jobA)),
+        )!!
+        val accB = repo.saveCollectionAccount(
+            accountInput(client.id, profile.id).copy(jobIds = listOf(jobB)),
+        )!!
+        val consId = repo.saveConsolidatedCollection(
+            com.cotixgo.app.data.ConsolidatedInput(
+                clientId = client.id, accountIds = listOf(accA, accB), currency = "COP",
+            ),
+        )!!
+
+        pauseOpsOf(EntityTypes.CONSOLIDATED_COLLECTION)
+        sync.syncNow()
+        val consOp = db.syncDao()
+            .pendingOpsForEntity(EntityTypes.CONSOLIDATED_COLLECTION, consId)
+            .first { it.state == "PAUSED" }
+        val preview = sync.discardPreview(consOp)
+        assertTrue(preview.blockers.isEmpty())
+        assertTrue(preview.rows.any { it.table == "consolidated_collections" && it.id == consId })
+        assertEquals(2, preview.rows.count { it.table == "consolidated_collection_accounts" })
+        assertNull(sync.discardPaused(consOp.opId, preview.signature()))
+        assertNull(db.consolidatedCollectionDao().get(consId))
+        assertTrue(db.consolidatedCollectionAccountDao().forConsolidated(consId).isEmpty())
+        // Las Cuentas miembro sobreviven (se desligaron, no se borraron).
+        assertNotNull(db.collectionAccountDao().get(accA))
+        assertNotNull(db.collectionAccountDao().get(accB))
+    }
+
+    @Test
+    fun discard_purchase_deletesUntypedItems() = runBlocking {
+        val matId = repo.saveMaterial(
+            com.cotixgo.app.data.MaterialInput(name = "Cemento", unit = "kg"),
+        )!!
+        assertNull(
+            repo.savePurchase(
+                com.cotixgo.app.data.PurchaseInput(
+                    purchaseDateEpochDay = java.time.LocalDate.now().toEpochDay(),
+                    items = listOf(
+                        com.cotixgo.app.data.PurchaseLineInput(
+                            materialId = matId, quantity = "3",
+                            unit = "kg", unitPrice = "10.00",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val pId = db.purchaseDao()
+            .observeForUser(session.accountUserId!!).first().first().id
+
+        pauseOpsOf(EntityTypes.PURCHASE)
+        sync.syncNow()
+        val pOp = db.syncDao().pendingOpsForEntity(EntityTypes.PURCHASE, pId)
+            .first { it.state == "PAUSED" }
+        val preview = sync.discardPreview(pOp)
+        assertTrue(preview.blockers.isEmpty())
+        assertTrue(preview.rows.any { it.table == "purchases" && it.id == pId })
+        assertTrue(preview.rows.any { it.table == "purchase_items" })
+        assertEquals(listOf(pOp.opId), preview.discardedOps.map { it.opId })
+        assertNull(sync.discardPaused(pOp.opId, preview.signature()))
+        assertNull(db.purchaseDao().get(pId))
+        assertTrue(db.purchaseItemDao().forPurchase(pId).isEmpty())
+        assertNotNull(db.materialDao().get(matId))
+    }
+
+    // ---------- Revalidación DENTRO de la transacción (determinista) ----------
+
+    /**
+     * `SyncRepository.discardTransactionProbe` se invoca al entrar a la
+     * transacción de `discardPaused`, antes de la revalidación interna:
+     * la mutación aplicada por el probe solo puede ser atrapada por la
+     * revalidación in-transaction (la raíz seguía PAUSED y la firma
+     * coincidía cuando se superaron los chequeos previos). El intento con
+     * un executor de transacción "con puerta" quedó descartado: en esta
+     * versión de Room las llamadas suspend del DAO también se despachan
+     * por `transactionExecutor`, así que el gate no podía aislar la tarea
+     * de la transacción de las consultas previas.
+     */
+    @Test
+    fun discardInsideTx_rootNoLongerPaused_abortsBeforeMutations() = runBlocking {
+        val (client, _) = seedClientProfile("Cliente tx-raíz")
+        pauseOpsOf(EntityTypes.CLIENT)
+        sync.syncNow()
+        val paused = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id)
+            .first { it.state == "PAUSED" }
+        val preview = sync.discardPreview(paused)
+
+        // La raíz se resuelve concurrentemente DENTRO de la ventana: la
+        // firma no cambia (putIfAbsent mantiene su opId en el conjunto),
+        // así que solo el re-chequeo de estado in-tx puede atraparla.
+        sync.discardTransactionProbe = {
+            db.syncDao().updateOpResult(
+                paused.opId, "DONE", """{"code":"RESTORED_FROM_REMOTE"}""",
+                "RESTORED_FROM_REMOTE", nowEpochMillis(),
+            )
+        }
+        try {
+            assertEquals(
+                "La vista previa quedó desactualizada; revísala de nuevo.",
+                sync.discardPaused(paused.opId, preview.signature()),
+            )
+        } finally {
+            sync.discardTransactionProbe = null
+        }
+        // Abortó sin mutar nada propio: la fila existe y el resultado del
+        // resolvedor concurrente quedó intacto (no reescrito a DISCARDED).
+        assertNotNull(db.clientDao().get(client.id))
+        val op = db.syncDao().opById(paused.opId)!!
+        assertEquals("DONE", op.state)
+        assertEquals("RESTORED_FROM_REMOTE", op.resultCode)
+    }
+
+    @Test
+    fun discardInsideTx_signatureDrift_abortsBeforeMutations() = runBlocking {
+        val (client, _) = seedClientProfile("Cliente tx-firma")
+        pauseOpsOf(EntityTypes.CLIENT)
+        sync.syncNow()
+        val paused = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id)
+            .first { it.state == "PAUSED" }
+        // Segunda op PENDING de la misma entidad: entra en la firma.
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Edición",
+            ),
+            existingId = client.id,
+        )
+        val sibling = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id)
+            .first { it.state == "PENDING" }
+        val preview = sync.discardPreview(paused)
+        assertTrue(preview.discardedOps.any { it.opId == sibling.opId })
+
+        // La op hermana se resuelve por otro camino dentro de la ventana:
+        // el conjunto confirmado ya no existe → la firma recalculada
+        // dentro de la transacción difiere → aborta antes de mutar.
+        sync.discardTransactionProbe = {
+            db.syncDao().updateOpResult(
+                sibling.opId, "DONE", """{"code":"OTHER"}""",
+                "OTHER_RESOLVER", nowEpochMillis(),
+            )
+        }
+        try {
+            assertEquals(
+                "La vista previa quedó desactualizada; revísala de nuevo.",
+                sync.discardPaused(paused.opId, preview.signature()),
+            )
+        } finally {
+            sync.discardTransactionProbe = null
+        }
+        assertNotNull(db.clientDao().get(client.id))
+        assertEquals("PAUSED", db.syncDao().opById(paused.opId)!!.state)
+        val sib = db.syncDao().opById(sibling.opId)!!
+        assertEquals("DONE", sib.state)
+        assertEquals("OTHER_RESOLVER", sib.resultCode)
+    }
 }

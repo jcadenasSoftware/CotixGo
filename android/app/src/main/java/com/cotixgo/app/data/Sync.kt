@@ -263,6 +263,23 @@ object Rejections {
 
     /** Tipo de entidad por tabla hija (para marcar sus operaciones). */
     val TYPE_BY_TABLE: Map<String, String> = TABLE_BY_TYPE.entries.associate { (t, tab) -> tab to t }
+
+    /**
+     * Tablas detalle/vínculo sin tipo de entidad propio → (columna del
+     * padre, tipo del padre). No generan operaciones ni referencias de
+     * dependencia por sí mismas: viven y mueren con su documento. La
+     * cascada de descarte las borra como filas físicas y los bloqueantes
+     * resuelven el referente real a través de este mapa (revisión PR #24:
+     * antes se omitían silenciosamente y quedaban huérfanas).
+     */
+    val UNOWNED_PARENT: Map<String, Pair<String, String>> = mapOf(
+        "collection_account_items" to ("accountId" to EntityTypes.COLLECTION_ACCOUNT),
+        "collection_account_jobs" to ("accountId" to EntityTypes.COLLECTION_ACCOUNT),
+        "collection_account_quotes" to ("accountId" to EntityTypes.COLLECTION_ACCOUNT),
+        "consolidated_collection_accounts" to
+            ("consolidatedId" to EntityTypes.CONSOLIDATED_COLLECTION),
+        "purchase_items" to ("purchaseId" to EntityTypes.PURCHASE),
+    )
 }
 
 /**
@@ -2055,7 +2072,12 @@ class SyncRepository(
         val pendingOpsOnEntity: List<String>,
     )
 
-    /** Fila afectada por un descarte (tabla física + id + bandera sincronizada). */
+    /**
+     * Fila física afectada por un descarte. `entityType` es el tipo de
+     * entidad cuando la fila lo tiene; en filas de detalle/vínculo sin
+     * tipo propio (collection_account_items, purchase_items, …) lleva el
+     * nombre de la tabla — esas filas nunca tienen operaciones propias.
+     */
     data class DiscardRow(val table: String, val entityType: String, val id: String, val synced: Boolean)
 
     data class DiscardPreview(
@@ -2103,6 +2125,12 @@ class SyncRepository(
             .query("SELECT COUNT(*) FROM `$table` WHERE `$column` = ?", arrayOf(id))
             .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
+    /** Columna arbitraria de una fila física (p.ej. el padre de una tabla vínculo). */
+    private fun rawColumn(table: String, column: String, id: String): String? =
+        db.openHelper.writableDatabase
+            .query("SELECT `$column` FROM `$table` WHERE `id` = ?", arrayOf(id))
+            .use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
     private fun rowSynced(table: String, id: String): Boolean {
         if (table !in SYNCED_FLAG_TABLES) return false
         return db.openHelper.writableDatabase
@@ -2132,7 +2160,9 @@ class SyncRepository(
 
     /**
      * Filas alcanzables por la cascada de descarte (BFS sobre CHILD_TABLES);
-     * la primera es la raíz. Nunca toca filas fuera del mapa de hijos.
+     * la primera es la raíz. Incluye las filas físicas de tablas hija sin
+     * tipo de entidad (detalles/vínculos), que solo existen dentro de su
+     * documento padre. Nunca toca filas fuera del mapa de hijos.
      */
     private fun collectCascade(type: String, id: String): List<DiscardRow> {
         val out = mutableListOf<DiscardRow>()
@@ -2146,8 +2176,22 @@ class SyncRepository(
             if (rawIds(table, "id", eid).isEmpty()) continue
             out += DiscardRow(table, t, eid, rowSynced(table, eid))
             for ((childTable, col) in Rejections.CHILD_TABLES[t].orEmpty()) {
-                val childType = Rejections.TYPE_BY_TABLE[childTable] ?: continue
-                for (cid in rawIds(childTable, col, eid)) queue.add(childType to cid)
+                val childType = Rejections.TYPE_BY_TABLE[childTable]
+                if (childType != null) {
+                    for (cid in rawIds(childTable, col, eid)) queue.add(childType to cid)
+                } else {
+                    // Tabla detalle/vínculo sin tipo de entidad: la fila
+                    // física se borra con su padre — nunca genera
+                    // operaciones ni tiene hijos propios (el nombre de la
+                    // tabla sirve de etiqueta en la vista previa).
+                    for (cid in rawIds(childTable, col, eid)) {
+                        if (seen.add(childTable to cid)) {
+                            out += DiscardRow(
+                                childTable, childTable, cid, rowSynced(childTable, cid),
+                            )
+                        }
+                    }
+                }
             }
         }
         return out
@@ -2214,9 +2258,24 @@ class SyncRepository(
         val inCascade = rows.map { it.entityType to it.id }.toMutableSet()
         for ((rt, col) in Rejections.REF_BLOCKS[op.entityType].orEmpty()) {
             for (rid in rawIds(rt, col, op.entityId)) {
-                val rType = Rejections.TYPE_BY_TABLE[rt] ?: continue
-                if ((rType to rid) in inCascade) continue
-                blockers += "$rt:$rid referencia a esta entidad"
+                val rType = Rejections.TYPE_BY_TABLE[rt]
+                if (rType != null) {
+                    if ((rType to rid) in inCascade) continue
+                    blockers += "$rt:$rid referencia a esta entidad"
+                    continue
+                }
+                // Tabla vínculo/detalle sin tipo de entidad: la referencia
+                // real la hace su fila padre (p.ej. collection_account_quotes
+                // vive dentro de una collection_accounts). Si el padre está
+                // en la cascada, la fila se borra con él y no bloquea;
+                // en caso contrario se señala el referente real.
+                val parent = Rejections.UNOWNED_PARENT[rt]
+                    ?.let { (pcol, ptype) -> rawColumn(rt, pcol, rid)?.let { ptype to it } }
+                if (parent != null && parent in inCascade) continue
+                val label = parent?.let { (ptype, pid) ->
+                    "${Rejections.TABLE_BY_TYPE[ptype] ?: ptype}:$pid"
+                } ?: "$rt:$rid"
+                blockers += "$label referencia a esta entidad"
             }
         }
         val syncedDesc = rows.drop(1).filter { it.synced }
@@ -2258,6 +2317,15 @@ class SyncRepository(
      * código descriptivo y su payload conservado. Los dependientes que
      * esperaban se marcan PREREQUISITE_DISCARDED.
      */
+    /**
+     * Punto de prueba instrumentada: se invoca al inicio de la
+     * transacción de [discardPaused], antes de la revalidación interna.
+     * Permite reproducir de forma determinista una mutación concurrente
+     * en la ventana entre los chequeos previos y la transacción.
+     * Nulo en producción.
+     */
+    internal var discardTransactionProbe: (suspend () -> Unit)? = null
+
     suspend fun discardPaused(opId: String, expectedSignature: Set<String>): String? {
         val op = db.syncDao().opById(opId) ?: return "Operación no encontrada."
         if (op.state != "PAUSED") return "La operación ya no está pausada."
@@ -2269,6 +2337,7 @@ class SyncRepository(
         val now = nowEpochMillis()
         var completed = false
         db.withTransaction {
+            discardTransactionProbe?.invoke()
             // Revalidación atómica dentro de la transacción: la vista
             // previa pudo quedar obsoleta entre su cálculo y la
             // confirmación del usuario.

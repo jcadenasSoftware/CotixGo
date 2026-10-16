@@ -169,3 +169,56 @@ Suite completa: OK (129 tests), 0 fallos.
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
 
 Archivos protegidos del entorno local (NO incluidos): sin cambios.
+
+================================================================
+CUARTA CORRIDA — correccion de la segunda revision independiente
+del PR #24 (tablas fisicas sin tipo + cobertura in-transaction)
+================================================================
+
+Cambio verificado en esta ronda:
+  Sync.kt — mapa Rejections.UNOWNED_PARENT (tabla sin tipo -> columna
+  y tipo del documento padre):
+    collection_account_items/_jobs/_quotes  -> accountId / collection_account
+    consolidated_collection_accounts        -> consolidatedId / consolidated_collection
+    purchase_items                          -> purchaseId / purchase
+  collectCascade: las filas detalle/vinculo sin tipo entran en la vista
+  previa como filas fisicas (etiquetadas por nombre de tabla, sin tipo
+  de entidad: nunca generan operaciones ni historial propio) y se
+  borran con su padre — antes quedaban huerfanas.
+  REF_BLOCKS: una referencia via tabla sin tipo se resuelve contra su
+  padre real — si el padre esta en la cascada el vinculo no bloquea;
+  si es externo se denuncia el referente real.
+  discardTransactionProbe (internal, nulo en produccion): costura que
+  se invoca al entrar a la transaccion de discardPaused, antes de la
+  revalidacion, para reproducir deterministamente una mutacion
+  concurrente en la ventana pre-chequeos -> transaccion. El intento con
+  executor de transaccion con puerta se descarto: las llamadas suspend
+  del DAO tambien pasan por transactionExecutor y el gate no podia
+  aislar la tarea de la transaccion de las consultas previas.
+
+== Backend E2E (esta corrida, sin cambios PHP) ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 260 passed, 0 failed.
+
+== Pruebas instrumentadas (SOLO emulator-5556, esta corrida) ==
+
+PausedOpResolutionTest: OK (25 tests) — 9 casos nuevos:
+  discard_quote_blockedByCollectionAccountLink
+  discard_quote_unreferenced_deletesVersionsAndLinks
+  discard_collectionAccount_deletesUntypedDetailRows
+  discard_consolidatedCollection_deletesUntypedLinks
+  discard_purchase_deletesUntypedItems
+  discard_accountInConsolidated_blockedByUntypedLink
+  discardPreview_listsPhysicalRows_staleSignatureAborts
+  discardInsideTx_rootNoLongerPaused_abortsBeforeMutations
+  discardInsideTx_signatureDrift_abortsBeforeMutations
+Suite completa: OK (137 tests), 0 fallos.
+  Time: 390.27s
+
+== JVM unitarias / builds (esta corrida) ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos): sin cambios.
