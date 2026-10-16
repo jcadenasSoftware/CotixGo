@@ -56,6 +56,233 @@ object EntityTypes {
 }
 
 /**
+ * Resolución de operaciones rechazadas (PAUSED) — decisiones aprobadas:
+ * INTERNAL_ERROR se reintenta automáticamente con backoff acotado (máx.
+ * 5) conservando el operation_id (el backend no memoriza ese fallo);
+ * DEPENDENCY/CONFLICT_BLOCKED esperan al prerequisito y se reemiten con
+ * operation_id nuevo cuando este se resuelve (los rechazos ordinarios sí
+ * quedan memorizados en `processed_operations`); una pausada de tipo
+ * snapshot queda SUPERSEDED solo cuando una op posterior de la misma
+ * entidad aplicó con payload completo; el resto se resuelve por acción
+ * explícita del usuario conservando payload y resultado en el historial.
+ */
+object Rejections {
+    const val INTERNAL_ERROR = "INTERNAL_ERROR"
+    const val DEPENDENCY = "DEPENDENCY"
+    const val CONFLICT_BLOCKED = "CONFLICT_BLOCKED"
+    const val VALIDATION_ERROR = "VALIDATION_ERROR"
+    const val INVALID_TRANSITION = "INVALID_TRANSITION"
+    const val FORBIDDEN_ENTITY = "FORBIDDEN_ENTITY"
+    const val IMMUTABLE_FINANCIAL = "IMMUTABLE_FINANCIAL"
+    const val IDEMPOTENCY_KEY_REUSED = "IDEMPOTENCY_KEY_REUSED"
+    const val STALE_BASE_VERSION = "STALE_BASE_VERSION"
+
+    // Códigos de resolución con los que una pausada queda DONE (historial).
+    const val RES_SUPERSEDED = "SUPERSEDED"
+    const val RES_REISSUED = "REISSUED"
+    const val RES_RESTORED = "RESTORED_FROM_REMOTE"
+    const val RES_DISCARDED = "DISCARDED_LOCAL"
+    const val RES_CASCADE_DISCARDED = "DISCARDED_CASCADE"
+    const val RES_ACKNOWLEDGED = "REJECTED_ACKNOWLEDGED"
+    const val RES_PREREQ_DISCARDED = "PREREQUISITE_DISCARDED"
+
+    /** Reintentos automáticos por fallo interno antes de atención manual. */
+    const val MAX_INTERNAL_ATTEMPTS = 5
+    val INTERNAL_BACKOFF_MS = longArrayOf(15_000L, 60_000L, 240_000L, 900_000L, 3_600_000L)
+
+    /**
+     * Tipos cuyo payload es el estado COMPLETO de la fila (verificado en
+     * SyncPayloads campo a campo): una op posterior aplicada subsume una
+     * pausada anterior de la misma entidad. Quedan excluidos los eventos
+     * append-only/financieros (payment*, inventory_movement), las versiones
+     * (quote_version/report_version) y los vínculos (job_quote/report_job:
+     * cada fila es el vínculo, no un estado mutable del documento).
+     */
+    val SNAPSHOT_TYPES = setOf(
+        EntityTypes.USER, EntityTypes.PROFILE, EntityTypes.CLIENT,
+        EntityTypes.SERVICE, EntityTypes.RETENTION, EntityTypes.QUOTE,
+        EntityTypes.JOB, EntityTypes.JOB_ACTIVITY, EntityTypes.JOB_MATERIAL,
+        EntityTypes.REPORT, EntityTypes.COLLECTION_ACCOUNT,
+        EntityTypes.COLLECTION_METHOD, EntityTypes.CONSOLIDATED_COLLECTION,
+        EntityTypes.MATERIAL, EntityTypes.PURCHASE,
+    )
+
+    /** Códigos que pueden liberarse solos cuando el prerequisito quedó resuelto. */
+    val RELEASABLE_CODES = setOf(DEPENDENCY, CONFLICT_BLOCKED)
+
+    /**
+     * Referencias declaradas por el contrato de payload (espejo del mapa
+     * DEPENDENCIES del servidor más las validadas por sus handlers):
+     * entityType → (depType, campo escalar del payload). Los campos nulos
+     * o vacíos no bloquean: el servidor decide entonces.
+     */
+    val SCALAR_DEPS: Map<String, List<Pair<String, String>>> = mapOf(
+        EntityTypes.SERVICE to listOf(EntityTypes.PROFILE to "profileId"),
+        EntityTypes.QUOTE to listOf(EntityTypes.CLIENT to "clientId", EntityTypes.PROFILE to "profileId"),
+        EntityTypes.QUOTE_VERSION to listOf(EntityTypes.QUOTE to "quoteId"),
+        EntityTypes.JOB to listOf(EntityTypes.CLIENT to "clientId", EntityTypes.PROFILE to "profileId"),
+        EntityTypes.JOB_QUOTE to listOf(EntityTypes.JOB to "jobId", EntityTypes.QUOTE to "quoteId"),
+        EntityTypes.JOB_ACTIVITY to listOf(EntityTypes.JOB to "jobId"),
+        EntityTypes.JOB_MATERIAL to listOf(EntityTypes.JOB to "jobId", EntityTypes.MATERIAL to "materialId"),
+        EntityTypes.REPORT to listOf(EntityTypes.CLIENT to "clientId", EntityTypes.PROFILE to "profileId"),
+        EntityTypes.REPORT_JOB to listOf(EntityTypes.REPORT to "reportId", EntityTypes.JOB to "jobId"),
+        EntityTypes.REPORT_VERSION to listOf(EntityTypes.REPORT to "reportId"),
+        EntityTypes.COLLECTION_ACCOUNT to listOf(
+            EntityTypes.CLIENT to "clientId", EntityTypes.PROFILE to "profileId",
+        ),
+        EntityTypes.CONSOLIDATED_COLLECTION to listOf(EntityTypes.CLIENT to "clientId"),
+        EntityTypes.PAYMENT to listOf(
+            EntityTypes.CLIENT to "clientId",
+            EntityTypes.COLLECTION_METHOD to "collectionMethodId",
+        ),
+        EntityTypes.PAYMENT_ASSIGNMENT to listOf(
+            EntityTypes.PAYMENT to "paymentId",
+            EntityTypes.COLLECTION_ACCOUNT to "accountId",
+            EntityTypes.COLLECTION_ACCOUNT to "fromAccountId",
+            EntityTypes.CONSOLIDATED_COLLECTION to "consolidatedId",
+            EntityTypes.CONSOLIDATED_COLLECTION to "fromConsolidatedId",
+        ),
+        EntityTypes.PAYMENT_ADJUSTMENT to listOf(EntityTypes.PAYMENT to "paymentId"),
+        EntityTypes.PAYMENT_REFUND to listOf(
+            EntityTypes.PAYMENT to "paymentId",
+            EntityTypes.COLLECTION_METHOD to "collectionMethodId",
+        ),
+        EntityTypes.INVENTORY_MOVEMENT to listOf(
+            EntityTypes.MATERIAL to "materialId",
+            EntityTypes.JOB to "jobId",
+            EntityTypes.PURCHASE to "purchaseId",
+            EntityTypes.JOB_MATERIAL to "jobMaterialId",
+        ),
+    )
+
+    /** Referencias en arreglos del payload: entityType → (depType, campo arreglo de ids). */
+    val ARRAY_DEPS: Map<String, List<Pair<String, String>>> = mapOf(
+        EntityTypes.COLLECTION_ACCOUNT to listOf(
+            EntityTypes.JOB to "jobIds", EntityTypes.QUOTE to "quoteIds",
+        ),
+        EntityTypes.CONSOLIDATED_COLLECTION to listOf(
+            EntityTypes.COLLECTION_ACCOUNT to "accountIds",
+        ),
+    )
+
+    /**
+     * Cascada de descarte: entityType → (tabla hija, columna padre). Las
+     * filas hijas se eliminan con la raíz; la misma tabla puede aparecer
+     * bajo varios padres por columnas distintas.
+     */
+    val CHILD_TABLES: Map<String, List<Pair<String, String>>> = mapOf(
+        EntityTypes.QUOTE to listOf("quote_versions" to "quoteId"),
+        EntityTypes.JOB to listOf(
+            "job_activities" to "jobId", "job_materials" to "jobId",
+            "job_quotes" to "jobId", "inventory_movements" to "jobId",
+        ),
+        EntityTypes.JOB_MATERIAL to listOf("inventory_movements" to "jobMaterialId"),
+        EntityTypes.REPORT to listOf("report_jobs" to "reportId", "report_versions" to "reportId"),
+        EntityTypes.COLLECTION_ACCOUNT to listOf(
+            "collection_account_items" to "accountId",
+            "collection_account_jobs" to "accountId",
+            "collection_account_quotes" to "accountId",
+            "payment_assignments" to "accountId",
+            "payment_assignments" to "fromAccountId",
+        ),
+        EntityTypes.CONSOLIDATED_COLLECTION to listOf(
+            "consolidated_collection_accounts" to "consolidatedId",
+            "payment_assignments" to "consolidatedId",
+            "payment_assignments" to "fromConsolidatedId",
+        ),
+        EntityTypes.PAYMENT to listOf(
+            "payment_assignments" to "paymentId",
+            "payment_adjustments" to "paymentId",
+            "payment_refunds" to "paymentId",
+        ),
+        EntityTypes.PURCHASE to listOf(
+            "purchase_items" to "purchaseId", "inventory_movements" to "purchaseId",
+        ),
+    )
+
+    /**
+     * Referencias que BLOQUEAN el descarte (filas ajenas a la cascada que
+     * apuntan a la entidad): entityType → (tabla, columna). Se reportan en
+     * la vista previa y el descarte se niega mientras existan.
+     */
+    val REF_BLOCKS: Map<String, List<Pair<String, String>>> = mapOf(
+        EntityTypes.CLIENT to listOf(
+            "quotes" to "clientId", "jobs" to "clientId", "reports" to "clientId",
+            "collection_accounts" to "clientId",
+            "consolidated_collections" to "clientId", "payments" to "clientId",
+        ),
+        EntityTypes.PROFILE to listOf(
+            "services" to "profileId", "quotes" to "profileId", "jobs" to "profileId",
+            "reports" to "profileId", "collection_accounts" to "profileId",
+        ),
+        EntityTypes.QUOTE to listOf(
+            "job_quotes" to "quoteId", "collection_account_quotes" to "quoteId",
+        ),
+        EntityTypes.JOB to listOf(
+            "report_jobs" to "jobId", "collection_account_jobs" to "jobId",
+        ),
+        EntityTypes.MATERIAL to listOf(
+            "job_materials" to "materialId", "purchase_items" to "materialId",
+            "inventory_movements" to "materialId",
+        ),
+        EntityTypes.COLLECTION_METHOD to listOf(
+            "payments" to "collectionMethodId", "payment_refunds" to "collectionMethodId",
+        ),
+        EntityTypes.COLLECTION_ACCOUNT to listOf(
+            "consolidated_collection_accounts" to "accountId",
+        ),
+    )
+
+    /** Tabla física por tipo de entidad (descarte / limpieza de pendingSync). */
+    val TABLE_BY_TYPE: Map<String, String> = mapOf(
+        EntityTypes.USER to "users",
+        EntityTypes.PROFILE to "professional_profiles",
+        EntityTypes.CLIENT to "clients",
+        EntityTypes.SERVICE to "services",
+        EntityTypes.RETENTION to "retention_configs",
+        EntityTypes.QUOTE to "quotes",
+        EntityTypes.QUOTE_VERSION to "quote_versions",
+        EntityTypes.JOB to "jobs",
+        EntityTypes.JOB_QUOTE to "job_quotes",
+        EntityTypes.JOB_ACTIVITY to "job_activities",
+        EntityTypes.JOB_MATERIAL to "job_materials",
+        EntityTypes.REPORT to "reports",
+        EntityTypes.REPORT_JOB to "report_jobs",
+        EntityTypes.REPORT_VERSION to "report_versions",
+        EntityTypes.COLLECTION_ACCOUNT to "collection_accounts",
+        EntityTypes.COLLECTION_METHOD to "collection_methods",
+        EntityTypes.PAYMENT to "payments",
+        EntityTypes.PAYMENT_ASSIGNMENT to "payment_assignments",
+        EntityTypes.CONSOLIDATED_COLLECTION to "consolidated_collections",
+        EntityTypes.PAYMENT_ADJUSTMENT to "payment_adjustments",
+        EntityTypes.PAYMENT_REFUND to "payment_refunds",
+        EntityTypes.MATERIAL to "materials",
+        EntityTypes.PURCHASE to "purchases",
+        EntityTypes.INVENTORY_MOVEMENT to "inventory_movements",
+    )
+
+    /** Tipo de entidad por tabla hija (para marcar sus operaciones). */
+    val TYPE_BY_TABLE: Map<String, String> = TABLE_BY_TYPE.entries.associate { (t, tab) -> tab to t }
+
+    /**
+     * Tablas detalle/vínculo sin tipo de entidad propio → (columna del
+     * padre, tipo del padre). No generan operaciones ni referencias de
+     * dependencia por sí mismas: viven y mueren con su documento. La
+     * cascada de descarte las borra como filas físicas y los bloqueantes
+     * resuelven el referente real a través de este mapa (revisión PR #24:
+     * antes se omitían silenciosamente y quedaban huérfanas).
+     */
+    val UNOWNED_PARENT: Map<String, Pair<String, String>> = mapOf(
+        "collection_account_items" to ("accountId" to EntityTypes.COLLECTION_ACCOUNT),
+        "collection_account_jobs" to ("accountId" to EntityTypes.COLLECTION_ACCOUNT),
+        "collection_account_quotes" to ("accountId" to EntityTypes.COLLECTION_ACCOUNT),
+        "consolidated_collection_accounts" to
+            ("consolidatedId" to EntityTypes.CONSOLIDATED_COLLECTION),
+        "purchase_items" to ("purchaseId" to EntityTypes.PURCHASE),
+    )
+}
+
+/**
  * Sesión local de sincronización: token como blob AES/GCM de
  * AndroidKeyStore (SessionCrypto) en preferencias planas, identidad de
  * cuenta y device_id en preferencias, cursor en `sync_meta` (se
@@ -71,6 +298,9 @@ class Session(
     prefsName: String = PREFS_NAME,
 ) {
     private val appContext = context.applicationContext
+
+    /** Contexto de aplicación (WorkManager para reintentos con backoff). */
+    val context: Context get() = appContext
     private val plain: SharedPreferences =
         appContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
 
@@ -372,9 +602,11 @@ object SyncPayloads {
 class SyncRepository(
     private val db: AppDatabase,
     val session: Session,
+    apiOverride: com.cotixgo.app.net.SyncApi? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-    private val api get() = ApiClient(session.apiBaseUrl) { session.token }
+    private val apiOverride = apiOverride
+    private val api get() = apiOverride ?: ApiClient(session.apiBaseUrl) { session.token }
 
     fun observePendingCount() = db.syncDao().observePendingCount()
     fun observePausedCount() = db.syncDao().observePausedCount()
@@ -427,7 +659,7 @@ class SyncRepository(
             val batch = db.syncDao().pendingOps()
                 .groupBy { it.entityType to it.entityId }
                 .map { it.value.first() }
-                .filter { pushableNow(it) }
+                .filter { pushableNow(it) && !backoffWaiting(it) }
                 .take(100)
             if (batch.isEmpty()) break
             val ops = batch.map { op ->
@@ -457,76 +689,312 @@ class SyncRepository(
                         applyApplied(op, r)
                     }
                     "CONFLICT" -> { paused++; applyConflict(op, r) }
-                    else -> { paused++; applyRejected(op, r) }
+                    else -> {
+                        // INTERNAL_ERROR no se memoriza en el servidor: la
+                        // misma operation_id se reintenta con backoff hasta
+                        // MAX_INTERNAL_ATTEMPTS reintentos automáticos; solo
+                        // entonces pasa a atención manual marcada como fallo
+                        // interno.
+                        if (r.str("code") == Rejections.INTERNAL_ERROR &&
+                            op.attempts < Rejections.MAX_INTERNAL_ATTEMPTS
+                        ) {
+                            scheduleInternalRetry(op, r)
+                        } else {
+                            paused++
+                            applyRejected(op, r)
+                        }
+                    }
                 }
             }
+            // Tras cada tanda: liberar lo que esperaba un prerequisito ya
+            // resuelto y registrar la cascada de lo recién pausado.
+            releaseReadyPaused()
         }
         pulled += pullAll()
         return SyncSummary(pushed = pushed, paused = paused, pulled = pulled)
     }
 
-    /**
-     * `job_quote` no solo necesita que la Cotización exista en el servidor:
-     * la regla aprobada exige que esté APROBADA, lo que puede requerir
-     * varias operaciones previas suyas (emitir, aprobar) aún en cola. Como
-     * cada tanda lleva una sola operación por entidad, el vínculo espera a
-     * que la Cotización no tenga operaciones activas; si las suyas quedan
-     * pausadas, el vínculo se envía y el rechazo del servidor queda visible.
-     * Misma regla F6: la Cuenta espera a que sus orígenes (Trabajos,
-     * Cotizaciones, Cliente, Perfil) no tengan operaciones activas, y un
-     * evento de asignación espera a su Pago y a las Cuentas referenciadas.
-     */
-    private suspend fun pushableNow(op: SyncOperationEntity): Boolean {
-        val p = json.parseToJsonElement(op.payloadJson).jsonObject
-        suspend fun free(type: String, id: String?): Boolean =
-            id == null || db.syncDao().activeOpsForEntity(type, id) == 0
-        return when (op.entityType) {
-            EntityTypes.JOB_QUOTE -> free(EntityTypes.QUOTE, p.str("quoteId"))
-            EntityTypes.COLLECTION_ACCOUNT -> {
-                val jobs = p["jobIds"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
-                val quotes = p["quoteIds"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
-                free(EntityTypes.CLIENT, p.str("clientId")) &&
-                    free(EntityTypes.PROFILE, p.str("profileId")) &&
-                    jobs.all { free(EntityTypes.JOB, it) } &&
-                    quotes.all { free(EntityTypes.QUOTE, it) }
-            }
-            EntityTypes.PAYMENT -> free(EntityTypes.CLIENT, p.str("clientId")) &&
-                free(EntityTypes.COLLECTION_METHOD, p.str("collectionMethodId"))
-            EntityTypes.PAYMENT_ASSIGNMENT ->
-                free(EntityTypes.PAYMENT, p.str("paymentId")) &&
-                    free(EntityTypes.COLLECTION_ACCOUNT, p.str("accountId")) &&
-                    free(EntityTypes.COLLECTION_ACCOUNT, p.str("fromAccountId")) &&
-                    free(EntityTypes.CONSOLIDATED_COLLECTION, p.str("consolidatedId")) &&
-                    free(EntityTypes.CONSOLIDATED_COLLECTION, p.str("fromConsolidatedId"))
-            // F7: el Consolidado espera a su Cliente y a sus Cuentas
-            // miembro; ajuste y reembolso esperan a su Pago.
-            EntityTypes.CONSOLIDATED_COLLECTION -> {
-                val accounts = p["accountIds"]?.jsonArray?.mapNotNull { it.jsonPrimitive.content }
-                    ?: emptyList()
-                free(EntityTypes.CLIENT, p.str("clientId")) &&
-                    accounts.all { free(EntityTypes.COLLECTION_ACCOUNT, it) }
-            }
-            EntityTypes.PAYMENT_ADJUSTMENT, EntityTypes.PAYMENT_REFUND ->
-                free(EntityTypes.PAYMENT, p.str("paymentId"))
-            // F8: un consumo vinculado espera a que su Material exista en el
-            // servidor (los descriptivos sin materialId no esperan nada).
-            EntityTypes.JOB_MATERIAL -> free(EntityTypes.MATERIAL, p.str("materialId"))
-            // La Compra espera a que todos los Materiales de sus líneas no
-            // tengan operaciones activas.
-            EntityTypes.PURCHASE -> {
-                val mats = p["items"]?.jsonArray?.mapNotNull {
-                    it.jsonObject["materialId"]?.jsonPrimitive?.content
-                } ?: emptyList()
-                mats.all { free(EntityTypes.MATERIAL, it) }
-            }
-            // El movimiento espera a sus referencias declaradas; los de
-            // origen COMPRA los deriva el servidor (nunca se encolan).
-            EntityTypes.INVENTORY_MOVEMENT ->
-                free(EntityTypes.MATERIAL, p.str("materialId")) &&
-                    free(EntityTypes.JOB, p.str("jobId")) &&
-                    free(EntityTypes.JOB_MATERIAL, p.str("jobMaterialId"))
-            else -> true
+    /** Programa el reintento automático de un INTERNAL_ERROR (mismo opId). */
+    private suspend fun scheduleInternalRetry(op: SyncOperationEntity, r: JsonObject) {
+        val now = nowEpochMillis()
+        val attempts = op.attempts + 1
+        val delay = Rejections.INTERNAL_BACKOFF_MS[
+            (attempts - 1).coerceAtMost(Rejections.INTERNAL_BACKOFF_MS.lastIndex),
+        ]
+        val rj = buildJsonObject {
+            r.forEach { (k, v) -> put(k, v) }
+            put("nextRetryAt", now + delay)
         }
+        db.syncDao().rescheduleOp(op.opId, rj.toString(), now)
+        db.syncDao().bumpOpAttempts(op.opId, now)
+        // El reintento es automático: se agenda un worker one-shot con el
+        // delay del backoff (el periódico de 30 min sería demasiado tardío).
+        // Un fallo de WorkManager no rompe el ciclo: el reintento queda
+        // persistido y el próximo sync lo recoge.
+        runCatching { com.cotixgo.app.sync.SyncScheduler.requestDelayed(session.context, delay) }
+    }
+
+    /**
+     * Reemite una pausada con operation_id NUEVO (los rechazos ordinarios
+     * están memorizados: reenviar el mismo id devolvería el rechazo
+     * guardado sin reevaluar). La nueva op lleva el estado local vigente
+     * de la fila si existe — nunca un snapshot obsoleto— y queda vinculada
+     * por `supersedes` a la original, que se cierra como REISSUED con su
+     * payload y resultado conservados.
+     */
+    private suspend fun reissuePausedAsNew(op: SyncOperationEntity, now: Long) {
+        val payload = currentPayload(op.entityType, op.entityId)
+            ?: runCatching { json.parseToJsonElement(op.payloadJson).jsonObject }.getOrNull()
+            ?: return
+        val base = op.resultJson?.let {
+            runCatching {
+                json.parseToJsonElement(it).jsonObject["server_state"]
+                    ?.jsonObject?.intOr("server_version")
+            }.getOrNull()
+        }?.takeIf { it > 0 } ?: op.baseServerVersion
+        db.syncDao().updateOpResult(op.opId, "DONE", resolutionResult(op, "REISSUED", now), Rejections.RES_REISSUED, now)
+        enqueue(op.entityType, op.entityId, payload, base, opType = op.opType, supersedes = op.opId)
+    }
+
+    /** Payload del estado local vigente de la fila (para la reemisión). */
+    private suspend fun currentPayload(type: String, id: String): JsonObject? = when (type) {
+        EntityTypes.USER -> db.userDao().get()?.let { SyncPayloads.user(it) }
+        EntityTypes.PROFILE -> db.profileDao().get(id)?.let { SyncPayloads.profile(it) }
+        EntityTypes.CLIENT -> db.clientDao().get(id)?.let { SyncPayloads.client(it) }
+        EntityTypes.SERVICE -> db.serviceDao().get(id)?.let { SyncPayloads.service(it) }
+        EntityTypes.RETENTION -> db.retentionDao().get(id)?.let { SyncPayloads.retention(it) }
+        EntityTypes.QUOTE -> db.quoteDao().get(id)?.let { SyncPayloads.quote(it) }
+        EntityTypes.QUOTE_VERSION -> db.quoteVersionDao().get(id)?.let { SyncPayloads.quoteVersion(it) }
+        EntityTypes.JOB -> db.jobDao().get(id)?.let { SyncPayloads.job(it) }
+        EntityTypes.JOB_QUOTE -> db.jobQuoteDao().get(id)?.let { SyncPayloads.jobQuote(it) }
+        EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().get(id)?.let { SyncPayloads.jobActivity(it) }
+        EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().get(id)?.let { SyncPayloads.jobMaterial(it) }
+        EntityTypes.REPORT -> db.reportDao().get(id)?.let { SyncPayloads.report(it) }
+        EntityTypes.REPORT_JOB -> db.reportJobDao().get(id)?.let { SyncPayloads.reportJob(it) }
+        EntityTypes.REPORT_VERSION -> db.reportVersionDao().get(id)?.let { SyncPayloads.reportVersion(it) }
+        EntityTypes.COLLECTION_ACCOUNT -> db.collectionAccountDao().get(id)?.let { acc ->
+            SyncPayloads.collectionAccount(
+                acc,
+                db.collectionAccountItemDao().forAccount(id),
+                db.collectionAccountJobDao().forAccount(id).map { it.jobId },
+                db.collectionAccountQuoteDao().forAccount(id).map { it.quoteId },
+            )
+        }
+        EntityTypes.COLLECTION_METHOD -> db.collectionMethodDao().get(id)?.let { SyncPayloads.collectionMethod(it) }
+        EntityTypes.PAYMENT -> db.paymentDao().get(id)?.let { SyncPayloads.payment(it) }
+        EntityTypes.PAYMENT_ASSIGNMENT -> db.paymentAssignmentDao().get(id)?.let { SyncPayloads.paymentAssignment(it) }
+        EntityTypes.CONSOLIDATED_COLLECTION -> db.consolidatedCollectionDao().get(id)?.let { c ->
+            SyncPayloads.consolidatedCollection(
+                c,
+                db.consolidatedCollectionAccountDao().forConsolidated(c.id).map { it.accountId },
+            )
+        }
+        EntityTypes.PAYMENT_ADJUSTMENT -> db.paymentAdjustmentDao().get(id)?.let { SyncPayloads.paymentAdjustment(it) }
+        EntityTypes.PAYMENT_REFUND -> db.paymentRefundDao().get(id)?.let { SyncPayloads.paymentRefund(it) }
+        EntityTypes.MATERIAL -> db.materialDao().get(id)?.let { SyncPayloads.material(it) }
+        EntityTypes.PURCHASE -> db.purchaseDao().get(id)?.let { p ->
+            SyncPayloads.purchase(p, db.purchaseItemDao().forPurchase(id))
+        }
+        EntityTypes.INVENTORY_MOVEMENT -> db.inventoryMovementDao().get(id)?.let { SyncPayloads.inventoryMovement(it) }
+        else -> null
+    }
+
+    /**
+     * Historial: el resultado de una op pausada que se resuelve se conserva
+     * anidado bajo `original` junto al código de resolución y su causa.
+     */
+    private fun resolutionResult(
+        op: SyncOperationEntity,
+        code: String,
+        now: Long,
+        detail: String? = null,
+    ): String = buildJsonObject {
+        put("resolution", code)
+        put("resolvedAt", now)
+        detail?.let { put("detail", it) }
+        op.resultJson?.let {
+            runCatching { json.parseToJsonElement(it) }.getOrNull()?.let { put("original", it) }
+        }
+    }.toString()
+
+    /**
+     * Liberación de dependientes: una pausada DEPENDENCY/CONFLICT_BLOCKED
+     * se reemite (opId nuevo) cuando todas sus referencias ya no tienen
+     * operaciones sin resolver y sus filas locales están confirmadas, la
+     * entidad ya no tiene un conflicto abierto ni otras ops por delante,
+     * Y hay evidencia de progreso posterior a la pausa (sin ella se
+     * reemitiría en bucle contra el mismo rechazo memorizado).
+     */
+    private suspend fun releaseReadyPaused() {
+        val now = nowEpochMillis()
+        for (op in db.syncDao().pausedOpsNow()) {
+            if (op.resultCode !in Rejections.RELEASABLE_CODES) continue
+            if (waitReasonResolved(op, requireProgress = true)) {
+                db.withTransaction { reissuePausedAsNew(op, now) }
+            }
+        }
+    }
+
+    /**
+     * ¿Se resolvió el motivo de espera de una pausada DEPENDENCY/
+     * CONFLICT_BLOCKED? Con `requireProgress` se exige además que algo
+     * cambié DESPUÉS de la pausa (la entidad o una referencia aplicó o se
+     * actualizó por pull/restauración); si no, el mismo rechazo se
+     * repetiría en bucle — la op queda para atención manual.
+     */
+    private suspend fun waitReasonResolved(
+        op: SyncOperationEntity,
+        requireProgress: Boolean,
+    ): Boolean {
+        if (db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)
+                .any { it.opId != op.opId }
+        ) {
+            return false
+        }
+        if (op.resultCode == Rejections.CONFLICT_BLOCKED) {
+            val openConflict = db.syncDao().observeConflicts().first()
+                .any { it.entityType == op.entityType && it.entityId == op.entityId }
+            if (openConflict) return false
+        }
+        var progressed = db.syncDao().allOpsForEntity(op.entityType, op.entityId)
+            .any { it.state == "DONE" && it.updatedAt > op.updatedAt }
+        for ((depType, depId) in dependencyRefs(op)) {
+            // Solo importan las ops del referido anteriores a la pausada:
+            // una posterior no puede haber causado su rechazo.
+            if (db.syncDao().pendingOpsForEntity(depType, depId).any { it.seq < op.seq }) {
+                return false
+            }
+            val local = getLocal(depType, depId)
+            if (local != null && local.second == 0) return false
+            // Fila referida que ya no existe localmente ni en el servidor:
+            // su descarte se registró; el dependiente no puede liberarse.
+            if (local == null && wasDiscardedLocally(depType, depId)) {
+                return false
+            }
+            if (!progressed) progressed = depProgressedAfter(depType, depId, op.updatedAt)
+        }
+        // Sin referencias (o sin progreso demostrable) una liberación
+        // automática solo reintentaría en bucle el mismo rechazo.
+        return !requireProgress || progressed
+    }
+
+    /** La referencia produjo evidencia nueva tras `since` (op aplicada o fila actualizada). */
+    private suspend fun depProgressedAfter(type: String, id: String, since: Long): Boolean {
+        if (db.syncDao().allOpsForEntity(type, id)
+                .any { it.state == "DONE" && it.updatedAt > since }
+        ) {
+            return true
+        }
+        val table = Rejections.TABLE_BY_TYPE[type] ?: return false
+        return runCatching {
+            db.openHelper.writableDatabase
+                .query("SELECT `updatedAt` FROM `$table` WHERE `id` = ?", arrayOf(id))
+                .use { c -> c.moveToFirst() && c.getLong(0) > since }
+        }.getOrDefault(false)
+    }
+
+    /** La entidad fue descartada explícitamente (última op DISCARDED_*). */
+    private suspend fun wasDiscardedLocally(type: String, id: String): Boolean =
+        db.syncDao().allOpsForEntity(type, id).lastOrNull()?.resultCode
+            ?.let { it == Rejections.RES_DISCARDED || it == Rejections.RES_CASCADE_DISCARDED } == true
+
+    /**
+     * Supersede: una pausada de tipo snapshot queda DONE/SUPERSEDED cuando
+     * una op posterior de la misma entidad aplicó y su payload contiene el
+     * estado completo (todas las claves del payload rechazado). Nunca para
+     * eventos append-only ni tipos sin semántica snapshot demostrada.
+     */
+    private suspend fun supersedePausedOps(applied: SyncOperationEntity) {
+        if (applied.opType != "upsert" || applied.entityType !in Rejections.SNAPSHOT_TYPES) return
+        val laterKeys = runCatching {
+            json.parseToJsonElement(applied.payloadJson).jsonObject.keys
+        }.getOrNull() ?: return
+        val now = nowEpochMillis()
+        for (p in db.syncDao().pendingOpsForEntity(applied.entityType, applied.entityId)) {
+            if (p.opId == applied.opId || p.state != "PAUSED" || p.seq >= applied.seq) continue
+            if (p.opType != "upsert") continue
+            val earlierKeys = runCatching {
+                json.parseToJsonElement(p.payloadJson).jsonObject.keys
+            }.getOrNull() ?: continue
+            if (!laterKeys.containsAll(earlierKeys)) continue
+            db.syncDao().updateOpResult(
+                p.opId, "DONE",
+                resolutionResult(p, Rejections.RES_SUPERSEDED, now, "subsume:${applied.opId}"),
+                Rejections.RES_SUPERSEDED, now,
+            )
+        }
+    }
+
+    /**
+     * Referencias declaradas de una operación: pares (entityType, entityId)
+     * que el payload apunta. Espejo del mapa DEPENDENCIES del servidor más
+     * las referencias opcionales validadas por sus handlers; los ids vacíos
+     * no se devuelven (el servidor decide sobre referencias obligatorias).
+     */
+    private fun dependencyRefs(op: SyncOperationEntity): List<Pair<String, String>> {
+        val p = runCatching {
+            json.parseToJsonElement(op.payloadJson).jsonObject
+        }.getOrNull() ?: return emptyList()
+        val out = mutableListOf<Pair<String, String>>()
+        for ((depType, field) in Rejections.SCALAR_DEPS[op.entityType].orEmpty()) {
+            p[field]?.takeIf { it !is JsonNull }?.jsonPrimitive?.content
+                ?.takeIf { it.isNotBlank() }
+                ?.let { out += depType to it }
+        }
+        for ((depType, field) in Rejections.ARRAY_DEPS[op.entityType].orEmpty()) {
+            p[field]?.jsonArray?.mapNotNull { it.jsonPrimitive.content }
+                ?.forEach { out += depType to it }
+        }
+        // Las líneas de la Compra referencian Materiales del catálogo.
+        if (op.entityType == EntityTypes.PURCHASE) {
+            p["items"]?.jsonArray?.mapNotNull {
+                it.jsonObject["materialId"]?.jsonPrimitive?.content
+            }?.forEach { out += EntityTypes.MATERIAL to it }
+        }
+        return out
+    }
+
+    /**
+     * `null` si la operación puede enviarse ahora; de lo contrario una
+     * razón de bloqueo. Reglas (decisiones aprobadas para PAUSED):
+     * 1. Una operación anterior de la MISMA entidad sin resolver —incluida
+     *    una pausada— mantiene al hijo en cola (antes solo contaban las
+     *    activas y el hijo se enviaba a un rechazo predecible en cascada).
+     * 2. Cada referencia declarada debe existir en el servidor con sus
+     *    operaciones ANTERIORES al hijo ya resueltas: una fila local con
+     *    serverVersion=0 todavía no existe allá y una op previa pendiente
+     *    del referido puede ser justo la que lo crea o la que pone el
+     *    estado que el hijo necesita (p.ej. `job_quote` exige la
+     *    Cotización ya APROBADA remota). Ops del referido encoladas
+     *    DESPUÉS del hijo no bloquean — exigirlas crea espera circular
+     *    (`emit` de Informe necesita el vínculo `report_job` aplicado,
+     *    y el vínculo esperaría al propio `emit`).
+     *    Si la fila no existe localmente se deja pasar: puede existir
+     *    solo en el servidor.
+     */
+    private suspend fun opBlockedReason(op: SyncOperationEntity): String? {
+        val siblings = db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)
+        if (siblings.any { it.seq < op.seq }) return "entity_queue:${op.entityType}"
+        for ((depType, depId) in dependencyRefs(op)) {
+            if (db.syncDao().pendingOpsForEntity(depType, depId).any { it.seq < op.seq }) {
+                return "dep_unresolved:$depType:$depId"
+            }
+            val local = getLocal(depType, depId)
+            if (local != null && local.second == 0) return "dep_unsynced:$depType:$depId"
+        }
+        return null
+    }
+
+    private suspend fun pushableNow(op: SyncOperationEntity): Boolean =
+        opBlockedReason(op) == null
+
+    /** Reintento con backoff tras INTERNAL_ERROR: espera hasta nextRetryAt. */
+    private fun backoffWaiting(op: SyncOperationEntity): Boolean {
+        if (op.state != "RETRY") return false
+        val nextAt = op.resultJson
+            ?.let { runCatching { json.parseToJsonElement(it).jsonObject.longOr("nextRetryAt") }.getOrNull() }
+            ?: return false
+        return nextAt > nowEpochMillis()
     }
 
     private suspend fun applyApplied(op: SyncOperationEntity, r: JsonObject) {
@@ -624,6 +1092,20 @@ class SyncRepository(
                 }
                 EntityTypes.INVENTORY_MOVEMENT ->
                     db.inventoryMovementDao().markSynced(op.entityId, sv, now)
+            }
+            // PAUSED-resolution: una op aplicada de tipo snapshot subsume a
+            // las pausadas anteriores de la misma entidad (verificado por
+            // cobertura de claves, nunca para eventos append-only).
+            supersedePausedOps(op)
+            // El estado autoritativo adjunto al resultado se adopta solo si
+            // la entidad no tiene más operaciones por resolver (igual que en
+            // el pull: con ops abiertas la copia local sigue siendo la de
+            // trabajo y la versión remota ya actualizó su base).
+            val serverState = r["server_state"]?.jsonObject
+            if (sv > 0 && serverState != null &&
+                db.syncDao().pendingOpsForEntity(op.entityType, op.entityId).isEmpty()
+            ) {
+                upsertFromPayload(op.entityType, op.entityId, serverState, sv)
             }
         }
     }
@@ -1021,6 +1503,9 @@ class SyncRepository(
                         net = p.str("net") ?: "0",
                         appliedAmount = p.str("appliedAmount") ?: "0",
                         balance = p.str("balance") ?: "0",
+                        // Espejo confirmado: el payload remoto ES lo aplicado.
+                        serverAppliedAmount = p.str("appliedAmount") ?: "0",
+                        serverBalance = p.str("balance") ?: "0",
                         issuedAt = p.longOr("issuedAt") ?: now,
                         dueDateEpochDay = p.longOr("dueDateEpochDay"),
                         conditions = p.str("conditions") ?: "",
@@ -1097,6 +1582,11 @@ class SyncRepository(
                     // servidor; los Pagos F6 sin ellos derivan de amount.
                     effectiveAmount = p.str("effectiveAmount") ?: (p.str("amount") ?: "0"),
                     refundedAmount = p.str("refundedAmount") ?: "0.00",
+                    // Espejo confirmado (F-pausadas): derivados tal como el
+                    // servidor los reporta.
+                    serverAppliedAmount = p.str("appliedAmount") ?: "0",
+                    serverUnassignedAmount = p.str("unassignedAmount") ?: "0",
+                    serverRefundedAmount = p.str("refundedAmount") ?: "0.00",
                     annulled = p.boolOr("annulled"),
                     assignedAccountId = p.str("assignedAccountId"),
                     assignedConsolidatedId = p.str("assignedConsolidatedId"),
@@ -1141,6 +1631,8 @@ class SyncRepository(
                         totalAmount = p.str("totalAmount") ?: "0",
                         appliedAmount = p.str("appliedAmount") ?: "0",
                         balance = p.str("balance") ?: "0",
+                        serverAppliedAmount = p.str("appliedAmount") ?: "0",
+                        serverBalance = p.str("balance") ?: "0",
                         clientNameSnapshot = p.str("clientNameSnapshot") ?: "",
                         archived = p.boolOr("archived"),
                         officialNumber = p.str("officialNumber"),
@@ -1433,10 +1925,19 @@ class SyncRepository(
     }
 
     /** El cambio solo es posible con cola vacía, cero pendientes y sin conflictos abiertos. */
+    /**
+     * Motivos concretos que mantienen bloqueado el cambio de cuenta:
+     * operaciones en cola (incluye las que esperan prerequisitos),
+     * operaciones pausadas sin resolver y entidades con pendingSync.
+     * El cambio solo se desbloquea cuando todo converge o el usuario
+     * resolvió explícitamente la pérdida local prevista (descarte).
+     */
     suspend fun switchBlockers(): List<String> {
         val blockers = mutableListOf<String>()
         val pending = db.syncDao().pendingCount()
         if (pending > 0) blockers += "$pending operaciones en cola"
+        val paused = db.syncDao().pausedOpsNow().size
+        if (paused > 0) blockers += "$paused operaciones rechazadas sin resolver"
         val unsynced = pendingEntityCount()
         if (unsynced > 0) blockers += "$unsynced entidades pendientes de sincronización"
         return blockers
@@ -1531,8 +2032,516 @@ class SyncRepository(
         db.syncDao().pendingOpsForEntity(conflict.entityType, conflict.entityId).firstOrNull()?.opId
 
     /** Reintento manual de una operación pausada (misma operación, mismo payload). */
-    suspend fun retryPaused(opId: String) {
-        db.syncDao().updateOpState(opId, "PENDING", nowEpochMillis())
+    // ---------- Resolución de operaciones rechazadas (PAUSED) ----------
+
+    /** Tipos append-only/versionados cuya fila local puede quedar como
+     *  registro rechazado tras reconocimiento explícito (no se borran ni
+     *  reescriben; el historial conserva el rechazo). */
+    private val ACKNOWLEDGEABLE = setOf(
+        EntityTypes.PAYMENT, EntityTypes.PAYMENT_ASSIGNMENT,
+        EntityTypes.PAYMENT_ADJUSTMENT, EntityTypes.PAYMENT_REFUND,
+        EntityTypes.INVENTORY_MOVEMENT, EntityTypes.JOB_QUOTE,
+        EntityTypes.REPORT_JOB, EntityTypes.QUOTE_VERSION,
+        EntityTypes.REPORT_VERSION,
+    )
+
+    /** Tablas con columna serverVersion (las de documento incrustado no la tienen). */
+    private val SYNCED_FLAG_TABLES = setOf(
+        "users", "professional_profiles", "clients", "services",
+        "retention_configs", "quotes", "jobs", "job_quotes", "job_activities",
+        "job_materials", "reports", "report_jobs", "collection_accounts",
+        "collection_methods", "payments", "payment_assignments",
+        "consolidated_collections", "payment_adjustments", "payment_refunds",
+        "materials", "purchases", "inventory_movements",
+    )
+
+    /** Vista de una operación pausada para la pantalla de atención. */
+    data class PausedOpView(
+        val op: SyncOperationEntity,
+        val label: String,
+        val internalExhausted: Boolean,
+        val forbiddenEntityScope: String?,
+        val canReissue: Boolean,
+        val canRestoreRemote: Boolean,
+        val canDiscard: Boolean,
+        val canAcknowledge: Boolean,
+        val waitingDependents: Int,
+        /** OpIds PENDING/RETRY de la misma entidad: la restauración remota
+         *  los descarta explícitamente (su payload reaplicaría los cambios
+         *  que el servidor rechazó). La confirmación revalida el conjunto. */
+        val pendingOpsOnEntity: List<String>,
+    )
+
+    /**
+     * Fila física afectada por un descarte. `entityType` es el tipo de
+     * entidad cuando la fila lo tiene; en filas de detalle/vínculo sin
+     * tipo propio (collection_account_items, purchase_items, …) lleva el
+     * nombre de la tabla — esas filas nunca tienen operaciones propias.
+     */
+    data class DiscardRow(val table: String, val entityType: String, val id: String, val synced: Boolean)
+
+    data class DiscardPreview(
+        val rows: List<DiscardRow>,
+        val blockers: List<String>,
+        val waitingDependents: List<SyncOperationEntity>,
+        /**
+         * Operaciones cuyo estado cambiará al confirmar: las sin resolver
+         * de la entidad raíz más las de cada fila de la cascada (quedan
+         * DONE con DISCARDED_LOCAL / DISCARDED_CASCADE). No incluye los
+         * dependientes en espera (esos pasan a PREREQUISITE_DISCARDED).
+         */
+        val discardedOps: List<SyncOperationEntity>,
+    ) {
+        /**
+         * Identidad exacta de lo que se descartaría: "tabla:id" por fila
+         * de la cascada, "op:opId" por cada operación que quedará
+         * descartada y "dep:opId" por cada dependiente que quedará
+         * marcado. La confirmación revalida este conjunto dentro de la
+         * transacción — un cambio de contenido con el mismo número de
+         * elementos no pasa desapercibido (revisión del PR #24).
+         */
+        fun signature(): Set<String> =
+            rows.mapTo(mutableSetOf()) { "${it.table}:${it.id}" } +
+                discardedOps.mapTo(mutableSetOf()) { "op:${it.opId}" } +
+                waitingDependents.mapTo(mutableSetOf()) { "dep:${it.opId}" }
+    }
+
+    private fun opResultJson(op: SyncOperationEntity): JsonObject? = op.resultJson
+        ?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
+
+    private fun forbiddenScope(op: SyncOperationEntity): String? =
+        opResultJson(op)?.str("forbidden_scope")
+
+    private fun serverStateOf(op: SyncOperationEntity): JsonObject? =
+        opResultJson(op)?.get("server_state")?.let { it as? JsonObject }
+
+    private fun rawIds(table: String, column: String, id: String): List<String> =
+        db.openHelper.writableDatabase
+            .query("SELECT `id` FROM `$table` WHERE `$column` = ?", arrayOf(id))
+            .use { c -> generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList() }
+
+    private fun rawCount(table: String, column: String, id: String): Int =
+        db.openHelper.writableDatabase
+            .query("SELECT COUNT(*) FROM `$table` WHERE `$column` = ?", arrayOf(id))
+            .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    /** Columna arbitraria de una fila física (p.ej. el padre de una tabla vínculo). */
+    private fun rawColumn(table: String, column: String, id: String): String? =
+        db.openHelper.writableDatabase
+            .query("SELECT `$column` FROM `$table` WHERE `id` = ?", arrayOf(id))
+            .use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
+    private fun rowSynced(table: String, id: String): Boolean {
+        if (table !in SYNCED_FLAG_TABLES) return false
+        return db.openHelper.writableDatabase
+            .query("SELECT `serverVersion` FROM `$table` WHERE `id` = ?", arrayOf(id))
+            .use { c -> c.moveToFirst() && c.getInt(0) > 0 }
+    }
+
+    private fun entityLabel(table: String, id: String): String {
+        val labelCol = when (table) {
+            "clients", "materials", "services", "collection_methods" -> "name"
+            "quotes", "jobs", "reports", "collection_accounts",
+            "consolidated_collections", "purchases" -> "provisionalNumber"
+            "job_activities", "job_materials" -> "description"
+            "payments" -> "amount"
+            "inventory_movements" -> "movementType"
+            else -> null
+        }
+        val label = labelCol?.let { col ->
+            runCatching {
+                db.openHelper.writableDatabase
+                    .query("SELECT `$col` FROM `$table` WHERE `id` = ?", arrayOf(id))
+                    .use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            }.getOrNull()
+        }
+        return label?.takeIf { it.isNotBlank() } ?: id.take(8)
+    }
+
+    /**
+     * Filas alcanzables por la cascada de descarte (BFS sobre CHILD_TABLES);
+     * la primera es la raíz. Incluye las filas físicas de tablas hija sin
+     * tipo de entidad (detalles/vínculos), que solo existen dentro de su
+     * documento padre. Nunca toca filas fuera del mapa de hijos.
+     */
+    private fun collectCascade(type: String, id: String): List<DiscardRow> {
+        val out = mutableListOf<DiscardRow>()
+        val seen = mutableSetOf<Pair<String, String>>()
+        val queue = ArrayDeque<Pair<String, String>>()
+        queue.add(type to id)
+        while (queue.isNotEmpty()) {
+            val (t, eid) = queue.removeFirst()
+            if (!seen.add(t to eid)) continue
+            val table = Rejections.TABLE_BY_TYPE[t] ?: continue
+            if (rawIds(table, "id", eid).isEmpty()) continue
+            out += DiscardRow(table, t, eid, rowSynced(table, eid))
+            for ((childTable, col) in Rejections.CHILD_TABLES[t].orEmpty()) {
+                val childType = Rejections.TYPE_BY_TABLE[childTable]
+                if (childType != null) {
+                    for (cid in rawIds(childTable, col, eid)) queue.add(childType to cid)
+                } else {
+                    // Tabla detalle/vínculo sin tipo de entidad: la fila
+                    // física se borra con su padre — nunca genera
+                    // operaciones ni tiene hijos propios (el nombre de la
+                    // tabla sirve de etiqueta en la vista previa).
+                    for (cid in rawIds(childTable, col, eid)) {
+                        if (seen.add(childTable to cid)) {
+                            out += DiscardRow(
+                                childTable, childTable, cid, rowSynced(childTable, cid),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * Operaciones sin resolver de OTRAS entidades que declaran referencia a
+     * alguna de estas (type,id) — la cascada de espera por prerequisito.
+     */
+    private suspend fun dependentsOf(refs: Set<Pair<String, String>>): List<SyncOperationEntity> =
+        db.syncDao().unresolvedOps().filter { op ->
+            dependencyRefs(op).any { (t, i) -> (t to i) in refs }
+        }
+
+    /** Detalle para la UI de atención: acciones disponibles según el código. */
+    suspend fun pausedDetail(op: SyncOperationEntity): PausedOpView {
+        val scope = forbiddenScope(op)
+        val local = getLocal(op.entityType, op.entityId)
+        val state = serverStateOf(op)
+        val exhausted = op.resultCode == Rejections.INTERNAL_ERROR &&
+            op.attempts >= Rejections.MAX_INTERNAL_ATTEMPTS
+        val reissueBlocked = op.resultCode in setOf(
+            Rejections.FORBIDDEN_ENTITY, Rejections.IDEMPOTENCY_KEY_REUSED,
+            Rejections.IMMUTABLE_FINANCIAL,
+        )
+        val waiting = dependentsOf(setOf(op.entityType to op.entityId)).size
+        val pendingOnEntity = db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)
+            .filter { it.state == "PENDING" || it.state == "RETRY" }
+            .map { it.opId }
+        return PausedOpView(
+            op = op,
+            label = Rejections.TABLE_BY_TYPE[op.entityType]?.let { entityLabel(it, op.entityId) }
+                ?: op.entityId.take(8),
+            internalExhausted = exhausted,
+            forbiddenEntityScope = scope,
+            canReissue = !reissueBlocked && op.resultCode != Rejections.INTERNAL_ERROR,
+            // Restaurar: solo con estado del servidor propio y autoritativo.
+            canRestoreRemote = state != null && scope != "entity_foreign" &&
+                op.entityType in Rejections.SNAPSHOT_TYPES,
+            // Descartar: nunca-sincronizado (serverVersion=0) o residuo de
+            // otra cuenta. Los eventos append-only propios no se borran: se
+            // reconocen (salvo residuo ajeno, que sí se descarta).
+            canDiscard = op.entityType != EntityTypes.USER &&
+                op.entityType != EntityTypes.QUOTE_VERSION &&
+                op.entityType != EntityTypes.REPORT_VERSION &&
+                (scope == "entity_foreign" ||
+                    (op.entityType !in ACKNOWLEDGEABLE && (local?.second ?: 0) == 0)),
+            canAcknowledge = op.entityType in ACKNOWLEDGEABLE &&
+                op.resultCode != Rejections.FORBIDDEN_ENTITY,
+            waitingDependents = waiting,
+            pendingOpsOnEntity = pendingOnEntity,
+        )
+    }
+
+    /** Vista previa del descarte: filas que se eliminarían, bloqueos y dependientes en espera. */
+    suspend fun discardPreview(op: SyncOperationEntity): DiscardPreview {
+        val rows = collectCascade(op.entityType, op.entityId)
+        val blockers = mutableListOf<String>()
+        val scope = forbiddenScope(op)
+        val local = getLocal(op.entityType, op.entityId)
+        if (scope != "entity_foreign" && local != null && local.second > 0) {
+            blockers += "La entidad ya está sincronizada con el servidor: usa «Restaurar estado remoto»."
+        }
+        val inCascade = rows.map { it.entityType to it.id }.toMutableSet()
+        for ((rt, col) in Rejections.REF_BLOCKS[op.entityType].orEmpty()) {
+            for (rid in rawIds(rt, col, op.entityId)) {
+                val rType = Rejections.TYPE_BY_TABLE[rt]
+                if (rType != null) {
+                    if ((rType to rid) in inCascade) continue
+                    blockers += "$rt:$rid referencia a esta entidad"
+                    continue
+                }
+                // Tabla vínculo/detalle sin tipo de entidad: la referencia
+                // real la hace su fila padre (p.ej. collection_account_quotes
+                // vive dentro de una collection_accounts). Si el padre está
+                // en la cascada, la fila se borra con él y no bloquea;
+                // en caso contrario se señala el referente real.
+                val parent = Rejections.UNOWNED_PARENT[rt]
+                    ?.let { (pcol, ptype) -> rawColumn(rt, pcol, rid)?.let { ptype to it } }
+                if (parent != null && parent in inCascade) continue
+                val label = parent?.let { (ptype, pid) ->
+                    "${Rejections.TABLE_BY_TYPE[ptype] ?: ptype}:$pid"
+                } ?: "$rt:$rid"
+                blockers += "$label referencia a esta entidad"
+            }
+        }
+        val syncedDesc = rows.drop(1).filter { it.synced }
+        if (syncedDesc.isNotEmpty()) {
+            blockers += "${syncedDesc.size} descendiente(s) ya sincronizados no pueden eliminarse"
+        }
+        // Conjunto exacto de operaciones cuyo estado cambiará: las de la
+        // entidad raíz (aunque su fila no exista localmente) más las de
+        // cada fila de la cascada. Determinista y deduplicado por opId.
+        val discarded = LinkedHashMap<String, SyncOperationEntity>()
+        for (o in db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)) {
+            discarded[o.opId] = o
+        }
+        for (row in rows) {
+            for (o in db.syncDao().pendingOpsForEntity(row.entityType, row.id)) {
+                discarded.putIfAbsent(o.opId, o)
+            }
+        }
+        discarded.putIfAbsent(op.opId, op)
+        // Los dependientes en espera excluyen las ops ya cubiertas por el
+        // descarte (esas quedan DONE en cascada, no PREREQUISITE_DISCARDED).
+        val waiting = dependentsOf(rows.map { it.entityType to it.id }.toSet())
+            .filter { it.opId !in discarded }
+        return DiscardPreview(rows, blockers, waiting, discarded.values.toList())
+    }
+
+    /**
+     * Descarte explícito de una entidad nunca sincronizada (o residuo
+     * ajeno): elimina filas locales y descendientes en cascada tras
+     * verificar la vista previa. La confirmación recibe la FIRMA exacta
+     * del conjunto — filas "tabla:id", operaciones a descartar "op:opId"
+     * (raíz + cascada) y dependientes "dep:opId" — revalidada DENTRO de
+     * la transacción junto con el estado PAUSED de la raíz antes de
+     * borrar o cambiar estados: si el contenido o el estado cambió
+     * (concurrencia), se aborta sin mutaciones y se pide una vista
+     * previa nueva. Solo se marcan las operaciones del conjunto
+     * confirmado; ninguna op aparecida después se consulta ni toca.
+     * Nunca borra el historial de operaciones: cada op queda DONE con
+     * código descriptivo y su payload conservado. Los dependientes que
+     * esperaban se marcan PREREQUISITE_DISCARDED.
+     */
+    /**
+     * Punto de prueba instrumentada: se invoca al inicio de la
+     * transacción de [discardPaused], antes de la revalidación interna.
+     * Permite reproducir de forma determinista una mutación concurrente
+     * en la ventana entre los chequeos previos y la transacción.
+     * Nulo en producción.
+     */
+    internal var discardTransactionProbe: (suspend () -> Unit)? = null
+
+    suspend fun discardPaused(opId: String, expectedSignature: Set<String>): String? {
+        val op = db.syncDao().opById(opId) ?: return "Operación no encontrada."
+        if (op.state != "PAUSED") return "La operación ya no está pausada."
+        val preview = discardPreview(op)
+        if (preview.blockers.isNotEmpty()) return preview.blockers.joinToString(" ")
+        if (preview.signature() != expectedSignature) {
+            return "La vista previa quedó desactualizada; revísala de nuevo."
+        }
+        val now = nowEpochMillis()
+        var completed = false
+        db.withTransaction {
+            discardTransactionProbe?.invoke()
+            // Revalidación atómica dentro de la transacción: la vista
+            // previa pudo quedar obsoleta entre su cálculo y la
+            // confirmación del usuario.
+            val inside = discardPreview(op)
+            if (inside.blockers.isNotEmpty() || inside.signature() != expectedSignature) {
+                return@withTransaction
+            }
+            // El estado de la raíz también se revalida aquí: una
+            // resolución concurrente (reintento, restauración) entre la
+            // lectura inicial y la transacción aborta sin mutaciones.
+            if (db.syncDao().opById(op.opId)?.state != "PAUSED") {
+                return@withTransaction
+            }
+            for (row in inside.rows) {
+                db.openHelper.writableDatabase
+                    .execSQL("DELETE FROM `${row.table}` WHERE `id` = ?", arrayOf(row.id))
+            }
+            // Solo se marcan las operaciones del conjunto confirmado
+            // (signature() ya garantizó que inside.discardedOps es exacto);
+            // nada se vuelve a consultar para marcar ops aparecidas después.
+            for (o in inside.discardedOps) {
+                val code = if (o.entityType == op.entityType && o.entityId == op.entityId) {
+                    Rejections.RES_DISCARDED
+                } else {
+                    Rejections.RES_CASCADE_DISCARDED
+                }
+                db.syncDao().updateOpResult(
+                    o.opId, "DONE",
+                    resolutionResult(o, code, now, "descarte de ${op.entityType}:${op.entityId}"),
+                    code, now,
+                )
+            }
+            // Dependientes en espera: también del conjunto confirmado.
+            for (dep in inside.waitingDependents) {
+                if (dep.state == "PAUSED" && dep.resultCode !in Rejections.RELEASABLE_CODES) continue
+                db.syncDao().updateOpResult(
+                    dep.opId, "PAUSED",
+                    resolutionResult(dep, Rejections.RES_PREREQ_DISCARDED, now, op.entityId),
+                    Rejections.RES_PREREQ_DISCARDED, now,
+                )
+            }
+            completed = true
+        }
+        // La revalidación dentro de la transacción abortó sin tocar nada.
+        if (!completed) {
+            return "La vista previa quedó desactualizada; revísala de nuevo."
+        }
+        return null
+    }
+
+    /**
+     * Restauración explícita: aplica el `server_state` autoritativo del
+     * resultado (fila propia del titular autenticado) y cierra la op como
+     * RESTORED_FROM_REMOTE. Rechaza el intento cuando no hay estado o la
+     * fila es de otra identidad.
+     * Operaciones PENDING/RETRY posteriores de la misma entidad: su
+     * payload reaplicaría los cambios que el servidor acaba de rechazar,
+     * así que la restauración las descarta como decisión explícita del
+     * usuario — la UI las anuncia en la confirmación y se revalida el
+     * conjunto exacto (`expectedPendingOps`) dentro de la transacción;
+     * si cambió, se aborta sin tocar nada (revisión del PR #24).
+     */
+    suspend fun restorePausedRemote(
+        opId: String,
+        expectedPendingOps: Set<String> = emptySet(),
+    ): String? {
+        val op = db.syncDao().opById(opId) ?: return "Operación no encontrada."
+        if (op.state != "PAUSED") return "La operación ya no está pausada."
+        if (forbiddenScope(op) == "entity_foreign") {
+            return "La entidad pertenece a otra cuenta: no hay estado remoto propio que restaurar."
+        }
+        val state = serverStateOf(op)
+            ?: return "El rechazo no incluyó un estado del servidor para restaurar."
+        if (op.entityType !in Rejections.SNAPSHOT_TYPES) {
+            return "Este tipo no tiene un estado restaur-able: usa reconocer o descartar."
+        }
+        val sv = state.intOr("server_version")?.takeIf { it > 0 }
+            ?: return "El estado remoto no trae versión verificable."
+        var changed = false
+        val now = nowEpochMillis()
+        db.withTransaction {
+            val pending = db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)
+                .filter { it.state == "PENDING" || it.state == "RETRY" }
+            if (pending.map { it.opId }.toSet() != expectedPendingOps) {
+                // El conjunto en cola cambió desde la confirmación:
+                // abortar y pedir una decisión informada nueva.
+                changed = true
+                return@withTransaction
+            }
+            upsertFromPayload(op.entityType, op.entityId, state, sv)
+            db.syncDao().updateOpResult(
+                op.opId, "DONE",
+                resolutionResult(op, Rejections.RES_RESTORED, now),
+                Rejections.RES_RESTORED, now,
+            )
+            // Las ops activas posteriores quedan descartadas (decisión
+            // informada del usuario): historial intacto, código propio.
+            for (p in pending) {
+                db.syncDao().updateOpResult(
+                    p.opId, "DONE",
+                    resolutionResult(p, Rejections.RES_DISCARDED, now, "restauración:${op.opId}"),
+                    Rejections.RES_DISCARDED, now,
+                )
+            }
+            // Las demás pausadas de la misma entidad quedan subsumidas por
+            // el estado remoto restaurado (misma regla que la supersede).
+            for (p in db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)) {
+                if (p.opId == op.opId || p.state != "PAUSED" || p.opType != "upsert") continue
+                db.syncDao().updateOpResult(
+                    p.opId, "DONE",
+                    resolutionResult(p, Rejections.RES_SUPERSEDED, now, "restored:${op.opId}"),
+                    Rejections.RES_SUPERSEDED, now,
+                )
+            }
+        }
+        return if (changed) {
+            "La cola de la entidad cambió; revisa de nuevo antes de restaurar."
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Reconocimiento explícito de un evento append-only rechazado: la fila
+     * local queda registrada pero no confirmada (pendingSync=0 con marca de
+     * rechazo en su última op); jamás se borra ni reescribe. El efecto
+     * optimista deja de contarse como pendiente y pasa a mostrarse como
+     * efecto rechazado — los saldos confirmados no lo incluyen.
+     */
+    suspend fun acknowledgeRejectedOp(opId: String): String? {
+        val op = db.syncDao().opById(opId) ?: return "Operación no encontrada."
+        if (op.state != "PAUSED") return "La operación ya no está pausada."
+        if (op.entityType !in ACKNOWLEDGEABLE) {
+            return "Este tipo no admite reconocimiento: edita, restaura o descarta."
+        }
+        if (forbiddenScope(op) == "entity_foreign") {
+            return "La fila es de otra cuenta: usa descarte con vista previa."
+        }
+        val now = nowEpochMillis()
+        db.withTransaction {
+            val table = Rejections.TABLE_BY_TYPE[op.entityType]
+            if (table != null && table in SYNCED_FLAG_TABLES) {
+                db.openHelper.writableDatabase.execSQL(
+                    "UPDATE `$table` SET `pendingSync` = 0 WHERE `id` = ?",
+                    arrayOf(op.entityId),
+                )
+            }
+            db.syncDao().updateOpResult(
+                op.opId, "DONE",
+                resolutionResult(op, Rejections.RES_ACKNOWLEDGED, now),
+                Rejections.RES_ACKNOWLEDGED, now,
+            )
+        }
+        return null
+    }
+
+    /**
+     * «Reintentar» sobre una pausada:
+     * - INTERNAL_ERROR: mismo operation_id (el servidor no lo memorizó);
+     *   reinicia el presupuesto de reintentos automáticos.
+     * - Otros códigos: op NUEVA con el estado local vigente (los rechazos
+     *   ordinarios están memorizados y un snapshot obsoleto no se reenvía).
+     * - FORBIDDEN_ENTITY / IDEMPOTENCY_KEY_REUSED / IMMUTABLE_FINANCIAL:
+     *   nunca se reenvían.
+     */
+    suspend fun retryPaused(opId: String): String? {
+        val op = db.syncDao().opById(opId) ?: return "Operación no encontrada."
+        if (op.state != "PAUSED") return "La operación ya no está pausada."
+        return when (op.resultCode) {
+            Rejections.FORBIDDEN_ENTITY ->
+                "La entidad pertenece a otra cuenta: esta operación no se reenvía."
+            Rejections.IDEMPOTENCY_KEY_REUSED ->
+                "La operación ya fue procesada con otro contenido: no se reenvía."
+            Rejections.IMMUTABLE_FINANCIAL ->
+                "Evento financiero inmutable: las correcciones son eventos nuevos."
+            Rejections.INTERNAL_ERROR -> {
+                val now = nowEpochMillis()
+                val rj = opResultJson(op)?.let {
+                    buildJsonObject {
+                        it.forEach { (k, v) -> if (k != "nextRetryAt") put(k, v) }
+                    }
+                }
+                // Reintento manual con el mismo operation_id y presupuesto
+                // de reintentos renovado.
+                db.syncDao().resetOpAttempts(op.opId, now)
+                db.syncDao().rescheduleOp(op.opId, rj?.toString(), now)
+                null
+            }
+            Rejections.DEPENDENCY, Rejections.CONFLICT_BLOCKED -> {
+                if (!waitReasonResolved(op, requireProgress = false)) {
+                    "El prerequisito sigue sin resolverse: espera o resuélvelo primero."
+                } else {
+                    db.withTransaction { reissuePausedAsNew(op, nowEpochMillis()) }
+                    null
+                }
+            }
+            else -> {
+                // VALIDATION_ERROR, INVALID_TRANSITION y demás: reemisión
+                // con el estado actual de la fila (incluye la corrección
+                // si el usuario editó la entidad antes de reintentar).
+                db.withTransaction { reissuePausedAsNew(op, nowEpochMillis()) }
+                null
+            }
+        }
     }
 
     /**

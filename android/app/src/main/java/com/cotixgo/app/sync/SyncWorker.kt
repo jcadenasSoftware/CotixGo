@@ -42,6 +42,7 @@ class SyncWorker(
 object SyncScheduler {
     private const val PERIODIC = "cotixgo.sync.periodic"
     private const val ONE_SHOT = "cotixgo.sync.now"
+    private const val RETRY = "cotixgo.sync.retry"
 
     fun schedulePeriodic(context: Context) {
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -62,6 +63,24 @@ object SyncScheduler {
             ONE_SHOT,
             ExistingWorkPolicy.REPLACE,
             OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(
+                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+                )
+                .build(),
+        )
+    }
+
+    /**
+     * Agenda un ciclo tras `delayMs` (reintentos automáticos de
+     * INTERNAL_ERROR con backoff). REPLACE: una nueva programación
+     * reemplaza a la anterior con su propio delay.
+     */
+    fun requestDelayed(context: Context, delayMs: Long) {
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            RETRY,
+            ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<SyncWorker>()
+                .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
                 .setConstraints(
                     Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
                 )

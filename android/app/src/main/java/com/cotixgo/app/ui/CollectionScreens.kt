@@ -83,8 +83,30 @@ private fun assignmentLabel(status: PaymentAssignmentStatus): String = when (sta
     PaymentAssignmentStatus.ASSIGNED -> "Asignado"
 }
 
-private fun parseIsoDay(text: String): Long? =
-    runCatching { LocalDate.parse(text.trim()).toEpochDay() }.getOrNull()
+private fun parseIsoDay(text: String): Long? = runCatching {
+    java.time.LocalDate.parse(text.trim()).toEpochDay()
+}.getOrNull()
+
+/**
+ * Línea de desglose confirmado/pendiente/rechazado (F-pausadas): el valor
+ * confirmado proviene del espejo `server*` (último estado que el servidor
+ * reportó); pendiente/rechazado agregan los efectos de eventos según el
+ * estado de su última operación. No se muestra nada cuando la copia local
+ * ya coincide con lo confirmado.
+ */
+@Composable
+private fun ConfirmedEffectText(
+    confirmado: String,
+    effect: com.cotixgo.app.data.DestEffect?,
+) {
+    val parts = StringBuilder("Confirmado: $confirmado")
+    effect?.let {
+        if (it.pending.signum() != 0) parts.append(" · pendiente ${it.pending.toPlainString()}")
+        if (it.rejected.signum() != 0) parts.append(" · rechazado ${it.rejected.toPlainString()}")
+    }
+    Text(parts.toString(), style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.tertiary)
+}
 
 // ---------- Cobros: Cuentas / Pagos / Métodos ----------
 
@@ -97,6 +119,8 @@ fun CollectionsScreen(
     methods: List<CollectionMethodEntity>,
     clients: List<ClientEntity>,
     accountsById: Map<String, CollectionAccountEntity>,
+    effects: Map<String, com.cotixgo.app.data.DestEffect>,
+    latestOps: Map<Pair<String, String>, com.cotixgo.app.data.LatestOpState>,
     onOpenAccount: (String) -> Unit,
     onOpenConsolidated: (String) -> Unit,
     onOpenPayment: (String) -> Unit,
@@ -167,6 +191,10 @@ fun CollectionsScreen(
                                                 "Saldo ${a.currency} ${a.balance} de ${a.net}",
                                             style = MaterialTheme.typography.bodySmall,
                                         )
+                                        ConfirmedEffectText(
+                                            "saldo ${a.serverBalance} · aplicado ${a.serverAppliedAmount}",
+                                            effects["ACCOUNT:${a.id}"],
+                                        )
                                     }
                                 }
                             }
@@ -193,6 +221,10 @@ fun CollectionsScreen(
                                             "${collectionLabel(CollectionAccountStatus.valueOf(c.status))} · " +
                                                 "Saldo ${c.currency} ${c.balance} de ${c.totalAmount}",
                                             style = MaterialTheme.typography.bodySmall,
+                                        )
+                                        ConfirmedEffectText(
+                                            "saldo ${c.serverBalance} · aplicado ${c.serverAppliedAmount}",
+                                            effects["CONSOLIDATED:${c.id}"],
                                         )
                                     }
                                 }
@@ -240,6 +272,24 @@ fun CollectionsScreen(
                                                     } else "",
                                             style = MaterialTheme.typography.bodySmall,
                                         )
+                                        val pop = latestOps[
+                                            com.cotixgo.app.data.EntityTypes.PAYMENT to pay.id]
+                                        if (pop != null &&
+                                            (pop.state == "PAUSED" || pop.resultCode == "REJECTED_ACKNOWLEDGED")
+                                        ) {
+                                            Text(
+                                                "Rechazado por el servidor: ${pop.resultCode ?: ""} — " +
+                                                    "los importes confirmados no lo incluyen.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error,
+                                            )
+                                        } else if (pay.serverVersion == 0) {
+                                            Text(
+                                                "Sin confirmar por el servidor aún.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.tertiary,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -684,6 +734,8 @@ fun CollectionAccountDetailScreen(
     assignments: List<PaymentAssignmentEntity>,
     payments: List<PaymentEntity>,
     activeConsolidated: ConsolidatedCollectionEntity?,
+    effects: Map<String, com.cotixgo.app.data.DestEffect>,
+    latestOps: Map<Pair<String, String>, com.cotixgo.app.data.LatestOpState>,
     onEdit: () -> Unit,
     onCancelAccount: () -> Unit,
     onSetArchived: (Boolean) -> Unit,
@@ -763,6 +815,10 @@ fun CollectionAccountDetailScreen(
                     Text("Neto: ${account.net}", style = MaterialTheme.typography.titleSmall)
                     Text("Aplicado: ${account.appliedAmount} · Saldo: ${account.balance} ${account.currency}",
                         style = MaterialTheme.typography.titleSmall)
+                    ConfirmedEffectText(
+                        "saldo ${account.serverBalance} · aplicado ${account.serverAppliedAmount} ${account.currency}",
+                        effects["ACCOUNT:${account.id}"],
+                    )
                 }
             }
             if (activeConsolidated != null) {
@@ -831,6 +887,17 @@ fun CollectionAccountDetailScreen(
                                     (pay?.reference?.takeIf { it.isNotBlank() }?.let { " · Ref. $it" } ?: ""),
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            latestOps[
+                                com.cotixgo.app.data.EntityTypes.PAYMENT_ASSIGNMENT to ev.id,
+                            ]?.let { evOp ->
+                                if (evOp.state == "PAUSED" || evOp.resultCode == "REJECTED_ACKNOWLEDGED") {
+                                    Text(
+                                        "Rechazado por el servidor (${evOp.resultCode ?: ""}): su efecto no cuenta en el saldo confirmado.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1043,6 +1110,7 @@ fun PaymentDetailScreen(
     accountsById: Map<String, CollectionAccountEntity>,
     consolidatedsById: Map<String, ConsolidatedCollectionEntity>,
     methods: List<CollectionMethodEntity>,
+    latestOps: Map<Pair<String, String>, com.cotixgo.app.data.LatestOpState>,
     onAssign: (PaymentTargetKind, String, String, String, (String?) -> Unit) -> Unit,
     onUnassign: (String, (String?) -> Unit) -> Unit,
     onReassign: (PaymentTargetKind, String, String, (String?) -> Unit) -> Unit,
@@ -1268,6 +1336,24 @@ fun PaymentDetailScreen(
                         "Reembolsado: ${payment.refundedAmount} · Disponible: ${payment.unassignedAmount}",
                     style = MaterialTheme.typography.titleSmall,
                 )
+                Text(
+                    "Confirmado por el servidor: aplicado ${payment.serverAppliedAmount} · " +
+                        "reembolsado ${payment.serverRefundedAmount} · " +
+                        "disponible ${payment.serverUnassignedAmount}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+                latestOps[
+                    com.cotixgo.app.data.EntityTypes.PAYMENT to payment.id,
+                ]?.let { payOp ->
+                    if (payOp.state == "PAUSED" || payOp.resultCode == "REJECTED_ACKNOWLEDGED") {
+                        Text(
+                            "Rechazado por el servidor (${payOp.resultCode ?: ""}): los importes confirmados no lo incluyen.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
                 account?.let {
                     Text("Aplicado a: ${it.officialNumber ?: it.provisionalNumber}",
                         style = MaterialTheme.typography.bodySmall)

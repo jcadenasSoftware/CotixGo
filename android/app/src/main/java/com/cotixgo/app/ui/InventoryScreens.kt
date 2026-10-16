@@ -85,6 +85,7 @@ fun InventoryScreen(
     inventory: List<MaterialStockView>,
     purchases: List<PurchaseEntity>,
     movements: List<InventoryMovementEntity>,
+    latestOps: Map<Pair<String, String>, com.cotixgo.app.data.LatestOpState>,
     materialsById: Map<String, MaterialEntity>,
     jobsById: Map<String, JobEntity>,
     activeMaterials: List<MaterialEntity>,
@@ -169,6 +170,16 @@ fun InventoryScreen(
                                         "Nuevo: ${stockText(v.stockNew, v.material.unit)} · Usado: ${stockText(v.stockUsed, v.material.unit)}",
                                         style = MaterialTheme.typography.bodySmall,
                                     )
+                                    if (v.rejectedNew.signum() != 0 || v.rejectedUsed.signum() != 0) {
+                                        Text(
+                                            "Movimientos rechazados por el servidor: " +
+                                                "nuevo ${v.rejectedNew.stripTrailingZeros().toPlainString()} · " +
+                                                "usado ${v.rejectedUsed.stripTrailingZeros().toPlainString()} " +
+                                                "(no cuentan en el stock mostrado)",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
                                     if (v.material.pendingSync) {
                                         Text("Pendiente de sincronizar", style = MaterialTheme.typography.bodySmall)
                                     }
@@ -224,6 +235,17 @@ fun InventoryScreen(
                                     }
                                     if (m.note.isNotBlank()) {
                                         Text(m.note, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    latestOps[
+                                        com.cotixgo.app.data.EntityTypes.INVENTORY_MOVEMENT to m.id,
+                                    ]?.let { mop ->
+                                        if (mop.state == "PAUSED" || mop.resultCode == "REJECTED_ACKNOWLEDGED") {
+                                            Text(
+                                                "Rechazado por el servidor (${mop.resultCode ?: ""}): no cuenta en el stock.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error,
+                                            )
+                                        }
                                     }
                                 }
                             }

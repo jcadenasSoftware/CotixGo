@@ -43,6 +43,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import java.math.BigDecimal
 import java.time.LocalDate
 
@@ -1092,6 +1093,67 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
 
     fun observeAccountAssignments(accountId: String): Flow<List<PaymentAssignmentEntity>> =
         db.paymentAssignmentDao().observeForAccount(accountId)
+
+    /** Estado de la última op por entidad (insignias pendiente/rechazado). */
+    fun observeLatestOpStates(): Flow<Map<Pair<String, String>, LatestOpState>> =
+        db.syncDao().observeLatestOpStates()
+            .map { list -> list.associateBy { it.entityType to it.entityId } }
+
+    /**
+     * Efecto pendiente/rechazado por destino de cobro
+     * ("ACCOUNT:<id>" / "CONSOLIDATED:<id>"), derivado de los eventos de
+     * asignación y el estado de su última operación:
+     * - pendiente  = última op PENDING/RETRY (aún no evaluada).
+     * - rechazado  = última op PAUSED o cerrada como rechazo reconocido.
+     * El signo respeta la acción (assign suma al destino, unassign resta).
+     * Los saldos confirmados vienen de las columnas espejo `server*` de la
+     * fila — esta función NO los altera.
+     */
+    fun observeDestinationEffects(userId: String): Flow<Map<String, DestEffect>> =
+        kotlinx.coroutines.flow.combine(
+            db.paymentAssignmentDao().observeForUser(userId),
+            db.syncDao().observeLatestOpStates(),
+        ) { assignments, opStates ->
+            val latestOp = opStates.associateBy { it.entityType to it.entityId }
+            val acc = mutableMapOf<String, Pair<BigDecimal, BigDecimal>>()
+            for (a in assignments) {
+                val op = latestOp[EntityTypes.PAYMENT_ASSIGNMENT to a.id]
+                val kind = when {
+                    op == null -> if (a.pendingSync) "pending" else "confirmed"
+                    op.isRejectedEffect() -> "rejected"
+                    op.state == "PENDING" || op.state == "RETRY" -> "pending"
+                    else -> "confirmed"
+                }
+                if (kind == "confirmed") continue
+                // Signos por rol de cada destino: en REASSIGN el origen
+                // (from*) PIERDE el remanente liberado (releasedAmount) y
+                // el destino nuevo GANA solo lo aplicado (amount, recotado
+                // al saldo del destino); ASSIGN suma al destino y UNASSIGN
+                // resta al origen declarado en accountId/consolidatedId.
+                val effects = mutableListOf<Pair<String, BigDecimal>>()
+                if (a.action == PaymentAssignmentAction.REASSIGN.name) {
+                    val released = (a.releasedAmount ?: a.amount).toMoney().negate()
+                    a.fromAccountId?.let { effects += "ACCOUNT:$it" to released }
+                    a.fromConsolidatedId?.let { effects += "CONSOLIDATED:$it" to released }
+                    val applied = a.amount.toMoney()
+                    a.accountId?.let { effects += "ACCOUNT:$it" to applied }
+                    a.consolidatedId?.let { effects += "CONSOLIDATED:$it" to applied }
+                } else {
+                    val sign = if (a.action == PaymentAssignmentAction.UNASSIGN.name) -1 else 1
+                    val amount = a.amount.toMoney() * BigDecimal(sign)
+                    for (dest in listOfNotNull(
+                        a.accountId?.let { "ACCOUNT:$it" },
+                        a.consolidatedId?.let { "CONSOLIDATED:$it" },
+                    )) effects += dest to amount
+                }
+                for ((dest, amount) in effects) {
+                    val cur = acc[dest] ?: (BigDecimal.ZERO to BigDecimal.ZERO)
+                    acc[dest] = if (kind == "pending") cur.first + amount to cur.second
+                        else cur.first to cur.second + amount
+                }
+            }
+            acc.mapValues { (k, v) -> DestEffect(v.first, v.second) }
+        }
 
     suspend fun getCollectionAccountItems(accountId: String): List<CollectionAccountItemEntity> =
         db.collectionAccountItemDao().forAccount(accountId)
@@ -2200,6 +2262,11 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
      * diferencia entre sus líneas actuales y el último payload que el
      * servidor aplicó (reconstruido desde la cola durable). El stock
      * negativo es visible y nunca bloquea.
+     *
+     * Un movimiento cuya última operación fue rechazada (PAUSED o
+     * reconocida como perdida) NO se suma al stock mostrado: su efecto se
+     * expone aparte en `rejectedNew`/`rejectedUsed` para que el usuario lo
+     * vea sin que se presente como aplicado (regla append-only aprobada).
      */
     fun observeInventory(userId: String): Flow<List<MaterialStockView>> =
         kotlinx.coroutines.flow.combine(
@@ -2207,14 +2274,27 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             db.materialStockDao().observeAll(),
             db.inventoryMovementDao().observeForUser(userId),
             db.purchaseDao().observePendingForUser(userId),
-        ) { materials, mirrors, movements, pendingPurchases ->
+            db.syncDao().observeLatestOpStates(),
+        ) { materials, mirrors, movements, pendingPurchases, opStates ->
             val purchaseDelta = pendingPurchaseDeltas(pendingPurchases)
+            val latestOp = opStates.associateBy { it.entityType to it.entityId }
             materials.map { m ->
                 val mirror = mirrors.firstOrNull { it.materialId == m.id }
                 var sNew = (mirror?.stockNew ?: "0").toQty()
                 var sUsed = (mirror?.stockUsed ?: "0").toQty()
+                var rNew = BigDecimal.ZERO
+                var rUsed = BigDecimal.ZERO
                 for (mov in movements) {
                     if (mov.materialId != m.id || !mov.pendingSync) continue
+                    val op = latestOp[EntityTypes.INVENTORY_MOVEMENT to mov.id]
+                    if (op != null && op.isRejectedEffect()) {
+                        if (mov.condition == MaterialCondition.NUEVO.name) {
+                            rNew += mov.quantity.toQty()
+                        } else {
+                            rUsed += mov.quantity.toQty()
+                        }
+                        continue
+                    }
                     val q = mov.quantity.toQty()
                     if (mov.movementType == MovementType.PURCHASE_IN.name
                         || mov.movementType == MovementType.ADJUSTMENT_IN.name
@@ -2225,7 +2305,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
                     }
                 }
                 purchaseDelta[m.id]?.let { (dNew, dUsed) -> sNew += dNew; sUsed += dUsed }
-                MaterialStockView(m, sNew, sUsed)
+                MaterialStockView(m, sNew, sUsed, rNew, rUsed)
             }
         }
 
@@ -2700,4 +2780,29 @@ data class MaterialStockView(
     val material: MaterialEntity,
     val stockNew: java.math.BigDecimal,
     val stockUsed: java.math.BigDecimal,
+    /** Efecto de movimientos rechazados por el servidor (nunca sumado). */
+    val rejectedNew: java.math.BigDecimal = java.math.BigDecimal.ZERO,
+    val rejectedUsed: java.math.BigDecimal = java.math.BigDecimal.ZERO,
 )
+
+/** Efecto agregado sobre un destino de cobro (importes con signo). */
+data class DestEffect(
+    val pending: java.math.BigDecimal,
+    val rejected: java.math.BigDecimal,
+)
+
+/**
+ * Estado de sincronización de la última operación de una entidad: una
+ * operación pausada o reconocida como rechazada cuenta su efecto como
+ * «rechazado», nunca como pendiente ni como confirmado.
+ */
+internal fun LatestOpState?.isRejectedEffect(): Boolean =
+    this != null && (
+        state == "PAUSED" ||
+            (state == "DONE" && resultCode in setOf(
+                Rejections.RES_ACKNOWLEDGED,
+                Rejections.RES_PREREQ_DISCARDED,
+                Rejections.RES_DISCARDED,
+                Rejections.RES_CASCADE_DISCARDED,
+            ))
+        )

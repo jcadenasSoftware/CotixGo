@@ -1,0 +1,227 @@
+Evidencia de verificación — Resolución de operaciones PAUSED (16/10/2026)
+Rama: feat/paused-op-resolution, base main e6c7e5a (merge del PR #23).
+Entorno: Windows, JDK 21, Gradle 8.11.1, emulador dedicado E2eIsolated
+(emulator-5556) con la app apuntando al API local http://10.0.2.2:8080
+(php -S sobre MariaDB local). Solo datos sintéticos; sin dispositivos del
+titular, sin credenciales reales, sin servicios externos.
+
+== Backend E2E ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 256 passed, 0 failed (esta corrida).
+Incluye los 5 casos nuevos del cambio:
+  pr_svc_applied
+  pr_dependency_own_row_has_server_state
+  pr_forbidden_entity_foreign_scope_no_state
+  pr_forbidden_reference_scope
+  pr_rejected_own_row_state_present
+
+== Pruebas instrumentadas (am instrument, SOLO emulator-5556) ==
+
+adb -s emulator-5556 shell am instrument -w
+  com.cotixgo.app.test/androidx.test.runner.AndroidJUnitRunner
+
+Resultado de la corrida completa: OK (123 tests), 0 fallos.
+
+Desglose por clase (esta corrida):
+  BindAccountGuardTest: 4
+  BootMigrationTest: 2
+  CollectionRepositoryTest: 6
+  ConsolidatedDetailScreenTest: 1
+  ConsolidatedRepositoryTest: 4
+  InventoryRepositoryTest: 7
+  JobFormScreenTest: 5
+  JobRepositoryTest: 9
+  LocalEncryptionTest: 16
+  MigrationTest: 6  (incluye migrate9To10_backfillsConfirmedMirrors_onlyForSyncedRows)
+  PausedOpResolutionTest: 11  (NUEVO)
+  PaymentDetailScreenTest: 4
+  QuoteRepositoryTest: 12
+  ReportRepositoryTest: 7
+  SyncE2eTest: 29  (contra php -S local real)
+
+PausedOpResolutionTest usa un FakeSyncApi determinista (nueva costura
+SyncApi) para forzar rechazos sin backend:
+  - internalError_retriesWithSameOpId_untilBudgetExhausted
+  - internalError_exhaustedGoesManual_thenManualRetryRestartsBudget
+  - validationError_correctEntity_reissuesCurrentState_preservesHistory
+  - dependency_waitsForParent_thenAutoReissuesAfterProgress
+  - dependency_noProgress_noInfiniteAutoReissue
+  - snapshotPaused_supersededByLaterAppliedUpsert_onlyForSnapshotTypes
+  - appendOnlyRejection_acknowledgeKeepsHistory_neverResent
+  - forbiddenEntity_foreign_noResend_noStateExposure
+  - forbiddenEntity_ownRow_restoreFromAuthoritativeServerState
+  - discardPreview_cascadeAndBlockers_explicitOnly
+  - switchBlocked_untilQueuePausedAndPendingResolved
+  (y el caso financiero de saldo confirmado intacto tras asignación
+  rechazada: rejectedAssignment_confirmedBalanceUnchanged_acknowledgeKeepsHistory)
+
+Nota: durante el desarrollo la primera corrida completa expuso una
+espera circular real (report_job esperaba al propio `emit` de Informe,
+que necesita el vínculo aplicado; y job_quote viajaba antes de la
+APROBADA remota de la Cotización). Corregido con gating seq-aware: las
+ops del referido anteriores al hijo bloquean, las posteriores no.
+Regresión completa verde tras la corrección (123/123).
+
+== JVM unitarias ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL (esta corrida).
+
+== Builds ==
+
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+./gradlew :app:assembleRelease — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos en el commit):
+android/gradle.properties, android/settings.gradle.kts,
+android/gradle/gradle-daemon-jvm.properties.
+
+==============================================================
+Segunda corrida — correcciones de la revisión independiente
+del PR #24 (misma fecha). HEAD previo: 37bcab2.
+
+Cambios verificados en esta ronda:
+  1) Migración 9→10: el backfill de las columnas espejo server*
+     solo copia derivados cuando la fila esta sincronizada Y
+     ninguna operacion PENDING/RETRY/PAUSED la referencia en su
+     payload. Una fila confirmada con una asignacion o ajuste
+     sin resolver NO hereda saldo optimista como confirmado.
+  2) restorePausedRemote: las ops PENDING/RETRY de la misma
+     entidad se descartan como DISCARDED_LOCAL solo tras
+     confirmacion informada del conjunto exacto; si el conjunto
+     cambio, la restauracion aborta sin tocar nada.
+  3) discardPaused: la confirmacion valida la firma exacta
+     (filas tabla:id + dependientes dep:opId) y la revalida
+     dentro de la transaccion antes de borrar; un cambio de
+     contenido con el mismo numero de filas aborta.
+  4) Backend: el enriquecimiento de rechazos (server_state /
+     forbidden_scope) se realiza dentro de la misma
+     transaccion ANTES de memorizar el resultado, asi el replay
+     idempotente devuelve una respuesta funcionalmente
+     identica (estado propio incluido, estado ajeno jamas).
+  5) observeDestinationEffects: en REASSIGN el destino origen
+     (from*) resta el remanente liberado y el destino nuevo
+     suma solo lo aplicado, para Cuenta y Consolidado, en los
+     cubos pendiente y rechazado.
+
+== Backend E2E (esta corrida) ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 260 passed, 0 failed.
+Casos nuevos de replay idempotente:
+  pr_replay_dependency_keeps_server_state
+  pr_replay_own_row_keeps_server_state
+  pr_replay_entity_foreign_no_state
+  pr_replay_foreign_reference_scope
+
+== Pruebas instrumentadas (SOLO emulator-5556, esta corrida) ==
+
+PausedOpResolutionTest: OK (14 tests) — 3 casos nuevos:
+  restoreRemote_withPendingOp_requiresInformedSet_thenDiscardsIt
+  discard_signatureChanged_abortsWithoutDeleting
+  destinationEffects_reassignSigns_pendingAndRejected
+MigrationTest: OK (6 tests) — migrate9To10 extendido con la
+  regresion de espejo conservador (cc2/pay3 con op sin resolver
+  quedan en '0.00').
+Suite completa: OK (126 tests), 0 fallos.
+  Time: 372.74s
+
+== JVM unitarias / builds (esta corrida) ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+./gradlew :app:assembleRelease — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos): sin cambios
+respecto a la nota anterior; permanecen fuera del commit.
+
+==============================================================
+Tercera corrida — hallazgo de firma de descarte (PR #24).
+HEAD previo: 3693fd0.
+
+Cambio verificado en esta ronda:
+  discardPaused: la vista previa ahora declara el conjunto exacto
+  de operaciones cuyo estado cambiara (ops sin resolver de la
+  entidad raiz + ops de cada fila de la cascada), la firma lo
+  incluye como "op:opId", la confirmacion muestra su conteo y
+  detalle, y dentro de la transaccion se revalida (a) la firma
+  completa y (b) que la raiz sigue PAUSED. Solo se marcan las
+  operaciones del conjunto confirmado: ninguna op aparecida
+  despues se vuelve a consultar ni tocar.
+
+== Backend E2E (esta corrida, sin cambios PHP) ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 260 passed, 0 failed.
+
+== Pruebas instrumentadas (SOLO emulator-5556, esta corrida) ==
+
+PausedOpResolutionTest: OK (17 tests) — 3 casos nuevos:
+  discard_pendingOpsOfEntity_inPreviewAndSignature_markedWithHistory
+  discard_pendingOpSwappedAfterPreview_abortsWithoutMutations
+  discard_rootOpResolvedConcurrently_abortsWithoutMutations
+Suite completa: OK (129 tests), 0 fallos.
+  Time: 354.87s
+
+== JVM unitarias / builds (esta corrida) ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos): sin cambios.
+
+================================================================
+CUARTA CORRIDA — correccion de la segunda revision independiente
+del PR #24 (tablas fisicas sin tipo + cobertura in-transaction)
+================================================================
+
+Cambio verificado en esta ronda:
+  Sync.kt — mapa Rejections.UNOWNED_PARENT (tabla sin tipo -> columna
+  y tipo del documento padre):
+    collection_account_items/_jobs/_quotes  -> accountId / collection_account
+    consolidated_collection_accounts        -> consolidatedId / consolidated_collection
+    purchase_items                          -> purchaseId / purchase
+  collectCascade: las filas detalle/vinculo sin tipo entran en la vista
+  previa como filas fisicas (etiquetadas por nombre de tabla, sin tipo
+  de entidad: nunca generan operaciones ni historial propio) y se
+  borran con su padre — antes quedaban huerfanas.
+  REF_BLOCKS: una referencia via tabla sin tipo se resuelve contra su
+  padre real — si el padre esta en la cascada el vinculo no bloquea;
+  si es externo se denuncia el referente real.
+  discardTransactionProbe (internal, nulo en produccion): costura que
+  se invoca al entrar a la transaccion de discardPaused, antes de la
+  revalidacion, para reproducir deterministamente una mutacion
+  concurrente en la ventana pre-chequeos -> transaccion. El intento con
+  executor de transaccion con puerta se descarto: las llamadas suspend
+  del DAO tambien pasan por transactionExecutor y el gate no podia
+  aislar la tarea de la transaccion de las consultas previas.
+
+== Backend E2E (esta corrida, sin cambios PHP) ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 260 passed, 0 failed.
+
+== Pruebas instrumentadas (SOLO emulator-5556, esta corrida) ==
+
+PausedOpResolutionTest: OK (25 tests) — 8 casos nuevos:
+  discard_quoteLinkedByAccount_blockedKeepsRows
+  discard_unlinkedQuote_deletesCascadeVersions
+  discard_collectionAccount_deletesUntypedDetailRows
+  discard_consolidated_deletesMembershipRows
+  discard_purchase_deletesUntypedItems
+  discard_accountInConsolidated_blockedByUntypedLink
+  discardInsideTx_rootNoLongerPaused_abortsBeforeMutations
+  discardInsideTx_signatureDrift_abortsBeforeMutations
+(la enumeracion de filas fisicas queda cubierta por las aserciones de
+rows en los casos de cascada, y la firma obsoleta por
+discard_signatureChanged_abortsWithoutDeleting y
+discard_pendingOpSwappedAfterPreview_abortsWithoutMutations)
+Suite completa: OK (137 tests), 0 fallos.
+  Time: 390.27s
+
+== JVM unitarias / builds (esta corrida) ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos): sin cambios.
