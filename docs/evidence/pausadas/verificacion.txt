@@ -75,3 +75,62 @@ Regresión completa verde tras la corrección (123/123).
 Archivos protegidos del entorno local (NO incluidos en el commit):
 android/gradle.properties, android/settings.gradle.kts,
 android/gradle/gradle-daemon-jvm.properties.
+
+==============================================================
+Segunda corrida — correcciones de la revisión independiente
+del PR #24 (misma fecha). HEAD previo: 37bcab2.
+
+Cambios verificados en esta ronda:
+  1) Migración 9→10: el backfill de las columnas espejo server*
+     solo copia derivados cuando la fila esta sincronizada Y
+     ninguna operacion PENDING/RETRY/PAUSED la referencia en su
+     payload. Una fila confirmada con una asignacion o ajuste
+     sin resolver NO hereda saldo optimista como confirmado.
+  2) restorePausedRemote: las ops PENDING/RETRY de la misma
+     entidad se descartan como DISCARDED_LOCAL solo tras
+     confirmacion informada del conjunto exacto; si el conjunto
+     cambio, la restauracion aborta sin tocar nada.
+  3) discardPaused: la confirmacion valida la firma exacta
+     (filas tabla:id + dependientes dep:opId) y la revalida
+     dentro de la transaccion antes de borrar; un cambio de
+     contenido con el mismo numero de filas aborta.
+  4) Backend: el enriquecimiento de rechazos (server_state /
+     forbidden_scope) se realiza dentro de la misma
+     transaccion ANTES de memorizar el resultado, asi el replay
+     idempotente devuelve una respuesta funcionalmente
+     identica (estado propio incluido, estado ajeno jamas).
+  5) observeDestinationEffects: en REASSIGN el destino origen
+     (from*) resta el remanente liberado y el destino nuevo
+     suma solo lo aplicado, para Cuenta y Consolidado, en los
+     cubos pendiente y rechazado.
+
+== Backend E2E (esta corrida) ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 260 passed, 0 failed.
+Casos nuevos de replay idempotente:
+  pr_replay_dependency_keeps_server_state
+  pr_replay_own_row_keeps_server_state
+  pr_replay_entity_foreign_no_state
+  pr_replay_foreign_reference_scope
+
+== Pruebas instrumentadas (SOLO emulator-5556, esta corrida) ==
+
+PausedOpResolutionTest: OK (14 tests) — 3 casos nuevos:
+  restoreRemote_withPendingOp_requiresInformedSet_thenDiscardsIt
+  discard_signatureChanged_abortsWithoutDeleting
+  destinationEffects_reassignSigns_pendingAndRejected
+MigrationTest: OK (6 tests) — migrate9To10 extendido con la
+  regresion de espejo conservador (cc2/pay3 con op sin resolver
+  quedan en '0.00').
+Suite completa: OK (126 tests), 0 fallos.
+  Time: 372.74s
+
+== JVM unitarias / builds (esta corrida) ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+./gradlew :app:assembleRelease — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos): sin cambios
+respecto a la nota anterior; permanecen fuera del commit.

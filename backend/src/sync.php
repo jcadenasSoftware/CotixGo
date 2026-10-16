@@ -178,31 +178,36 @@ function processOperation(PDO $pdo, string $userId, string $deviceId, array $op)
     }
 
     $res = applyOperation($pdo, $userId, $deviceId, $opId, $type, $entityId, $opType, $payload, $base, $supersedes, $payloadHash);
+    $res['entity_id'] = $entityId;
+    return $res;
+}
 
-    // server_state en rechazos: se adjunta el estado persistido cuando la
-    // fila pertenece a la identidad autenticada (autoritativo y visible).
-    // FORBIDDEN_ENTITY nunca expone una fila ajena: si la propia entidad es
-    // de otra cuenta no hay estado; si el rechazo proviene de una referencia
-    // ajena pero la fila es propia, se incluye el estado propio para que el
-    // cliente pueda restaurar lo autoritativo.
-    if (($res['status'] ?? '') === 'REJECTED' && ($res['code'] ?? '') !== 'INTERNAL_ERROR') {
-        $own = ownEntityRow($pdo, $userId, $type, $entityId);
-        if (($res['code'] ?? '') === 'FORBIDDEN_ENTITY') {
-            // La fila misma es de otra cuenta → entity_foreign (sin estado);
-            // si la fila no existe o es propia, el rechazo vino de una
-            // referencia ajena → foreign_reference y el estado propio
-            // (cuando existe) permite restaurar lo autoritativo.
-            $any = entityRow($pdo, $type, $entityId);
-            $res['forbidden_scope'] =
-                ($any !== null && $any['user_id'] !== $userId) ? 'entity_foreign' : 'foreign_reference';
-            if ($own !== null && !isset($res['server_state'])) {
-                $res['server_state'] = serverState($own);
-            }
-        } elseif ($own !== null && !isset($res['server_state'])) {
+/**
+ * Enriquecimiento de rechazos: se adjunta `server_state` (payload
+ * persistido + metadatos del servidor) solo cuando la fila pertenece a
+ * la identidad autenticada (autoritativo y visible). `FORBIDDEN_ENTITY`
+ * nunca expone una fila ajena: `entity_foreign` sin estado cuando la
+ * fila misma es de otra cuenta, `foreign_reference` cuando la fila es
+ * propia o inexistente y el rechazo vino de una referencia ajena — ahí
+ * el estado propio permite restaurar lo autoritativo.
+ * Debe ejecutarse ANTES de memorizar el resultado (dentro de la misma
+ * transacción): el replay idempotente devuelve `result_json` tal cual
+ * se guardó, así que el primer intento y el replay producen respuestas
+ * funcionalmente idénticas (revisión del PR #24).
+ */
+function enrichRejectedResult(PDO $pdo, string $userId, string $type, string $entityId, array $res): array
+{
+    $own = ownEntityRow($pdo, $userId, $type, $entityId);
+    if (($res['code'] ?? '') === 'FORBIDDEN_ENTITY') {
+        $any = entityRow($pdo, $type, $entityId);
+        $res['forbidden_scope'] =
+            ($any !== null && $any['user_id'] !== $userId) ? 'entity_foreign' : 'foreign_reference';
+        if ($own !== null && !isset($res['server_state'])) {
             $res['server_state'] = serverState($own);
         }
+    } elseif ($own !== null && !isset($res['server_state'])) {
+        $res['server_state'] = serverState($own);
     }
-    $res['entity_id'] = $entityId;
     return $res;
 }
 
@@ -213,6 +218,11 @@ function applyOperation(PDO $pdo, string $userId, string $deviceId, string $opId
     $pdo->beginTransaction();
     try {
         $res = applyOperationTx($pdo, $userId, $deviceId, $opId, $type, $entityId, $opType, $payload, $base, $supersedes);
+        if (($res['status'] ?? '') === 'REJECTED' && ($res['code'] ?? '') !== 'INTERNAL_ERROR') {
+            // Enriquecer ANTES de memorizar: el replay devuelve result_json
+            // tal cual — con server_state/forbidden_scope idénticos.
+            $res = enrichRejectedResult($pdo, $userId, $type, $entityId, $res);
+        }
 
         // Idempotencia para resultados definitivos (APPLIED/REJECTED): mismo
         // operation_id + payload → resultado memorizado; payload distinto →

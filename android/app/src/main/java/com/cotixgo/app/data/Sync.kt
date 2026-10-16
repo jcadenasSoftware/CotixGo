@@ -2049,6 +2049,10 @@ class SyncRepository(
         val canDiscard: Boolean,
         val canAcknowledge: Boolean,
         val waitingDependents: Int,
+        /** OpIds PENDING/RETRY de la misma entidad: la restauración remota
+         *  los descarta explícitamente (su payload reaplicaría los cambios
+         *  que el servidor rechazó). La confirmación revalida el conjunto. */
+        val pendingOpsOnEntity: List<String>,
     )
 
     /** Fila afectada por un descarte (tabla física + id + bandera sincronizada). */
@@ -2058,7 +2062,18 @@ class SyncRepository(
         val rows: List<DiscardRow>,
         val blockers: List<String>,
         val waitingDependents: List<SyncOperationEntity>,
-    )
+    ) {
+        /**
+         * Identidad exacta de lo que se descartaría: "tabla:id" por fila
+         * de la cascada más "dep:opId" por cada operación dependiente que
+         * quedaría marcada. La confirmación revalida este conjunto dentro
+         * de la transacción — un cambio de contenido con el mismo número
+         * de filas no pasa desapercibido (revisión del PR #24).
+         */
+        fun signature(): Set<String> =
+            rows.mapTo(mutableSetOf()) { "${it.table}:${it.id}" } +
+                waitingDependents.mapTo(mutableSetOf()) { "dep:${it.opId}" }
+    }
 
     private fun opResultJson(op: SyncOperationEntity): JsonObject? = op.resultJson
         ?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
@@ -2150,6 +2165,9 @@ class SyncRepository(
             Rejections.IMMUTABLE_FINANCIAL,
         )
         val waiting = dependentsOf(setOf(op.entityType to op.entityId)).size
+        val pendingOnEntity = db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)
+            .filter { it.state == "PENDING" || it.state == "RETRY" }
+            .map { it.opId }
         return PausedOpView(
             op = op,
             label = Rejections.TABLE_BY_TYPE[op.entityType]?.let { entityLabel(it, op.entityId) }
@@ -2171,6 +2189,7 @@ class SyncRepository(
             canAcknowledge = op.entityType in ACKNOWLEDGEABLE &&
                 op.resultCode != Rejections.FORBIDDEN_ENTITY,
             waitingDependents = waiting,
+            pendingOpsOnEntity = pendingOnEntity,
         )
     }
 
@@ -2202,21 +2221,34 @@ class SyncRepository(
     /**
      * Descarte explícito de una entidad nunca sincronizada (o residuo
      * ajeno): elimina filas locales y descendientes en cascada tras
-     * verificar la vista previa. Nunca borra el historial de operaciones:
-     * cada op queda DONE con código descriptivo y su payload conservado.
-     * Los dependientes que esperaban se marcan PREREQUISITE_DISCARDED.
+     * verificar la vista previa. La confirmación recibe la FIRMA exacta
+     * del conjunto (filas "tabla:id" + dependientes "dep:opId") y se
+     * revalida DENTRO de la transacción antes de borrar — no basta con
+     * el número de filas: si el contenido cambió aunque el total sea
+     * igual (concurrencia), se aborta y se pide una vista previa nueva.
+     * Nunca borra el historial de operaciones: cada op queda DONE con
+     * código descriptivo y su payload conservado. Los dependientes que
+     * esperaban se marcan PREREQUISITE_DISCARDED.
      */
-    suspend fun discardPaused(opId: String, expectedRows: Int): String? {
+    suspend fun discardPaused(opId: String, expectedSignature: Set<String>): String? {
         val op = db.syncDao().opById(opId) ?: return "Operación no encontrada."
         if (op.state != "PAUSED") return "La operación ya no está pausada."
         val preview = discardPreview(op)
         if (preview.blockers.isNotEmpty()) return preview.blockers.joinToString(" ")
-        if (preview.rows.size != expectedRows) {
+        if (preview.signature() != expectedSignature) {
             return "La vista previa quedó desactualizada; revísala de nuevo."
         }
         val now = nowEpochMillis()
+        var completed = false
         db.withTransaction {
-            for (row in preview.rows) {
+            // Revalidación atómica del conjunto exacto a borrar dentro de
+            // la transacción: la vista previa pudo quedar obsoleta entre
+            // el cálculo y la confirmación del usuario.
+            val inside = discardPreview(op)
+            if (inside.blockers.isNotEmpty() || inside.signature() != expectedSignature) {
+                return@withTransaction
+            }
+            for (row in inside.rows) {
                 db.openHelper.writableDatabase
                     .execSQL("DELETE FROM `${row.table}` WHERE `id` = ?", arrayOf(row.id))
                 for (childOp in db.syncDao().pendingOpsForEntity(row.entityType, row.id)) {
@@ -2230,14 +2262,14 @@ class SyncRepository(
                 }
             }
             // El op raíz puede no estar ligada a fila (forbidden/reference):
-            if (preview.rows.none { it.entityType == op.entityType && it.id == op.entityId }) {
+            if (inside.rows.none { it.entityType == op.entityType && it.id == op.entityId }) {
                 db.syncDao().updateOpResult(
                     op.opId, "DONE",
                     resolutionResult(op, Rejections.RES_DISCARDED, now),
                     Rejections.RES_DISCARDED, now,
                 )
             }
-            val discarded = preview.rows.map { it.entityType to it.id }.toSet() +
+            val discarded = inside.rows.map { it.entityType to it.id }.toSet() +
                 (op.entityType to op.entityId)
             for (dep in dependentsOf(discarded)) {
                 if (dep.state == "PAUSED" && dep.resultCode !in Rejections.RELEASABLE_CODES) continue
@@ -2247,6 +2279,11 @@ class SyncRepository(
                     Rejections.RES_PREREQ_DISCARDED, now,
                 )
             }
+            completed = true
+        }
+        // La revalidación dentro de la transacción abortó sin tocar nada.
+        if (!completed) {
+            return "La vista previa quedó desactualizada; revísala de nuevo."
         }
         return null
     }
@@ -2256,8 +2293,17 @@ class SyncRepository(
      * resultado (fila propia del titular autenticado) y cierra la op como
      * RESTORED_FROM_REMOTE. Rechaza el intento cuando no hay estado o la
      * fila es de otra identidad.
+     * Operaciones PENDING/RETRY posteriores de la misma entidad: su
+     * payload reaplicaría los cambios que el servidor acaba de rechazar,
+     * así que la restauración las descarta como decisión explícita del
+     * usuario — la UI las anuncia en la confirmación y se revalida el
+     * conjunto exacto (`expectedPendingOps`) dentro de la transacción;
+     * si cambió, se aborta sin tocar nada (revisión del PR #24).
      */
-    suspend fun restorePausedRemote(opId: String): String? {
+    suspend fun restorePausedRemote(
+        opId: String,
+        expectedPendingOps: Set<String> = emptySet(),
+    ): String? {
         val op = db.syncDao().opById(opId) ?: return "Operación no encontrada."
         if (op.state != "PAUSED") return "La operación ya no está pausada."
         if (forbiddenScope(op) == "entity_foreign") {
@@ -2270,14 +2316,32 @@ class SyncRepository(
         }
         val sv = state.intOr("server_version")?.takeIf { it > 0 }
             ?: return "El estado remoto no trae versión verificable."
+        var changed = false
         val now = nowEpochMillis()
         db.withTransaction {
+            val pending = db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)
+                .filter { it.state == "PENDING" || it.state == "RETRY" }
+            if (pending.map { it.opId }.toSet() != expectedPendingOps) {
+                // El conjunto en cola cambió desde la confirmación:
+                // abortar y pedir una decisión informada nueva.
+                changed = true
+                return@withTransaction
+            }
             upsertFromPayload(op.entityType, op.entityId, state, sv)
             db.syncDao().updateOpResult(
                 op.opId, "DONE",
                 resolutionResult(op, Rejections.RES_RESTORED, now),
                 Rejections.RES_RESTORED, now,
             )
+            // Las ops activas posteriores quedan descartadas (decisión
+            // informada del usuario): historial intacto, código propio.
+            for (p in pending) {
+                db.syncDao().updateOpResult(
+                    p.opId, "DONE",
+                    resolutionResult(p, Rejections.RES_DISCARDED, now, "restauración:${op.opId}"),
+                    Rejections.RES_DISCARDED, now,
+                )
+            }
             // Las demás pausadas de la misma entidad quedan subsumidas por
             // el estado remoto restaurado (misma regla que la supersede).
             for (p in db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)) {
@@ -2289,7 +2353,11 @@ class SyncRepository(
                 )
             }
         }
-        return null
+        return if (changed) {
+            "La cola de la entidad cambió; revisa de nuevo antes de restaurar."
+        } else {
+            null
+        }
     }
 
     /**

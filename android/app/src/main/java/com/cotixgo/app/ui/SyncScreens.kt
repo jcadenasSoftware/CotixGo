@@ -201,14 +201,46 @@ fun ConflictsScreen(
     onKeepLocal: (Long) -> Unit,
     onKeepRemote: (Long) -> Unit,
     onRetry: (String) -> Unit,
-    onRestoreRemote: (String) -> Unit,
+    onRestoreRemote: (String, Set<String>) -> Unit,
     onAcknowledge: (String) -> Unit,
-    onDiscard: (String, Int) -> Unit,
+    onDiscard: (String, Set<String>) -> Unit,
     onResolveVersions: (quoteId: String) -> Unit,
     onResolveReportVersions: (reportId: String) -> Unit,
     onBack: () -> Unit,
 ) {
     var discardOp by remember { mutableStateOf<SyncOperationEntity?>(null) }
+    var restoreWithPending by remember {
+        mutableStateOf<com.cotixgo.app.data.SyncRepository.PausedOpView?>(null)
+    }
+    val restoreTarget = restoreWithPending
+    if (restoreTarget != null) {
+        // Restaurar descarta las ops locales aún en cola de esa entidad:
+        // la confirmación anuncia el conjunto exacto que se perderá.
+        AlertDialog(
+            onDismissRequest = { restoreWithPending = null },
+            title = { Text("Restaurar estado remoto") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "La entidad quedará como la tiene el servidor. ${restoreTarget.pendingOpsOnEntity.size} operación(es) local(es) aún en cola se descartarán y no se aplicarán; su contenido queda en el historial de operaciones.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    onRestoreRemote(
+                        restoreTarget.op.opId,
+                        restoreTarget.pendingOpsOnEntity.toSet(),
+                    )
+                    restoreWithPending = null
+                }) { Text("Restaurar y descartar cola") }
+            },
+            dismissButton = {
+                TextButton(onClick = { restoreWithPending = null }) { Text("Cancelar") }
+            },
+        )
+    }
     val discardOpNow = discardOp
     if (discardOpNow != null) {
         val preview by produceState<com.cotixgo.app.data.SyncRepository.DiscardPreview?>(
@@ -255,7 +287,10 @@ fun ConflictsScreen(
                 val pv = preview
                 Button(
                     enabled = pv != null && pv.blockers.isEmpty(),
-                    onClick = { onDiscard(discardOpNow.opId, pv?.rows?.size ?: 0); discardOp = null },
+                    onClick = {
+                        onDiscard(discardOpNow.opId, pv?.signature() ?: emptySet())
+                        discardOp = null
+                    },
                 ) { Text("Descartar definitivamente") }
             },
             dismissButton = {
@@ -348,7 +383,13 @@ fun ConflictsScreen(
                                     }
                                 }
                                 if (d.canRestoreRemote) {
-                                    OutlinedButton(onClick = { onRestoreRemote(op.opId) }) {
+                                    OutlinedButton(onClick = {
+                                        if (d.pendingOpsOnEntity.isEmpty()) {
+                                            onRestoreRemote(op.opId, emptySet())
+                                        } else {
+                                            restoreWithPending = d
+                                        }
+                                    }) {
                                         Text("Restaurar remoto")
                                     }
                                 }

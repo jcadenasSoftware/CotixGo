@@ -2098,12 +2098,27 @@ abstract class AppDatabase : RoomDatabase() {
          * por el servidor. Las columnas `server*` conservan el último valor
          * que el servidor reportó como aplicado (vía pull o `server_state`
          * del resultado). El backfill solo copia el valor vigente en filas
-         * ya confirmadas (pendingSync=0 con versión de servidor); las filas
-         * con efectos en vuelo quedan en el piso confirmado '0.00' hasta
-         * que el servidor los aplique — sus efectos se muestran aparte.
+         * ya confirmadas (pendingSync=0 con versión de servidor) Y sin
+         * operaciones sin resolver ni rechazadas que pudieran haber alterado
+         * los derivados locales de forma optimista — se detecta cualquier op
+         * PENDING/RETRY/PAUSED (o cerrada como rechazo reconocido) cuya
+         * entityId sea la fila o cuyo payloadJson la referencie (las
+         * asignaciones/ajustes/reembolsos apuntan al Pago/Cuenta/Consolidado
+         * desde su payload, no por entityId). Esas filas quedan en el piso
+         * confirmado '0.00': un efecto no aceptado jamás infla el saldo
+         * confirmado — sus efectos se muestran aparte.
          */
         internal val MIGRATION_9_10 = object : androidx.room.migration.Migration(9, 10) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Predicado compartido: ¿hay una operación sin resolver o
+                // reconocida como rechazada que referencia a esta fila?
+                fun dirtyOps(table: String) =
+                    "EXISTS (SELECT 1 FROM `sync_operations` so WHERE" +
+                        " (so.state IN ('PENDING','RETRY','PAUSED')" +
+                        "  OR so.resultCode IN ('REJECTED_ACKNOWLEDGED','DISCARDED_LOCAL'," +
+                        "                       'DISCARDED_CASCADE','PREREQUISITE_DISCARDED'))" +
+                        " AND (so.entityId = `$table`.id" +
+                        "      OR so.payloadJson LIKE '%' || `$table`.id || '%'))"
                 db.execSQL("ALTER TABLE `payments` ADD COLUMN `serverAppliedAmount` TEXT NOT NULL DEFAULT '0.00'")
                 db.execSQL("ALTER TABLE `payments` ADD COLUMN `serverUnassignedAmount` TEXT NOT NULL DEFAULT '0.00'")
                 db.execSQL("ALTER TABLE `payments` ADD COLUMN `serverRefundedAmount` TEXT NOT NULL DEFAULT '0.00'")
@@ -2111,21 +2126,24 @@ abstract class AppDatabase : RoomDatabase() {
                     """UPDATE `payments` SET `serverAppliedAmount` = `appliedAmount`,
                         `serverUnassignedAmount` = `unassignedAmount`,
                         `serverRefundedAmount` = `refundedAmount`
-                        WHERE `pendingSync` = 0 AND `serverVersion` > 0""",
+                        WHERE `pendingSync` = 0 AND `serverVersion` > 0
+                        AND NOT ${dirtyOps("payments")}""",
                 )
                 db.execSQL("ALTER TABLE `collection_accounts` ADD COLUMN `serverAppliedAmount` TEXT NOT NULL DEFAULT '0.00'")
                 db.execSQL("ALTER TABLE `collection_accounts` ADD COLUMN `serverBalance` TEXT NOT NULL DEFAULT '0.00'")
                 db.execSQL(
                     """UPDATE `collection_accounts` SET `serverAppliedAmount` = `appliedAmount`,
                         `serverBalance` = `balance`
-                        WHERE `pendingSync` = 0 AND `serverVersion` > 0""",
+                        WHERE `pendingSync` = 0 AND `serverVersion` > 0
+                        AND NOT ${dirtyOps("collection_accounts")}""",
                 )
                 db.execSQL("ALTER TABLE `consolidated_collections` ADD COLUMN `serverAppliedAmount` TEXT NOT NULL DEFAULT '0.00'")
                 db.execSQL("ALTER TABLE `consolidated_collections` ADD COLUMN `serverBalance` TEXT NOT NULL DEFAULT '0.00'")
                 db.execSQL(
                     """UPDATE `consolidated_collections` SET `serverAppliedAmount` = `appliedAmount`,
                         `serverBalance` = `balance`
-                        WHERE `pendingSync` = 0 AND `serverVersion` > 0""",
+                        WHERE `pendingSync` = 0 AND `serverVersion` > 0
+                        AND NOT ${dirtyOps("consolidated_collections")}""",
                 )
             }
         }

@@ -2135,4 +2135,59 @@ check('pr_rejected_own_row_state_present',
     ($r['results'][0]['status'] ?? '') === 'REJECTED'
     && isset($r['results'][0]['server_state']['server_version']), json_encode($r));
 
+// --- Regresión: el replay idempotente conserva el enriquecimiento ---
+// Simula la pérdida de la primera respuesta: el cliente reenvía la MISMA
+// operation_id con el MISMO payload; el resultado memorizado debe llevar
+// server_state/forbidden_scope idénticos (funcionalmente indistinguible).
+
+// Replay de la DEPENDENCY sobre fila propia (e9a00002): server_state intacto.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mk2($u('e9a00002'), $svcId, 'service',
+        ['id' => $svcId, 'userId' => $userId, 'profileId' => $u('99999998'),
+         'name' => 'Svc Propio', 'suggestedPrice' => '10',
+         'createdAt' => $now, 'updatedAt' => $now], 1)], $token);
+check('pr_replay_dependency_keeps_server_state',
+    ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'DEPENDENCY'
+    && ($r['results'][0]['server_state']['id'] ?? '') === $svcId
+    && ($r['results'][0]['server_state']['server_version'] ?? 0) >= 1,
+    json_encode($r));
+
+// Replay del rechazo sobre fila propia (e9c00000): server_state intacto.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('e9c00000'), 'entity_type' => 'job',
+        'entity_id' => $job1 ?? $u('e9c00001'), 'type' => 'upsert', 'base_server_version' => 99,
+        'payload' => ['id' => $job1 ?? $u('e9c00001'), 'userId' => $userId,
+            'clientId' => $u('30000001'), 'profileId' => $u('20000001'),
+            'provisionalNumber' => 'TR-PEND-SS', 'status' => 'PROGRAMADO',
+            'executionAddress' => '', 'createdAt' => $now, 'updatedAt' => $now]]]], $token);
+check('pr_replay_own_row_keeps_server_state',
+    ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && isset($r['results'][0]['server_state']['server_version']), json_encode($r));
+
+// Replay de FORBIDDEN_ENTITY ajena (e9b00000): mismo scope, jamás estado.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('e9b00000'), 'entity_type' => 'client',
+        'entity_id' => $u('30000001'), 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $u('30000001'), 'userId' => $reg2['user_id'], 'type' => 'EMPRESA',
+            'name' => 'Intruso', 'createdAt' => $now, 'updatedAt' => $now]]]], $reg2['token']);
+check('pr_replay_entity_foreign_no_state',
+    ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY'
+    && ($r['results'][0]['forbidden_scope'] ?? '') === 'entity_foreign'
+    && !isset($r['results'][0]['server_state']), json_encode($r));
+
+// Replay de FORBIDDEN_ENTITY por referencia (e9b00001): scope conservado.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('e9b00001'), 'entity_type' => 'quote',
+        'entity_id' => $u('e9b00002'), 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => ['id' => $u('e9b00002'), 'userId' => $reg2['user_id'], 'clientId' => $u('30000001'),
+            'profileId' => $u('e9b00003'), 'provisionalNumber' => 'COT-PEND-FR', 'status' => 'BORRADOR',
+            'issueDateEpochDay' => 21000, 'validityDays' => 15, 'expiryDateEpochDay' => 21015,
+            'currency' => 'COP', 'currentVersion' => 1, 'emittedVersion' => 0,
+            'gross' => '1', 'totalRetained' => '0', 'net' => '1', 'createdAt' => $now, 'updatedAt' => $now]]]], $reg2['token']);
+check('pr_replay_foreign_reference_scope',
+    ($r['results'][0]['code'] ?? '') === 'FORBIDDEN_ENTITY'
+    && ($r['results'][0]['forbidden_scope'] ?? '') === 'foreign_reference'
+    && !isset($r['results'][0]['server_state']), json_encode($r));
+
 echo "\n$pass passed, $fail failed\n";

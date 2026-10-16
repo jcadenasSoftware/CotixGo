@@ -625,6 +625,45 @@ class MigrationTest {
                     " ('cons1', 'u1', 'c1', 'CONS-PEND-0001', 'PENDIENTE', 'COP', '300.00', '10.00'," +
                     " '290.00', 'Cliente', 0, 'CONS-202610-001', 1, 1, 0, 4)",
             )
+            // Regresión PR #24: fila sincronizada pero con una op financiera
+            // sin resolver que la referencia en el payload — los derivados
+            // locales son optimistas y NO deben copiarse como confirmados.
+            execSQL(
+                "INSERT INTO collection_accounts (id, userId, clientId, profileId, provisionalNumber," +
+                    " status, currency, gross, totalRetained, net, appliedAmount, balance, issuedAt," +
+                    " dueDateEpochDay, conditions, clientSnapshotJson, profileSnapshotJson," +
+                    " retentionsSnapshotJson, clientNameSnapshot, archived, officialNumber, createdAt," +
+                    " updatedAt, pendingSync, serverVersion) VALUES ('cc2', 'u1', 'c1', 'p1'," +
+                    " 'CC-PEND-0002', 'PARCIAL', 'COP', '500.00', '0.00', '500.00', '200.00', '300.00'," +
+                    " 1, NULL, '', '', '', '', 'Cliente', 0, 'CC-202610-002', 1, 1, 0, 3)",
+            )
+            // Asignación pendiente que referencia a cc2 en el payload
+            // (paymentId deliberadamente distinto para no tocar pay1).
+            execSQL(
+                "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
+                    " payloadJson, supersedesOpId, deviceId, state, resultJson, resultCode, attempts," +
+                    " createdAt, updatedAt) VALUES ('op-assign', 10, 'payment_assignment', 'asg1'," +
+                    " 'upsert', 0, '{\"id\":\"asg1\",\"paymentId\":\"pay-x\",\"accountId\":\"cc2\"," +
+                    " \"amount\":\"200.00\"}', NULL, 'dev1', 'PENDING', NULL, NULL, 0, 1, 1)",
+            )
+            // Pago confirmado pero con una op rechazada aún pausada que lo
+            // referencia: tampoco puede heredar el derivado optimista.
+            execSQL(
+                "INSERT INTO payments (id, userId, clientId, collectionMethodId, amount, paidAtEpochDay," +
+                    " reference, notes, appliedAmount, unassignedAmount, effectiveAmount, refundedAmount," +
+                    " annulled, assignedAccountId, assignedConsolidatedId, assignedTargetType," +
+                    " assignmentStatus, createdAt, updatedAt, pendingSync, serverVersion) VALUES" +
+                    " ('pay3', 'u1', 'c1', NULL, '90.00', 20002, '', '', '90.00', '0.00', '90.00'," +
+                    " '0.00', 0, 'cc1', NULL, 'ACCOUNT', 'ASSIGNED', 1, 1, 0, 5)",
+            )
+            execSQL(
+                "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
+                    " payloadJson, supersedesOpId, deviceId, state, resultJson, resultCode, attempts," +
+                    " createdAt, updatedAt) VALUES ('op-paused-ref', 11, 'payment_adjustment', 'adj1'," +
+                    " 'upsert', 5, '{\"id\":\"adj1\",\"paymentId\":\"pay3\",\"adjustmentType\":\"CORRECTION\"}'," +
+                    " NULL, 'dev1', 'PAUSED', '{\"code\":\"IMMUTABLE_FINANCIAL\"}'," +
+                    " 'IMMUTABLE_FINANCIAL', 0, 1, 1)",
+            )
             // Operación de cola pendiente: debe sobrevivir a la migración.
             execSQL(
                 "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
@@ -670,6 +709,26 @@ class MigrationTest {
             assertTrue(c.moveToFirst())
             assertEquals("10.00", c.getString(0))
             assertEquals("290.00", c.getString(1))
+        }
+        // Regresión PR #24: fila sincronizada pero referida por una op
+        // financiera pendiente → el espejo queda en el piso, no hereda el
+        // derivado optimista ('200.00'/'300.00').
+        db.query(
+            "SELECT serverAppliedAmount, serverBalance FROM collection_accounts WHERE id = 'cc2'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("0.00", c.getString(0))
+            assertEquals("0.00", c.getString(1))
+        }
+        // Igual con una op rechazada pausada que referencia al Pago.
+        db.query(
+            "SELECT serverAppliedAmount, serverUnassignedAmount, serverRefundedAmount" +
+                " FROM payments WHERE id = 'pay3'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("0.00", c.getString(0))
+            assertEquals("0.00", c.getString(1))
+            assertEquals("0.00", c.getString(2))
         }
         db.query("SELECT state FROM sync_operations WHERE opId = 'op-p10'").use { c ->
             assertTrue(c.moveToFirst())

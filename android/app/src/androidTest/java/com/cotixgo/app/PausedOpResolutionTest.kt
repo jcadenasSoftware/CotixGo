@@ -403,7 +403,7 @@ class PausedOpResolutionTest {
         val clientOp = db.syncDao().allOpsForEntity(EntityTypes.CLIENT, client.id).last()
         val blockedPreview = sync.discardPreview(clientOp)
         assertTrue(blockedPreview.blockers.isNotEmpty())
-        assertNotNull(sync.discardPaused(clientOp.opId, 1))
+        assertNotNull(sync.discardPaused(clientOp.opId, blockedPreview.signature()))
 
         // Vista previa del Trabajo: cascada job + job_activity.
         val preview = sync.discardPreview(jobOp)
@@ -411,7 +411,7 @@ class PausedOpResolutionTest {
         assertTrue(preview.rows.all { !it.synced })
         assertTrue(preview.waitingDependents.any { it.entityId == pendingAccountId })
 
-        assertNull(sync.discardPaused(jobOp.opId, preview.rows.size))
+        assertNull(sync.discardPaused(jobOp.opId, preview.signature()))
         assertNull(db.jobDao().get(jobId))
         assertNull(db.jobActivityDao().get(actId))
         assertEquals("DONE", db.syncDao().opById(jobOp.opId)!!.state)
@@ -581,7 +581,7 @@ class PausedOpResolutionTest {
         // Descarte seguro del residuo ajeno con vista previa.
         val preview = sync.discardPreview(paused)
         assertEquals(1, preview.rows.size)
-        assertNull(sync.discardPaused(op.opId, preview.rows.size))
+        assertNull(sync.discardPaused(op.opId, preview.signature()))
         assertNull(db.materialDao().get(matId))
         assertEquals("DISCARDED_LOCAL", db.syncDao().opById(op.opId)!!.resultCode)
     }
@@ -751,7 +751,225 @@ class PausedOpResolutionTest {
 
         val op = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id).first()
         val preview = sync.discardPreview(op)
-        assertNull(sync.discardPaused(op.opId, preview.rows.size))
+        assertNull(sync.discardPaused(op.opId, preview.signature()))
         assertTrue(sync.switchBlockers().isEmpty())
+    }
+
+    // ---------- Revisión del PR #24 ----------
+
+    /**
+     * Restaurar remoto con una op posterior en cola: la decisión debe ser
+     * informada — sin el conjunto esperado la restauración aborta y nada
+     * reaplica los cambios rechazados; con él, la op pendiente queda
+     * DISCARDED_LOCAL con historial y la fila adopta el estado remoto.
+     */
+    @Test
+    fun restoreRemote_withPendingOp_requiresInformedSet_thenDiscardsIt() = runBlocking {
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Cliente a restaurar",
+            ),
+        )
+        val client = db.clientDao().observeForUser(session.accountUserId!!).first().first()
+        val paused = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id).first()
+
+        fake.scripted = true
+        fake.respond = { o ->
+            if (o.str("entity_type") == EntityTypes.CLIENT) {
+                FakeSyncApi.rejected(
+                    o, "INVALID_TRANSITION", "transición no aplicable",
+                    serverState = buildJsonObject {
+                        put("id", client.id)
+                        put("userId", session.accountUserId!!)
+                        put("name", "Verdad del servidor")
+                        put("type", "PERSONA")
+                        put("server_version", 4)
+                    },
+                )
+            } else {
+                FakeSyncApi.applied(o)
+            }
+        }
+        sync.syncNow()
+
+        // Edición local posterior: una op PENDING que reaplicaría el cambio.
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Edición posterior",
+            ),
+            existingId = client.id,
+        )
+        val detail = sync.pausedDetail(db.syncDao().opById(paused.opId)!!)
+        assertEquals(1, detail.pendingOpsOnEntity.size)
+        val pendingId = detail.pendingOpsOnEntity.single()
+
+        // Sin el conjunto informado: aborta sin tocar nada.
+        assertNotNull(sync.restorePausedRemote(paused.opId, emptySet()))
+        assertEquals("Edición posterior", db.clientDao().get(client.id)!!.name)
+        assertEquals("PENDING", db.syncDao().opById(pendingId)!!.state)
+        assertEquals("PAUSED", db.syncDao().opById(paused.opId)!!.state)
+
+        // Con el conjunto informado: restaura y la op en cola queda
+        // DISCARDED_LOCAL con su payload conservado.
+        assertNull(sync.restorePausedRemote(paused.opId, detail.pendingOpsOnEntity.toSet()))
+        val restored = db.clientDao().get(client.id)!!
+        assertEquals("Verdad del servidor", restored.name)
+        assertEquals(4, restored.serverVersion)
+        assertFalse(restored.pendingSync)
+        val discarded = db.syncDao().opById(pendingId)!!
+        assertEquals("DONE", discarded.state)
+        assertEquals("DISCARDED_LOCAL", discarded.resultCode)
+        assertTrue(discarded.payloadJson.contains("Edición posterior"))
+        assertEquals("RESTORED_FROM_REMOTE", db.syncDao().opById(paused.opId)!!.resultCode)
+    }
+
+    /**
+     * Confirmación de descarte por firma exacta: una cascada que cambia de
+     * contenido conservando el mismo número de filas (y un dependiente
+     * concurrente nuevo) abortan la confirmación — no basta el conteo.
+     */
+    @Test
+    fun discard_signatureChanged_abortsWithoutDeleting() = runBlocking {
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Cliente cascada",
+            ),
+        )
+        val client = db.clientDao().observeForUser(session.accountUserId!!).first().first()
+        val profile = db.profileDao().observeForUser(session.accountUserId!!).first().first()
+        val jobId = repo.saveJob(
+            com.cotixgo.app.data.JobInput(clientId = client.id, profileId = profile.id),
+        )!!
+        val actA = repo.saveJobActivity(
+            com.cotixgo.app.data.JobActivityInput(jobId = jobId, description = "Actividad A"),
+        )!!
+        val actB = repo.saveJobActivity(
+            com.cotixgo.app.data.JobActivityInput(jobId = jobId, description = "Actividad B"),
+        )!!
+
+        fake.scripted = true
+        fake.respond = { o ->
+            if (o.str("entity_type") == EntityTypes.JOB) {
+                FakeSyncApi.rejected(o, "VALIDATION_ERROR", "rechazo de negocio")
+            } else {
+                FakeSyncApi.applied(o)
+            }
+        }
+        sync.syncNow()
+        val jobOp = db.syncDao().pendingOpsForEntity(EntityTypes.JOB, jobId).first()
+        assertEquals("PAUSED", jobOp.state)
+
+        val preview = sync.discardPreview(jobOp)
+        assertEquals(3, preview.rows.size) // job + actA + actB
+        val signature = preview.signature()
+
+        // Cambio con el MISMO número de filas: actA fuera, actC dentro.
+        db.openHelper.writableDatabase.execSQL(
+            "DELETE FROM `job_activities` WHERE `id` = ?", arrayOf(actA),
+        )
+        val actC = repo.saveJobActivity(
+            com.cotixgo.app.data.JobActivityInput(jobId = jobId, description = "Actividad C"),
+        )!!
+        // La firma capturada ya no corresponde: la confirmación aborta y
+        // no se borra nada.
+        assertNotNull(sync.discardPaused(jobOp.opId, signature))
+        assertNotNull(db.jobDao().get(jobId))
+        assertNotNull(db.jobActivityDao().get(actB))
+        assertNotNull(db.jobActivityDao().get(actC))
+        assertEquals("PAUSED", db.syncDao().opById(jobOp.opId)!!.state)
+
+        // Cambio concurrente adicional: una fila hija nueva entra en la
+        // cascada; la firma intermedia queda obsoleta y aborta también.
+        val stale = sync.discardPreview(jobOp).signature()
+        repo.saveJobActivity(
+            com.cotixgo.app.data.JobActivityInput(jobId = jobId, description = "Actividad D"),
+        )
+        assertNotNull(sync.discardPaused(jobOp.opId, stale))
+        assertNotNull(db.jobDao().get(jobId))
+
+        // Vista previa fresca → firma vigente → el descarte procede.
+        val fresh = sync.discardPreview(jobOp)
+        assertTrue(fresh.blockers.isEmpty())
+        assertNull(sync.discardPaused(jobOp.opId, fresh.signature()))
+        assertNull(db.jobDao().get(jobId))
+        assertNull(db.jobActivityDao().get(actB))
+        assertNull(db.jobActivityDao().get(actC))
+        assertEquals("DISCARDED_LOCAL", db.syncDao().opById(jobOp.opId)!!.resultCode)
+    }
+
+    /**
+     * Efectos de REASSIGN por destino: el origen (from*) resta el remanente
+     * liberado y el destino nuevo suma solo lo aplicado — para Cuenta y
+     * Consolidado, pendiente y rechazado.
+     */
+    @Test
+    fun destinationEffects_reassignSigns_pendingAndRejected() = runBlocking {
+        val userId = session.accountUserId!!
+        val now = nowEpochMillis()
+        fun account(id: String) = com.cotixgo.app.data.CollectionAccountEntity(
+            id = id, userId = userId, clientId = "c1", profileId = "p1",
+            provisionalNumber = "CC-P-$id", status = "PENDIENTE", currency = "COP",
+            issuedAt = now, createdAt = now, updatedAt = now,
+        )
+        fun consolidated(id: String) = com.cotixgo.app.data.ConsolidatedCollectionEntity(
+            id = id, userId = userId, clientId = "c1",
+            provisionalNumber = "CONS-P-$id", currency = "COP",
+            createdAt = now, updatedAt = now,
+        )
+        db.collectionAccountDao().upsert(account("acc-src"))
+        db.collectionAccountDao().upsert(account("acc-dst"))
+        db.consolidatedCollectionDao().upsert(consolidated("cons-src"))
+        db.consolidatedCollectionDao().upsert(consolidated("cons-dst"))
+
+        suspend fun reassign(id: String, fromField: String, fromId: String, toField: String, toId: String) {
+            val ev = PaymentAssignmentEntity(
+                id = id, userId = userId, paymentId = "pay-x",
+                action = com.cotixgo.app.core.PaymentAssignmentAction.REASSIGN.name,
+                targetType = if (toField == "accountId") "ACCOUNT" else "CONSOLIDATED",
+                accountId = if (toField == "accountId") toId else null,
+                consolidatedId = if (toField == "consolidatedId") toId else null,
+                fromAccountId = if (fromField == "accountId") fromId else null,
+                fromConsolidatedId = if (fromField == "consolidatedId") fromId else null,
+                amount = "40.00", releasedAmount = "50.00",
+                reason = "reasignación sintética", createdAt = now, updatedAt = now,
+            )
+            db.paymentAssignmentDao().upsert(ev)
+            // La op queda PENDING sin push: el efecto se proyecta local.
+            db.syncDao().insertOp(
+                com.cotixgo.app.data.SyncOperationEntity(
+                    opId = "op-$id", seq = db.syncDao().nextSeq(),
+                    entityType = EntityTypes.PAYMENT_ASSIGNMENT, entityId = id,
+                    opType = "upsert", baseServerVersion = 0, payloadJson = "{}",
+                    supersedesOpId = null, deviceId = session.deviceId,
+                    createdAt = now, updatedAt = now,
+                ),
+            )
+        }
+        reassign("ra-acc", "accountId", "acc-src", "accountId", "acc-dst")
+        reassign("ra-cons", "consolidatedId", "cons-src", "consolidatedId", "cons-dst")
+
+        var effects = repo.observeDestinationEffects(userId).first()
+        // Origen Cuenta: −released; destino Cuenta: +aplicado.
+        assertEquals(0, effects["ACCOUNT:acc-src"]!!.pending.compareTo(BigDecimal("-50.00")))
+        assertEquals(0, effects["ACCOUNT:acc-dst"]!!.pending.compareTo(BigDecimal("40.00")))
+        // Origen/destino Consolidado con los mismos signos.
+        assertEquals(0, effects["CONSOLIDATED:cons-src"]!!.pending.compareTo(BigDecimal("-50.00")))
+        assertEquals(0, effects["CONSOLIDATED:cons-dst"]!!.pending.compareTo(BigDecimal("40.00")))
+
+        // Rechazado: mismo importe con signo, en el cubo rechazado.
+        for (opId in listOf("op-ra-acc", "op-ra-cons")) {
+            db.syncDao().updateOpResult(
+                opId, "PAUSED", """{"code":"VALIDATION_ERROR"}""",
+                "VALIDATION_ERROR", nowEpochMillis(),
+            )
+        }
+        effects = repo.observeDestinationEffects(userId).first()
+        assertEquals(0, effects["ACCOUNT:acc-src"]!!.rejected.compareTo(BigDecimal("-50.00")))
+        assertEquals(0, effects["ACCOUNT:acc-dst"]!!.rejected.compareTo(BigDecimal("40.00")))
+        assertEquals(0, effects["CONSOLIDATED:cons-src"]!!.rejected.compareTo(BigDecimal("-50.00")))
+        assertEquals(0, effects["CONSOLIDATED:cons-dst"]!!.rejected.compareTo(BigDecimal("40.00")))
+        // Nada quedó en el cubo pendiente ni tocó los espejos confirmados.
+        assertTrue(effects.values.all { it.pending.compareTo(BigDecimal.ZERO) == 0 })
+        assertEquals("0.00", db.collectionAccountDao().get("acc-src")!!.serverAppliedAmount)
     }
 }

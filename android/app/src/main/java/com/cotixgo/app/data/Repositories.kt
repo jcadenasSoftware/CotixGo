@@ -1125,14 +1125,28 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
                     else -> "confirmed"
                 }
                 if (kind == "confirmed") continue
-                val sign = if (a.action == PaymentAssignmentAction.UNASSIGN.name) -1 else 1
-                val amount = a.amount.toMoney() * BigDecimal(sign)
-                for (dest in listOfNotNull(
-                    a.accountId?.let { "ACCOUNT:$it" },
-                    a.consolidatedId?.let { "CONSOLIDATED:$it" },
-                    a.fromAccountId?.let { "ACCOUNT:$it" },
-                    a.fromConsolidatedId?.let { "CONSOLIDATED:$it" },
-                )) {
+                // Signos por rol de cada destino: en REASSIGN el origen
+                // (from*) PIERDE el remanente liberado (releasedAmount) y
+                // el destino nuevo GANA solo lo aplicado (amount, recotado
+                // al saldo del destino); ASSIGN suma al destino y UNASSIGN
+                // resta al origen declarado en accountId/consolidatedId.
+                val effects = mutableListOf<Pair<String, BigDecimal>>()
+                if (a.action == PaymentAssignmentAction.REASSIGN.name) {
+                    val released = (a.releasedAmount ?: a.amount).toMoney().negate()
+                    a.fromAccountId?.let { effects += "ACCOUNT:$it" to released }
+                    a.fromConsolidatedId?.let { effects += "CONSOLIDATED:$it" to released }
+                    val applied = a.amount.toMoney()
+                    a.accountId?.let { effects += "ACCOUNT:$it" to applied }
+                    a.consolidatedId?.let { effects += "CONSOLIDATED:$it" to applied }
+                } else {
+                    val sign = if (a.action == PaymentAssignmentAction.UNASSIGN.name) -1 else 1
+                    val amount = a.amount.toMoney() * BigDecimal(sign)
+                    for (dest in listOfNotNull(
+                        a.accountId?.let { "ACCOUNT:$it" },
+                        a.consolidatedId?.let { "CONSOLIDATED:$it" },
+                    )) effects += dest to amount
+                }
+                for ((dest, amount) in effects) {
                     val cur = acc[dest] ?: (BigDecimal.ZERO to BigDecimal.ZERO)
                     acc[dest] = if (kind == "pending") cur.first + amount to cur.second
                         else cur.first to cur.second + amount

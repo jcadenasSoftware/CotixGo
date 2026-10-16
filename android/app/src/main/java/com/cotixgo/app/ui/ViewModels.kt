@@ -484,10 +484,11 @@ class AppViewModel(
         }
     }
 
-    /** Restaura el estado remoto autoritativo de una pausada (explícito). */
-    fun restorePausedRemote(opId: String) {
+    /** Restaura el estado remoto autoritativo de una pausada (explícito);
+     *  descarta las ops locales en cola anunciadas en la confirmación. */
+    fun restorePausedRemote(opId: String, expectedPendingOps: Set<String> = emptySet()) {
         viewModelScope.launch {
-            val err = sync.restorePausedRemote(opId)
+            val err = sync.restorePausedRemote(opId, expectedPendingOps)
             lastSyncMessage.value = err ?: "Estado remoto restaurado."
             if (err == null) syncNow()
         }
@@ -502,10 +503,11 @@ class AppViewModel(
         }
     }
 
-    /** Descarte confirmado con vista previa verificada (pérdida explícita). */
-    fun discardPaused(opId: String, expectedRows: Int) {
+    /** Descarte confirmado con vista previa verificada (pérdida explícita):
+     *  la firma exacta del conjunto se revalida dentro de la transacción. */
+    fun discardPaused(opId: String, expectedSignature: Set<String>) {
         viewModelScope.launch {
-            val err = sync.discardPaused(opId, expectedRows)
+            val err = sync.discardPaused(opId, expectedSignature)
             lastSyncMessage.value = err ?: "Datos locales descartados; historial conservado."
             if (err == null) syncNow()
         }
