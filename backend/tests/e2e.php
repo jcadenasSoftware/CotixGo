@@ -1858,6 +1858,92 @@ check('f8_archivar_no_revierte',
     ($byId["purchase:$pur1"]['payload']['archived'] ?? false) === true
     && ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '0');
 
+// ---- Payloads fabricados contra una Compra CONFIRMADA ----
+// Regresión del defecto de edición: una actualización que declara
+// `items: []` sobre una compra confirmada no puede persistirse — el
+// documento, sus líneas, total, movimientos y stock quedan intactos.
+// Material dedicado para no perturbar los saldos ya verificados arriba.
+$matC = $u('f8100003');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => $mkMat($u('f8100040'), $matC, ['name' => 'Arena sílica'])], $token);
+check('f8_matC_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$pur2 = $u('f82000c1');
+$lC = $line($u('f82000c2'), $matC, '4', '25.00');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [
+        ['operation_id' => $u('f82000c0'), 'entity_type' => 'purchase', 'entity_id' => $pur2,
+         'type' => 'upsert', 'base_server_version' => 0,
+         'payload' => $purPayload('BORRADOR', [$lC], ['id' => $pur2])],
+        ['operation_id' => $u('f82000c3'), 'entity_type' => 'purchase', 'entity_id' => $pur2,
+         'type' => 'upsert', 'base_server_version' => 1,
+         'payload' => $purPayload('CONFIRMADA', [$lC], ['id' => $pur2])],
+    ]], $token);
+check('f8_pur2_confirmada_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED'
+    && ($r['results'][1]['status'] ?? '') === 'APPLIED', json_encode($r));
+$movsP2 = count(array_filter($pullById(),
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'
+        && ($ch['payload']['purchaseId'] ?? null) === $pur2));
+
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f82000d0'), 'entity_type' => 'purchase',
+        'entity_id' => $pur2, 'type' => 'upsert', 'base_server_version' => 2,
+        'payload' => $purPayload('CONFIRMADA', [], ['id' => $pur2])]]], $token);
+check('f8_confirmada_vaciar_lineas_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR'
+    && isset($r['results'][0]['server_state']), json_encode($r));
+$byId = $pullById();
+check('f8_confirmada_vaciada_no_persiste',
+    ($byId["purchase:$pur2"]['payload']['status'] ?? '') === 'CONFIRMADA'
+    && count($byId["purchase:$pur2"]['payload']['items'] ?? []) === 1
+    && ($byId["purchase:$pur2"]['payload']['totalAmount'] ?? '') === '100.00'
+    && ($byId["inventory_stock:$matC"]['payload']['stockNew'] ?? '') === '4'
+    && count(array_filter($byId,
+        fn($ch) => $ch['entity_type'] === 'inventory_movement'
+            && ($ch['payload']['purchaseId'] ?? null) === $pur2)) === $movsP2,
+    json_encode([$byId["purchase:$pur2"]['payload'] ?? null]));
+
+// Id de línea duplicado en el mismo documento → rechazo entero (un id
+// repetido colapsaría las líneas al persistir por clave en el cliente).
+$dupId = $u('f82000e2');
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f82000e0'), 'entity_type' => 'purchase',
+        'entity_id' => $u('f82000e1'), 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => $purPayload('BORRADOR',
+            [$line($dupId, $matC, '1', '10.00'), $line($dupId, $matC, '2', '20.00')],
+            ['id' => $u('f82000e1')])]]], $token);
+check('f8_linea_id_duplicado_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'VALIDATION_ERROR', json_encode($r));
+
+// Línea sin id: el servidor genera uno único en vez de persistir el
+// blanco (el blanco colisionaría con otras líneas sin id del documento).
+$pur3 = $u('f82000f1');
+$noId = $line('', $matC, '2', '15.00');
+unset($noId['id']);
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f82000f0'), 'entity_type' => 'purchase',
+        'entity_id' => $pur3, 'type' => 'upsert', 'base_server_version' => 0,
+        'payload' => $purPayload('BORRADOR', [$noId], ['id' => $pur3])]]], $token);
+check('f8_linea_sin_id_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED', json_encode($r));
+$byId = $pullById();
+$genId = $byId["purchase:$pur3"]['payload']['items'][0]['id'] ?? '';
+check('f8_linea_id_generado', is_string($genId) && $genId !== '', json_encode($genId));
+
+// El borrador sí admite quedar sin líneas (mínimo aprobado solo exige
+// línea para confirmar): una actualización legítima que las retira se
+// aplica y no genera movimientos.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f82000f2'), 'entity_type' => 'purchase',
+        'entity_id' => $pur3, 'type' => 'upsert', 'base_server_version' => 1,
+        'payload' => $purPayload('BORRADOR', [], ['id' => $pur3])]]], $token);
+check('f8_borrador_vaciar_APPLIED', ($r['results'][0]['status'] ?? '') === 'APPLIED',
+    json_encode($r));
+$byId = $pullById();
+check('f8_borrador_vaciado_sin_movimientos',
+    ($byId["purchase:$pur3"]['payload']['items'] ?? null) === []
+    && !array_filter($byId,
+        fn($ch) => $ch['entity_type'] === 'inventory_movement'
+            && ($ch['payload']['purchaseId'] ?? null) === $pur3));
+
 // ---- Movimientos append-only ----
 $movOp = fn(string $opId, string $id, array $payload) =>
     [['operation_id' => $opId, 'entity_type' => 'inventory_movement', 'entity_id' => $id,

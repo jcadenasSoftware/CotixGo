@@ -296,13 +296,23 @@ private fun CotixGoNavHost(
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
-                ClientFormScreen(
-                    initial = clients.firstOrNull { it.id == id },
-                    onSave = { input ->
-                        vm.saveClient(input, existingId = id) { nav.popBackStack() }
-                    },
-                    onBack = { nav.popBackStack() },
-                )
+                val client = clients.firstOrNull { it.id == id }
+                // No componer el formulario hasta cargar el Cliente: una
+                // primera composición vacía no es un estado definitivo y
+                // guardar pisaría los datos persistidos con campos vacíos.
+                if (client == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    ClientFormScreen(
+                        initial = client,
+                        onSave = { input ->
+                            vm.saveClient(input, existingId = id) { nav.popBackStack() }
+                        },
+                        onBack = { nav.popBackStack() },
+                    )
+                }
             }
             composable(
                 Routes.CLIENT_DETAIL,
@@ -563,16 +573,27 @@ private fun CotixGoNavHost(
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val report by vm.observeReport(id).collectAsStateWithLifecycle(null)
-                val reportLinks by vm.observeReportJobs(id).collectAsStateWithLifecycle(emptyList())
+                val reportLinks by vm.observeReportJobs(id)
+                    .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.ReportJobEntity>?)
+                val rep = report
+                val loadedLinks = reportLinks
+                // No componer el formulario hasta cargar Informe y vínculos:
+                // una primera composición vacía no es un estado definitivo.
+                if (rep == null || loadedLinks == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                    return@composable
+                }
                 ReportFormScreen(
-                    initial = report,
+                    initial = rep,
                     clients = clients,
-                    profile = profiles.firstOrNull { it.id == report?.profileId } ?: profiles.firstOrNull(),
+                    profile = profiles.firstOrNull { it.id == rep.profileId } ?: profiles.firstOrNull(),
                     jobs = jobs,
-                    linkedJobs = reportLinks.mapNotNull { l -> jobs.firstOrNull { it.id == l.jobId } },
+                    linkedJobs = loadedLinks.mapNotNull { l -> jobs.firstOrNull { it.id == l.jobId } },
                     linkableJobs = jobs.filter { j ->
-                        j.clientId == report?.clientId && j.profileId == report?.profileId &&
-                            !j.archived && reportLinks.none { it.jobId == j.id }
+                        j.clientId == rep.clientId && j.profileId == rep.profileId &&
+                            !j.archived && loadedLinks.none { it.jobId == j.id }
                     },
                     onBuildContent = { ids, cb -> vm.buildReportContent(ids, cb) },
                     onSave = { input ->
@@ -671,11 +692,24 @@ private fun CotixGoNavHost(
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val consolidated by vm.observeConsolidated(id).collectAsStateWithLifecycle(null)
-                val members by vm.observeConsolidatedMembers(id).collectAsStateWithLifecycle(emptyList())
-                val cons = consolidated ?: return@composable
+                val members by vm.observeConsolidatedMembers(id)
+                    .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.ConsolidatedCollectionAccountEntity>?)
+                val cons = consolidated
+                val loadedMembers = members
+                // No componer el editor hasta cargar el Consolidado y sus
+                // Cuentas miembro: una lista vacía previa a la primera
+                // emisión de Room no es un estado definitivo y, recordada
+                // como `initialMemberIds`, vaciaría los vínculos al
+                // guardar.
+                if (cons == null || loadedMembers == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                    return@composable
+                }
                 ConsolidatedEditorScreen(
                     initial = cons,
-                    initialMemberIds = members.map { it.accountId },
+                    initialMemberIds = loadedMembers.map { it.accountId },
                     clients = clients,
                     accounts = collectionAccounts,
                     memberAccountIds = activeMemberships
@@ -751,21 +785,39 @@ private fun CotixGoNavHost(
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val account by vm.observeCollectionAccount(id).collectAsStateWithLifecycle(null)
-                val items by vm.observeCollectionAccountItems(id).collectAsStateWithLifecycle(emptyList())
-                val jobLinks by vm.observeCollectionAccountJobs(id).collectAsStateWithLifecycle(emptyList())
-                val quoteLinks by vm.observeCollectionAccountQuotes(id).collectAsStateWithLifecycle(emptyList())
+                val items by vm.observeCollectionAccountItems(id)
+                    .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.CollectionAccountItemEntity>?)
+                val jobLinks by vm.observeCollectionAccountJobs(id)
+                    .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.CollectionAccountJobEntity>?)
+                val quoteLinks by vm.observeCollectionAccountQuotes(id)
+                    .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.CollectionAccountQuoteEntity>?)
                 val allJobLinks by vm.observeAllCollectionAccountJobs()
                     .collectAsStateWithLifecycle(emptyList())
                 val allQuoteLinks by vm.observeAllCollectionAccountQuotes()
                     .collectAsStateWithLifecycle(emptyList())
-                val acc = account ?: return@composable
+                val acc = account
+                val loadedItems = items
+                val loadedJobLinks = jobLinks
+                val loadedQuoteLinks = quoteLinks
+                // No componer el editor hasta cargar Cuenta, líneas y
+                // vínculos: las listas vacías previas a la primera emisión
+                // de Room no son un estado definitivo y, recordadas como
+                // `initial*`, borrarían líneas y vínculos al guardar
+                // (saveCollectionAccount sustituye las colecciones).
+                if (acc == null || loadedItems == null
+                    || loadedJobLinks == null || loadedQuoteLinks == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                    return@composable
+                }
                 val retNames = com.cotixgo.app.data.SnapshotJson.decodeRetentions(acc.retentionsSnapshotJson)
                     .map { it.name }
                 CollectionAccountEditorScreen(
                     initial = acc,
-                    initialItems = items,
-                    initialJobIds = jobLinks.map { it.jobId },
-                    initialQuoteIds = quoteLinks.map { it.quoteId },
+                    initialItems = loadedItems,
+                    initialJobIds = loadedJobLinks.map { it.jobId },
+                    initialQuoteIds = loadedQuoteLinks.map { it.quoteId },
                     clients = clients,
                     profile = profiles.firstOrNull { it.id == acc.profileId } ?: profiles.firstOrNull(),
                     user = user,
@@ -961,11 +1013,24 @@ private fun CotixGoNavHost(
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val purchase by vm.observePurchase(id).collectAsStateWithLifecycle(null)
-                val items by vm.observePurchaseItems(id).collectAsStateWithLifecycle(emptyList())
-                val p = purchase ?: return@composable
+                val items by vm.observePurchaseItems(id)
+                    .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.PurchaseItemEntity>?)
+                val p = purchase
+                val loadedItems = items
+                // No componer el editor hasta que Compra y líneas estén
+                // cargadas: `emptyList()` previo a la primera emisión de
+                // Room no es un estado definitivo y, recordado como
+                // `initialItems`, haría que Guardar borrara las líneas
+                // persistidas (savePurchase sustituye la lista completa).
+                if (p == null || loadedItems == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                    return@composable
+                }
                 PurchaseEditorScreen(
                     initial = p,
-                    initialItems = items,
+                    initialItems = loadedItems,
                     materials = materials.filter { !it.archived },
                     confirmError = null,
                     onSave = { input, confirm, done ->
