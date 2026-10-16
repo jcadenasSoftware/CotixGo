@@ -191,6 +191,38 @@ class InventoryRepositoryTest {
     }
 
     @Test
+    fun compra_confirmada_no_se_vacia() = runTest {
+        val userId = seedUser()
+        val m1 = repo.saveMaterial(MaterialInput(name = "Cemento", unit = "kg"))!!
+        assertNull(repo.savePurchase(purchaseInput(m1)))
+        val p1 = db.purchaseDao().observeForUser(userId).first().first()
+        assertNull(repo.confirmPurchase(p1.id))
+
+        // Regresión: una edición que declare items vacíos sobre una
+        // CONFIRMADA se rechaza en local (misma regla que el servidor) —
+        // las líneas persistidas no se borran.
+        assertNotNull(
+            repo.savePurchase(purchaseInput(m1).copy(items = emptyList()), p1.id),
+        )
+        val items = db.purchaseItemDao().forPurchase(p1.id)
+        assertEquals(1, items.size)
+        assertEquals("30.00", db.purchaseDao().get(p1.id)!!.totalAmount)
+        assertEquals("CONFIRMADA", db.purchaseDao().get(p1.id)!!.status)
+
+        // La edición válida con líneas sigue permitida en CONFIRMADA.
+        assertNull(repo.savePurchase(purchaseInput(m1, "7"), p1.id))
+        assertEquals(1, db.purchaseItemDao().forPurchase(p1.id).size)
+        assertEquals("7", db.purchaseItemDao().forPurchase(p1.id)[0].quantity)
+
+        // Y el borrador sí puede guardarse sin líneas (mínimo aprobado
+        // solo exige línea para confirmar).
+        assertNull(repo.savePurchase(purchaseInput(m1).copy(items = emptyList())))
+        val draft = db.purchaseDao().observeForUser(userId).first().first { it.id != p1.id }
+        assertEquals("BORRADOR", draft.status)
+        assertEquals(0, db.purchaseItemDao().forPurchase(draft.id).size)
+    }
+
+    @Test
     fun compra_guardarYConfirmar_encadena_alta_y_confirmacion() = runTest {
         val userId = seedUser()
         val m1 = repo.saveMaterial(MaterialInput(name = "Cemento", unit = "kg"))!!

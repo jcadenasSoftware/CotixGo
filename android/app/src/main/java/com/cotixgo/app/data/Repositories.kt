@@ -2408,6 +2408,12 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             if (confirm && cur == PurchaseStatus.CONFIRMADA) {
                 return "La compra ya está confirmada."
             }
+            // Una Compra CONFIRMADA no puede quedar sin líneas (mínimo
+            // aprobado del estado); el servidor lo rechaza igual que la
+            // confirmación. El borrador sí admite guardarse sin líneas.
+            if (cur == PurchaseStatus.CONFIRMADA && input.items.isEmpty()) {
+                return "Una compra confirmada requiere al menos una línea."
+            }
         }
         val materialNames = mutableMapOf<String, String>()
         for (it in input.items) {

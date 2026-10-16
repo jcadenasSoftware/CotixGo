@@ -2073,6 +2073,7 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
     // histórica); el total de línea y el total del documento se derivan
     // aquí — nunca se confía en los importes declarados.
     $normItems = [];
+    $seenItemIds = [];
     $totalCents = 0;
     foreach (array_values($itemsRaw) as $i => $raw) {
         $it = is_array($raw) ? $raw : [];
@@ -2115,9 +2116,22 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
         }
         $lineCents = purchaseLineCents($qty, $price);
         $totalCents += $lineCents;
+        // Id de línea íntegro dentro del documento: el cliente sustituye la
+        // lista completa al guardar y las claves por id; un id en blanco o
+        // repetido colapsaría líneas al re-descargar. En blanco se genera
+        // uno; un duplicado fabricado se rechaza entero.
+        $itemId = trim((string) ($it['id'] ?? ''));
+        if ($itemId === '') {
+            $itemId = uuid();
+        }
+        if (isset($seenItemIds[$itemId])) {
+            return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+                'Las líneas de la compra no pueden repetir su identificador.');
+        }
+        $seenItemIds[$itemId] = true;
         $matData = json_decode($mat['payload'], true) ?: [];
         $normItems[] = [
-            'id' => (string) ($it['id'] ?? ''),
+            'id' => $itemId,
             'position' => $i + 1,
             'materialId' => $matId,
             'materialNameSnapshot' => (string) ($matData['name'] ?? ''),
