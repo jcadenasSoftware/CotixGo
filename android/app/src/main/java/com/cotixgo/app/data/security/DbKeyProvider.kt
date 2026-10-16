@@ -32,15 +32,26 @@ object DbKeyProvider {
     private const val TAG_BITS = 128
     private const val PASS_LEN = 32
 
-    private fun blobFile(context: Context): File = File(context.filesDir, BLOB)
+    // Nombre de blob y alias inyectables solo para pruebas instrumentadas:
+    // la suite nunca debe tocar el blob ni la clave reales de la app (D2).
+    private var testBlobName: String? = null
+    private var testKeyAlias: String? = null
+
+    internal fun setTestHooks(blobName: String? = null, keyAlias: String? = null) {
+        testBlobName = blobName
+        testKeyAlias = keyAlias
+    }
+
+    private fun blobFile(context: Context): File = File(context.filesDir, testBlobName ?: BLOB)
 
     private fun secretKey(): SecretKey {
+        val alias = testKeyAlias ?: ALIAS
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
+        (ks.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         gen.init(
             KeyGenParameterSpec.Builder(
-                ALIAS,
+                alias,
                 KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
             )
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)

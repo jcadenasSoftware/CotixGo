@@ -35,27 +35,36 @@ class LocalEncryptionTest {
     private val ctx: Context
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
-    private val testDbName = "enc_test_fixture.db"
+    private val testDbName = TestIsolation.name("e2e-enc-fixture.db")
+    private val testMarker = TestIsolation.name("e2e-enc-migration.state")
+    private val testBlob = TestIsolation.name("e2e-enc-dbkey.bin")
+    private val testAlias = TestIsolation.name("e2e-enc-db-key")
 
     private val migrations = AppDatabase.ALL_MIGRATIONS
+
+    private lateinit var prodBefore: Map<String, String?>
 
     private fun dbFile() = ctx.getDatabasePath(testDbName)
     private fun tmpFile() = File(dbFile().path + ".enc.tmp")
     private fun bakFile() = File(dbFile().path + ".bak")
-    private fun markerFile() = File(ctx.filesDir, "db_migration.state")
-    private fun blobFile() = File(ctx.filesDir, "dbkey.bin")
+    private fun markerFile() = File(ctx.filesDir, testMarker)
+    private fun blobFile() = File(ctx.filesDir, testBlob)
 
     @Before
     fun setUp() {
         System.loadLibrary("sqlcipher")
-        DbMigrationManager.setTestHooks(dbName = testDbName)
+        prodBefore = TestIsolation.snapshotProd(ctx)
+        DbMigrationManager.setTestHooks(dbName = testDbName, markerName = testMarker)
+        DbKeyProvider.setTestHooks(blobName = testBlob, keyAlias = testAlias)
         clean()
     }
 
     @After
     fun tearDown() {
         DbMigrationManager.setTestHooks()
+        DbKeyProvider.setTestHooks()
         clean()
+        TestIsolation.assertProdUntouched(ctx, prodBefore)
     }
 
     private fun clean() {
@@ -115,11 +124,12 @@ class LocalEncryptionTest {
 
     @Test
     fun encryptedRoom_roundTrip_wrongPassFails() {
+        val roundtripDb = TestIsolation.name("e2e-enc-roundtrip.db")
         val pass = passphraseOf()
-        val f = ctx.getDatabasePath("enc_roundtrip.db")
+        val f = ctx.getDatabasePath(roundtripDb)
         f.delete()
 
-        val db = Room.databaseBuilder(ctx, AppDatabase::class.java, "enc_roundtrip.db")
+        val db = Room.databaseBuilder(ctx, AppDatabase::class.java, roundtripDb)
             .openHelperFactory(
                 net.zetetic.database.sqlcipher.SupportOpenHelperFactory(
                     pass.toByteArray(Charsets.US_ASCII),
@@ -137,7 +147,7 @@ class LocalEncryptionTest {
         assertFalse("La base cifrada no debe tener cabecera SQLite en claro", isClearSqlite(f))
 
         // Reabrir con la passphrase correcta funciona.
-        val db2 = Room.databaseBuilder(ctx, AppDatabase::class.java, "enc_roundtrip.db")
+        val db2 = Room.databaseBuilder(ctx, AppDatabase::class.java, roundtripDb)
             .openHelperFactory(
                 net.zetetic.database.sqlcipher.SupportOpenHelperFactory(
                     pass.toByteArray(Charsets.US_ASCII),
@@ -151,7 +161,7 @@ class LocalEncryptionTest {
         db2.close()
 
         // Passphrase incorrecta → fallo al consultar (fail-closed).
-        val wrong = Room.databaseBuilder(ctx, AppDatabase::class.java, "enc_roundtrip.db")
+        val wrong = Room.databaseBuilder(ctx, AppDatabase::class.java, roundtripDb)
             .openHelperFactory(
                 net.zetetic.database.sqlcipher.SupportOpenHelperFactory(
                     "00".repeat(32).toByteArray(Charsets.US_ASCII),
@@ -278,7 +288,9 @@ class LocalEncryptionTest {
     @Test
     fun insufficientSpace_failsClosed() {
         seedClearV9().close()
-        DbMigrationManager.setTestHooks(dbName = testDbName, spaceProbe = { 0L })
+        DbMigrationManager.setTestHooks(
+            dbName = testDbName, markerName = testMarker, spaceProbe = { 0L },
+        )
         try {
             DbMigrationManager.ensureReady(ctx)
             fail("Espacio insuficiente debe bloquear")
@@ -311,7 +323,7 @@ class LocalEncryptionTest {
     fun verificationFailure_blocks_noClearServed() {
         seedClearV9().close()
         DbMigrationManager.setTestHooks(
-            dbName = testDbName,
+            dbName = testDbName, markerName = testMarker,
             verify = { false },
         )
         try {
@@ -335,7 +347,7 @@ class LocalEncryptionTest {
         // Simular fallo de borrado de artefactos claros.
         val realDelete = { f: File -> f.delete() }
         DbMigrationManager.setTestHooks(
-            dbName = testDbName,
+            dbName = testDbName, markerName = testMarker,
             delete = { f -> if (f.name.endsWith(".bak")) false else realDelete(f) },
         )
         try {
@@ -348,7 +360,7 @@ class LocalEncryptionTest {
         assertTrue("El artefacto claro persiste", bakFile().exists())
 
         // En cada arranque se reintenta; al recuperar el borrado, desbloquea.
-        DbMigrationManager.setTestHooks(dbName = testDbName)
+        DbMigrationManager.setTestHooks(dbName = testDbName, markerName = testMarker)
         DbMigrationManager.ensureReady(ctx)
         assertEquals(DbMigrationManager.State.MIGRATED, DbMigrationManager.currentState(ctx))
         assertFalse(bakFile().exists())

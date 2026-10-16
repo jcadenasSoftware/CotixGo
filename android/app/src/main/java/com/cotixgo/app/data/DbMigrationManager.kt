@@ -49,21 +49,32 @@ object DbMigrationManager {
     }
     private var verifyHook: ((File) -> Boolean)? = null
     private var testDbName: String? = null
+    private var testMarkerName: String? = null
 
     internal fun setTestHooks(
         delete: ((File) -> Boolean)? = null,
         spaceProbe: ((File) -> Long)? = null,
         verify: ((File) -> Boolean)? = null,
         dbName: String? = null,
+        markerName: String? = null,
     ) {
         deleter = delete ?: { it.delete() }
         freeSpaceProbe = spaceProbe ?: { StatFs(it.absolutePath).run { availableBlocksLong * blockSizeLong } }
         verifyHook = verify
         testDbName = dbName
+        testMarkerName = markerName
     }
 
-    private fun markerFile(context: Context) = File(context.filesDir, MARKER)
-    private fun dbFile(context: Context) = context.getDatabasePath(testDbName ?: DB_NAME)
+    /**
+     * Nombre de la base que sirve la migración: en producción `cotixgo.db`;
+     * con hook de prueba, el nombre inyectado. [AppDatabase.get] abre
+     * exactamente este archivo para que el camino migrado y el servido
+     * nunca diverjan (D2: las pruebas no tocan la base real).
+     */
+    internal fun resolvedDbName(): String = testDbName ?: DB_NAME
+
+    private fun markerFile(context: Context) = File(context.filesDir, testMarkerName ?: MARKER)
+    private fun dbFile(context: Context) = context.getDatabasePath(resolvedDbName())
     private fun tmpFile(context: Context) = File(dbFile(context).path + ".enc.tmp")
     private fun bakFile(context: Context) = File(dbFile(context).path + ".bak")
 

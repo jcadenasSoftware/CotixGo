@@ -34,7 +34,6 @@ class AuthRepository(
                 email.trim(),
                 res.str("token") ?: return "Respuesta inválida del servidor.",
             )
-            null
         } catch (e: ApiException) {
             e.message
         } catch (e: Exception) {
@@ -49,7 +48,6 @@ class AuthRepository(
             val userId = res.str("user_id") ?: return "Respuesta inválida del servidor."
             val token = res.str("token") ?: return "Respuesta inválida del servidor."
             sync.bindAccount(userId, email.trim(), token)
-            null
         } catch (e: ApiException) {
             e.message
         } catch (e: Exception) {
@@ -109,7 +107,8 @@ class AuthRepository(
         // no debe volver a persistir la sesión vieja sobre la copia limpia).
         session.clearSession()
         sync.wipeLocalData()
-        sync.bindAccount(userId, newEmail.trim(), token)
-        return null
+        // Tras el wipe la copia está vacía: bindAccount solo puede fallar por
+        // un estado inconsistente; el error se propaga igualmente a la UI.
+        return sync.bindAccount(userId, newEmail.trim(), token)
     }
 }

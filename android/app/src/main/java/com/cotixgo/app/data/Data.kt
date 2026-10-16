@@ -1524,6 +1524,7 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
+        @Volatile private var openedDbName: String? = null
 
         /** Migración v1→v2: tablas de F2 + moneda del usuario + vigencia del Perfil. */
         private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
@@ -2026,8 +2027,19 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
         )
 
-        fun get(context: Context): AppDatabase =
-            instance ?: synchronized(this) {
+        fun get(context: Context): AppDatabase {
+            // El archivo servido es siempre el que la migración preparó:
+            // en producción cotixgo.db; con hook de prueba, el nombre
+            // inyectado. Una instancia abierta con otro nombre es un error
+            // de aislamiento de pruebas — fallar en lugar de servirla.
+            val name = DbMigrationManager.resolvedDbName()
+            instance?.let {
+                check(openedDbName == name) {
+                    "AppDatabase ya abierta como '$openedDbName'; se pidió '$name'"
+                }
+                return it
+            }
+            return synchronized(this) {
                 instance ?: run {
                     // Gate exclusivo: migración fail-closed a base cifrada
                     // (SQLCipher) antes de cualquier apertura. Lanza
@@ -2036,18 +2048,20 @@ abstract class AppDatabase : RoomDatabase() {
                     Room.databaseBuilder(
                         context.applicationContext,
                         AppDatabase::class.java,
-                        "cotixgo.db",
+                        name,
                     )
                         .openHelperFactory(DbMigrationManager.encryptedFactory(context))
                         .addMigrations(*ALL_MIGRATIONS)
-                        .build().also { instance = it }
+                        .build().also { instance = it; openedDbName = name }
                 }
             }
+        }
 
         /** Solo para pruebas: cierra y olvida el singleton. */
         internal fun resetForTest() = synchronized(this) {
             instance?.close()
             instance = null
+            openedDbName = null
         }
     }
 }
