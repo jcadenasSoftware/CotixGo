@@ -270,6 +270,23 @@ fun ConflictsScreen(
                             Text("… y ${pv.rows.size - 8} más",
                                 style = MaterialTheme.typography.bodySmall)
                         }
+                        if (pv.discardedOps.isNotEmpty()) {
+                            Text(
+                                "Se descartarán ${pv.discardedOps.size} operación(es) en cola de esta entidad y su cascada (su historial se conserva):",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            pv.discardedOps.take(8).forEach { o ->
+                                Text(
+                                    "· ${o.entityType} — op ${o.opId.take(8)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                )
+                            }
+                            if (pv.discardedOps.size > 8) {
+                                Text("… y ${pv.discardedOps.size - 8} más",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                         if (pv.waitingDependents.isNotEmpty()) {
                             Text(
                                 "${pv.waitingDependents.size} operación(es) que esperaban este dato quedarán marcadas como sin prerequisito.",

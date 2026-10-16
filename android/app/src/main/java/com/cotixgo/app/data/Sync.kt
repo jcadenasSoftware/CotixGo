@@ -2062,16 +2062,25 @@ class SyncRepository(
         val rows: List<DiscardRow>,
         val blockers: List<String>,
         val waitingDependents: List<SyncOperationEntity>,
+        /**
+         * Operaciones cuyo estado cambiará al confirmar: las sin resolver
+         * de la entidad raíz más las de cada fila de la cascada (quedan
+         * DONE con DISCARDED_LOCAL / DISCARDED_CASCADE). No incluye los
+         * dependientes en espera (esos pasan a PREREQUISITE_DISCARDED).
+         */
+        val discardedOps: List<SyncOperationEntity>,
     ) {
         /**
          * Identidad exacta de lo que se descartaría: "tabla:id" por fila
-         * de la cascada más "dep:opId" por cada operación dependiente que
-         * quedaría marcada. La confirmación revalida este conjunto dentro
-         * de la transacción — un cambio de contenido con el mismo número
-         * de filas no pasa desapercibido (revisión del PR #24).
+         * de la cascada, "op:opId" por cada operación que quedará
+         * descartada y "dep:opId" por cada dependiente que quedará
+         * marcado. La confirmación revalida este conjunto dentro de la
+         * transacción — un cambio de contenido con el mismo número de
+         * elementos no pasa desapercibido (revisión del PR #24).
          */
         fun signature(): Set<String> =
             rows.mapTo(mutableSetOf()) { "${it.table}:${it.id}" } +
+                discardedOps.mapTo(mutableSetOf()) { "op:${it.opId}" } +
                 waitingDependents.mapTo(mutableSetOf()) { "dep:${it.opId}" }
     }
 
@@ -2214,18 +2223,37 @@ class SyncRepository(
         if (syncedDesc.isNotEmpty()) {
             blockers += "${syncedDesc.size} descendiente(s) ya sincronizados no pueden eliminarse"
         }
+        // Conjunto exacto de operaciones cuyo estado cambiará: las de la
+        // entidad raíz (aunque su fila no exista localmente) más las de
+        // cada fila de la cascada. Determinista y deduplicado por opId.
+        val discarded = LinkedHashMap<String, SyncOperationEntity>()
+        for (o in db.syncDao().pendingOpsForEntity(op.entityType, op.entityId)) {
+            discarded[o.opId] = o
+        }
+        for (row in rows) {
+            for (o in db.syncDao().pendingOpsForEntity(row.entityType, row.id)) {
+                discarded.putIfAbsent(o.opId, o)
+            }
+        }
+        discarded.putIfAbsent(op.opId, op)
+        // Los dependientes en espera excluyen las ops ya cubiertas por el
+        // descarte (esas quedan DONE en cascada, no PREREQUISITE_DISCARDED).
         val waiting = dependentsOf(rows.map { it.entityType to it.id }.toSet())
-        return DiscardPreview(rows, blockers, waiting)
+            .filter { it.opId !in discarded }
+        return DiscardPreview(rows, blockers, waiting, discarded.values.toList())
     }
 
     /**
      * Descarte explícito de una entidad nunca sincronizada (o residuo
      * ajeno): elimina filas locales y descendientes en cascada tras
      * verificar la vista previa. La confirmación recibe la FIRMA exacta
-     * del conjunto (filas "tabla:id" + dependientes "dep:opId") y se
-     * revalida DENTRO de la transacción antes de borrar — no basta con
-     * el número de filas: si el contenido cambió aunque el total sea
-     * igual (concurrencia), se aborta y se pide una vista previa nueva.
+     * del conjunto — filas "tabla:id", operaciones a descartar "op:opId"
+     * (raíz + cascada) y dependientes "dep:opId" — revalidada DENTRO de
+     * la transacción junto con el estado PAUSED de la raíz antes de
+     * borrar o cambiar estados: si el contenido o el estado cambió
+     * (concurrencia), se aborta sin mutaciones y se pide una vista
+     * previa nueva. Solo se marcan las operaciones del conjunto
+     * confirmado; ninguna op aparecida después se consulta ni toca.
      * Nunca borra el historial de operaciones: cada op queda DONE con
      * código descriptivo y su payload conservado. Los dependientes que
      * esperaban se marcan PREREQUISITE_DISCARDED.
@@ -2241,37 +2269,40 @@ class SyncRepository(
         val now = nowEpochMillis()
         var completed = false
         db.withTransaction {
-            // Revalidación atómica del conjunto exacto a borrar dentro de
-            // la transacción: la vista previa pudo quedar obsoleta entre
-            // el cálculo y la confirmación del usuario.
+            // Revalidación atómica dentro de la transacción: la vista
+            // previa pudo quedar obsoleta entre su cálculo y la
+            // confirmación del usuario.
             val inside = discardPreview(op)
             if (inside.blockers.isNotEmpty() || inside.signature() != expectedSignature) {
+                return@withTransaction
+            }
+            // El estado de la raíz también se revalida aquí: una
+            // resolución concurrente (reintento, restauración) entre la
+            // lectura inicial y la transacción aborta sin mutaciones.
+            if (db.syncDao().opById(op.opId)?.state != "PAUSED") {
                 return@withTransaction
             }
             for (row in inside.rows) {
                 db.openHelper.writableDatabase
                     .execSQL("DELETE FROM `${row.table}` WHERE `id` = ?", arrayOf(row.id))
-                for (childOp in db.syncDao().pendingOpsForEntity(row.entityType, row.id)) {
-                    val code = if (row.id == op.entityId) Rejections.RES_DISCARDED
-                        else Rejections.RES_CASCADE_DISCARDED
-                    db.syncDao().updateOpResult(
-                        childOp.opId, "DONE",
-                        resolutionResult(childOp, code, now, "descarte de ${op.entityType}:${op.entityId}"),
-                        code, now,
-                    )
-                }
             }
-            // El op raíz puede no estar ligada a fila (forbidden/reference):
-            if (inside.rows.none { it.entityType == op.entityType && it.id == op.entityId }) {
+            // Solo se marcan las operaciones del conjunto confirmado
+            // (signature() ya garantizó que inside.discardedOps es exacto);
+            // nada se vuelve a consultar para marcar ops aparecidas después.
+            for (o in inside.discardedOps) {
+                val code = if (o.entityType == op.entityType && o.entityId == op.entityId) {
+                    Rejections.RES_DISCARDED
+                } else {
+                    Rejections.RES_CASCADE_DISCARDED
+                }
                 db.syncDao().updateOpResult(
-                    op.opId, "DONE",
-                    resolutionResult(op, Rejections.RES_DISCARDED, now),
-                    Rejections.RES_DISCARDED, now,
+                    o.opId, "DONE",
+                    resolutionResult(o, code, now, "descarte de ${op.entityType}:${op.entityId}"),
+                    code, now,
                 )
             }
-            val discarded = inside.rows.map { it.entityType to it.id }.toSet() +
-                (op.entityType to op.entityId)
-            for (dep in dependentsOf(discarded)) {
+            // Dependientes en espera: también del conjunto confirmado.
+            for (dep in inside.waitingDependents) {
                 if (dep.state == "PAUSED" && dep.resultCode !in Rejections.RELEASABLE_CODES) continue
                 db.syncDao().updateOpResult(
                     dep.opId, "PAUSED",

@@ -972,4 +972,168 @@ class PausedOpResolutionTest {
         assertTrue(effects.values.all { it.pending.compareTo(BigDecimal.ZERO) == 0 })
         assertEquals("0.00", db.collectionAccountDao().get("acc-src")!!.serverAppliedAmount)
     }
+
+    /**
+     * La vista previa incluye las ops PENDING/RETRY de la entidad raíz en
+     * el conjunto a descartar y en la firma: confirmar marca solo ese
+     * conjunto, con historial (payload+resultado) conservado.
+     */
+    @Test
+    fun discard_pendingOpsOfEntity_inPreviewAndSignature_markedWithHistory() = runBlocking {
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Cliente con cola",
+            ),
+        )
+        val client = db.clientDao().observeForUser(session.accountUserId!!).first().first()
+        val paused = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id).first()
+
+        fake.scripted = true
+        fake.respond = { o ->
+            if (o.str("entity_type") == EntityTypes.CLIENT) {
+                FakeSyncApi.rejected(o, "VALIDATION_ERROR", "rechazo")
+            } else {
+                FakeSyncApi.applied(o)
+            }
+        }
+        sync.syncNow()
+        assertEquals("PAUSED", db.syncDao().opById(paused.opId)!!.state)
+
+        // Op PENDING posterior sobre la misma entidad.
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Edición en cola",
+            ),
+            existingId = client.id,
+        )
+        val pending = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id)
+            .first { it.opId != paused.opId }
+
+        val preview = sync.discardPreview(db.syncDao().opById(paused.opId)!!)
+        // El conjunto y la firma incluyen ambas operaciones explícitamente.
+        assertEquals(setOf(paused.opId, pending.opId), preview.discardedOps.map { it.opId }.toSet())
+        assertTrue(preview.signature().contains("op:${pending.opId}"))
+        assertTrue(preview.signature().contains("op:${paused.opId}"))
+
+        assertNull(sync.discardPaused(paused.opId, preview.signature()))
+        assertNull(db.clientDao().get(client.id))
+        val closedPaused = db.syncDao().opById(paused.opId)!!
+        val closedPending = db.syncDao().opById(pending.opId)!!
+        assertEquals("DONE", closedPaused.state)
+        assertEquals("DISCARDED_LOCAL", closedPaused.resultCode)
+        assertEquals("DONE", closedPending.state)
+        assertEquals("DISCARDED_LOCAL", closedPending.resultCode)
+        // Historial íntegro: payloads conservados, ops no borradas.
+        assertTrue(closedPending.payloadJson.contains("Edición en cola"))
+        assertTrue(closedPaused.payloadJson.contains("Cliente con cola"))
+        assertEquals(2, db.syncDao().allOpsForEntity(EntityTypes.CLIENT, client.id).size)
+    }
+
+    /**
+     * Una op nueva o modificada entre vista previa y confirmación — aquí
+     * con el MISMO número total de ops (una sale DONE y entra otra) —
+     * cambia la firma y aborta el descarte sin mutaciones.
+     */
+    @Test
+    fun discard_pendingOpSwappedAfterPreview_abortsWithoutMutations() = runBlocking {
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Cliente swap",
+            ),
+        )
+        val client = db.clientDao().observeForUser(session.accountUserId!!).first().first()
+        val paused = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id).first()
+
+        fake.scripted = true
+        fake.respond = { o ->
+            if (o.str("entity_type") == EntityTypes.CLIENT) {
+                FakeSyncApi.rejected(o, "VALIDATION_ERROR", "rechazo")
+            } else {
+                FakeSyncApi.applied(o)
+            }
+        }
+        sync.syncNow()
+
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Edición A",
+            ),
+            existingId = client.id,
+        )
+        val opA = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id)
+            .first { it.opId != paused.opId }
+        val preview = sync.discardPreview(db.syncDao().opById(paused.opId)!!)
+        assertEquals(2, preview.discardedOps.size)
+
+        // Mismo total (2): opA queda DONE y aparece opB en su lugar.
+        db.syncDao().updateOpResult(
+            opA.opId, "DONE", """{"code":"DISCARDED_LOCAL"}""",
+            "DISCARDED_LOCAL", nowEpochMillis(),
+        )
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Edición B",
+            ),
+            existingId = client.id,
+        )
+        val opB = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id)
+            .first { it.state == "PENDING" }
+
+        // La firma capturada ya no representa el conjunto: aborta y nada
+        // cambió — la fila existe, opB sigue PENDING y la pausada igual.
+        assertNotNull(sync.discardPaused(paused.opId, preview.signature()))
+        assertNotNull(db.clientDao().get(client.id))
+        assertEquals("PENDING", db.syncDao().opById(opB.opId)!!.state)
+        assertEquals("PAUSED", db.syncDao().opById(paused.opId)!!.state)
+        assertNull(db.syncDao().opById(opB.opId)!!.resultCode)
+
+        // Vista previa vigente → firma exacta → el descarte procede y
+        // marca precisamente el nuevo conjunto.
+        val fresh = sync.discardPreview(db.syncDao().opById(paused.opId)!!)
+        assertEquals(setOf(paused.opId, opB.opId), fresh.discardedOps.map { it.opId }.toSet())
+        assertNull(sync.discardPaused(paused.opId, fresh.signature()))
+        assertNull(db.clientDao().get(client.id))
+        assertEquals("DISCARDED_LOCAL", db.syncDao().opById(opB.opId)!!.resultCode)
+        assertEquals("DISCARDED_LOCAL", db.syncDao().opById(paused.opId)!!.resultCode)
+        // opA conserva su propio resultado: no fue re-marcada.
+        assertEquals("DISCARDED_LOCAL", db.syncDao().opById(opA.opId)!!.resultCode)
+    }
+
+    /**
+     * Cambio concurrente del estado de la raíz: si la operación dejó de
+     * estar PAUSED (resuelta por otro camino), la confirmación aborta sin
+     * borrar ni marcar nada — la revalidación se hace también dentro de
+     * la transacción para cubrir el cambio en pleno vuelo.
+     */
+    @Test
+    fun discard_rootOpResolvedConcurrently_abortsWithoutMutations() = runBlocking {
+        repo.saveClient(
+            com.cotixgo.app.core.ClientInput(
+                type = com.cotixgo.app.core.ClientType.PERSONA, name = "Cliente concurrente",
+            ),
+        )
+        val client = db.clientDao().observeForUser(session.accountUserId!!).first().first()
+        val paused = db.syncDao().pendingOpsForEntity(EntityTypes.CLIENT, client.id).first()
+
+        fake.scripted = true
+        fake.respond = { o ->
+            if (o.str("entity_type") == EntityTypes.CLIENT) {
+                FakeSyncApi.rejected(o, "VALIDATION_ERROR", "rechazo")
+            } else {
+                FakeSyncApi.applied(o)
+            }
+        }
+        sync.syncNow()
+        val preview = sync.discardPreview(db.syncDao().opById(paused.opId)!!)
+        assertTrue(preview.blockers.isEmpty())
+
+        // La raíz se resolvió por otro camino antes de la confirmación.
+        db.syncDao().updateOpResult(
+            paused.opId, "DONE", """{"code":"RESTORED_FROM_REMOTE"}""",
+            "RESTORED_FROM_REMOTE", nowEpochMillis(),
+        )
+        assertNotNull(sync.discardPaused(paused.opId, preview.signature()))
+        assertNotNull(db.clientDao().get(client.id))
+        assertEquals("RESTORED_FROM_REMOTE", db.syncDao().opById(paused.opId)!!.resultCode)
+    }
 }

@@ -134,3 +134,38 @@ Suite completa: OK (126 tests), 0 fallos.
 
 Archivos protegidos del entorno local (NO incluidos): sin cambios
 respecto a la nota anterior; permanecen fuera del commit.
+
+==============================================================
+Tercera corrida — hallazgo de firma de descarte (PR #24).
+HEAD previo: 3693fd0.
+
+Cambio verificado en esta ronda:
+  discardPaused: la vista previa ahora declara el conjunto exacto
+  de operaciones cuyo estado cambiara (ops sin resolver de la
+  entidad raiz + ops de cada fila de la cascada), la firma lo
+  incluye como "op:opId", la confirmacion muestra su conteo y
+  detalle, y dentro de la transaccion se revalida (a) la firma
+  completa y (b) que la raiz sigue PAUSED. Solo se marcan las
+  operaciones del conjunto confirmado: ninguna op aparecida
+  despues se vuelve a consultar ni tocar.
+
+== Backend E2E (esta corrida, sin cambios PHP) ==
+
+php -c backend/dev.ini backend/tests/e2e.php
+Resultado: 260 passed, 0 failed.
+
+== Pruebas instrumentadas (SOLO emulator-5556, esta corrida) ==
+
+PausedOpResolutionTest: OK (17 tests) — 3 casos nuevos:
+  discard_pendingOpsOfEntity_inPreviewAndSignature_markedWithHistory
+  discard_pendingOpSwappedAfterPreview_abortsWithoutMutations
+  discard_rootOpResolvedConcurrently_abortsWithoutMutations
+Suite completa: OK (129 tests), 0 fallos.
+  Time: 354.87s
+
+== JVM unitarias / builds (esta corrida) ==
+
+./gradlew :app:testDebugUnitTest — BUILD SUCCESSFUL
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest — BUILD SUCCESSFUL
+
+Archivos protegidos del entorno local (NO incluidos): sin cambios.
