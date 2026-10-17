@@ -175,6 +175,45 @@ class SyncE2eTest {
         assertTrue(db.clientDao().observeForUser(session.accountUserId!!).first().isNotEmpty())
     }
 
+    /** F8/regresión: una Compra anulada en el servidor debe materializarse
+     *  como ANULADA en un pull inicial (reinstalación). Antes el servidor
+     *  persistía payload.status=CONFIRMADA aunque la columna autoritativa
+     *  fuera ANULADA y el documento resucitaba como confirmado. */
+    @Test
+    fun pullRestoresPurchaseAsAnnulled() = runBlocking {
+        val userId = session.accountUserId!!
+        val materialId = repo.saveMaterial(
+            com.cotixgo.app.data.MaterialInput(name = "Cable E2E", unit = "m"),
+        )!!
+        repo.savePurchase(
+            com.cotixgo.app.data.PurchaseInput(
+                purchaseDateEpochDay = LocalDate.now().toEpochDay(),
+                items = listOf(
+                    com.cotixgo.app.data.PurchaseLineInput(
+                        materialId = materialId, quantity = "5",
+                        unit = "m", unitPrice = "100.00",
+                    ),
+                ),
+            ),
+        )
+        val purchaseId = db.purchaseDao().observeForUser(userId).first().first().id
+        repo.confirmPurchase(purchaseId)
+        sync.syncNow()
+        assertNull(repo.annulPurchase(purchaseId))
+        sync.syncNow()
+        assertEquals("ANULADA", db.purchaseDao().get(purchaseId)!!.status)
+
+        // Reinstalación: la descarga inicial debe traer el estado terminal,
+        // no el status que el payload persistía antes de la corrección.
+        sync.wipeLocalData()
+        session.setCursor(0)
+        sync.pullAll()
+        val restored = db.purchaseDao().get(purchaseId)
+        assertNotNull(restored)
+        assertEquals("ANULADA", restored!!.status)
+        assertTrue(!restored.pendingSync)
+    }
+
     @Test
     fun concurrentEdit_createsConflict_bothCopiesPreserved() = runBlocking {
         repo.saveClient(

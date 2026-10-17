@@ -77,6 +77,13 @@ const DEPENDENCIES = [
 function serverState(array $row): array
 {
     $state = json_decode($row['payload'], true) ?: [];
+    // La columna `status` es autoritativa sobre el `status` del payload:
+    // un documento persistido por una ruta que restaura el payload previo
+    // (p. ej. la anulación de Compra) puede quedar con el estado anterior
+    // en el JSON; el cliente reconstruye su estado desde payload.status.
+    if ($row['status'] !== null) {
+        $state['status'] = $row['status'];
+    }
     $state['official_number'] = $row['official_number'];
     $state['has_version_conflict'] = (int) ($row['has_version_conflict'] ?? 0) === 1;
     $state['server_version'] = (int) ($row['server_version'] ?? 0);
@@ -2195,6 +2202,7 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
         }
         $archived = (bool) ($payload['archived'] ?? false);
         $payload = $prevData;
+        $payload['status'] = 'ANULADA';
         $payload['archived'] = $archived;
         updateEntity($pdo, 'purchase', $entityId, $locked, $payload,
             'ANULADA', $locked['official_number']);
@@ -2279,6 +2287,9 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
     if ($newStatus === 'ANULADA') {
         $archived = (bool) ($payload['archived'] ?? false);
         $payload = $prevData;
+        // La columna pasa a ANULADA y el payload debe contar la misma
+        // historia: el cliente reconstruye su estado desde payload.status.
+        $payload['status'] = 'ANULADA';
         $payload['archived'] = $archived;
         $normItems = $prevItems; // trazabilidad del audit
     }
@@ -2662,7 +2673,7 @@ function handlePull(): void
     $cursor = (int) ($_GET['cursor'] ?? 0);
     $stmt = db()->prepare(
         'SELECT entity_type, id, server_version, server_seq, server_order, official_number,
-                has_version_conflict, payload
+                has_version_conflict, status, payload
          FROM entities WHERE user_id = ? AND server_seq > ?
          ORDER BY server_seq ASC LIMIT 500'
     );
@@ -2670,6 +2681,14 @@ function handlePull(): void
     $changes = [];
     $next = $cursor;
     foreach ($stmt->fetchAll() as $row) {
+        $payload = json_decode($row['payload'], true);
+        // Misma curación que serverState(): la columna `status` manda sobre
+        // el `status` del JSON persistido, de modo que una fila escrita
+        // antes de la corrección (columna ANULADA / payload CONFIRMADA)
+        // ya no resucite como confirmada en el cliente que la descarga.
+        if ($row['status'] !== null && is_array($payload)) {
+            $payload['status'] = $row['status'];
+        }
         $changes[] = [
             'entity_type' => $row['entity_type'],
             'entity_id' => $row['id'],
@@ -2678,7 +2697,7 @@ function handlePull(): void
             'server_order' => $row['server_order'] === null ? null : (int) $row['server_order'],
             'official_number' => $row['official_number'],
             'has_version_conflict' => (int) $row['has_version_conflict'] === 1,
-            'payload' => json_decode($row['payload'], true),
+            'payload' => $payload,
         ];
         $next = max($next, (int) $row['server_seq']);
     }
