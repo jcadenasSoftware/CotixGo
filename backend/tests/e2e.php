@@ -1897,6 +1897,35 @@ check('f8_edicion_post_anulada_REJECTED', ($r['results'][0]['status'] ?? '') ===
     && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION'
     && ($r['results'][0]['server_state']['status'] ?? '') === 'ANULADA', json_encode($r));
 
+// La proyección se limita a los tipos con estado documental: toda fila
+// servida de quote/job/report/collection_account/consolidated_collection/
+// purchase lleva un `status` canónico no vacío, mientras que `payment`
+// (columna = assignmentStatus) e `inventory_movement` (columna =
+// movementType) llegan sin la clave `status` añadida — sus payloads no
+// la definen y la columna no es un estado documental.
+$byId = $pullById();
+$docOk = true;
+foreach (['quote', 'job', 'report', 'collection_account',
+          'consolidated_collection', 'purchase'] as $t) {
+    foreach ($byId as $ch) {
+        if ($ch['entity_type'] === $t
+            && !is_string($ch['payload']['status'] ?? null)) {
+            $docOk = false;
+        }
+    }
+}
+$anyPay = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'payment'))[0] ?? null;
+$anyMov = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'))[0] ?? null;
+check('f8_pull_status_solo_tipos_documentales', $docOk
+    && $anyPay !== null && !array_key_exists('status', $anyPay['payload'])
+    && ($anyPay['payload']['assignmentStatus'] ?? '') !== ''
+    && $anyMov !== null && !array_key_exists('status', $anyMov['payload'])
+    && ($anyMov['payload']['movementType'] ?? '') !== '',
+    json_encode(['pay' => $anyPay['payload'] ?? null,
+                 'mov' => $anyMov['payload'] ?? null]));
+
 // ---- Payloads fabricados contra una Compra CONFIRMADA ----
 // Regresión del defecto de edición: una actualización que declara
 // `items: []` sobre una compra confirmada no puede persistirse — el
