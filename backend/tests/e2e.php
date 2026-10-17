@@ -1858,6 +1858,74 @@ check('f8_archivar_no_revierte',
     ($byId["purchase:$pur1"]['payload']['archived'] ?? false) === true
     && ($byId["inventory_stock:$matA"]['payload']['stockNew'] ?? '') === '0');
 
+// ---- Regresión: payload.status debe reflejar la columna autoritativa ----
+// Defecto: la anulación restauraba el payload previo conservando
+// status=CONFIRMADA aunque la columna quedara ANULADA; un pull (inicial o
+// incremental) servía la compra anulada como confirmada y una
+// reinstalación la resucitaba con acciones de edición. Ahora el payload
+// persistido lleva ANULADA y, en lectura, la columna siempre manda.
+check('f8_pull_anulada_status',
+    ($byId["purchase:$pur1"]['payload']['status'] ?? '') === 'ANULADA'
+    && ($byId["purchase:$pur1"]['official_number'] ?? '') !== ''
+    && count($byId["purchase:$pur1"]['payload']['items'] ?? []) === 1
+    && ($byId["purchase:$pur1"]['payload']['items'][0]['quantity'] ?? '') === '12'
+    && ($byId["purchase:$pur1"]['payload']['totalAmount'] ?? '') === '1200.00',
+    json_encode($byId["purchase:$pur1"]['payload']['status'] ?? null));
+
+// Fila legada: columna ANULADA pero payload almacenado con status
+// CONFIRMADA (estado pre-corrección). El pull debe servir la columna
+// autoritativa sin tocar líneas, total ni número oficial.
+$pdo->prepare(
+    "UPDATE entities SET payload = JSON_SET(payload, '$.status', 'CONFIRMADA')
+     WHERE entity_type = 'purchase' AND id = ?"
+)->execute([$pur1]);
+$byId = $pullById();
+check('f8_pull_legado_status_anulada',
+    ($byId["purchase:$pur1"]['payload']['status'] ?? '') === 'ANULADA'
+    && ($byId["purchase:$pur1"]['payload']['totalAmount'] ?? '') === '1200.00'
+    && count($byId["purchase:$pur1"]['payload']['items'] ?? []) === 1
+    && preg_match('/^COM-\d{6}-\d{3}$/', $byId["purchase:$pur1"]['official_number'] ?? '') === 1,
+    json_encode($byId["purchase:$pur1"]['payload']['status'] ?? null));
+
+// Una edición posterior sobre la terminal sigue rechazada y el
+// server_state del rechazo expone ya el estado autoritativo ANULADA.
+[$c, $r] = http($base, 'POST', '/sync/push', ['device_id' => $device,
+    'operations' => [['operation_id' => $u('f82000b5'), 'entity_type' => 'purchase',
+        'entity_id' => $pur1, 'type' => 'upsert', 'base_server_version' => 5,
+        'payload' => $purPayload('CONFIRMADA', [$lA2], ['archived' => true])]]], $token);
+check('f8_edicion_post_anulada_REJECTED', ($r['results'][0]['status'] ?? '') === 'REJECTED'
+    && ($r['results'][0]['code'] ?? '') === 'INVALID_TRANSITION'
+    && ($r['results'][0]['server_state']['status'] ?? '') === 'ANULADA', json_encode($r));
+
+// La proyección se limita a los tipos con estado documental: toda fila
+// servida de quote/job/report/collection_account/consolidated_collection/
+// purchase lleva un `status` canónico no vacío, mientras que `payment`
+// (columna = assignmentStatus) e `inventory_movement` (columna =
+// movementType) llegan sin la clave `status` añadida — sus payloads no
+// la definen y la columna no es un estado documental.
+$byId = $pullById();
+$docOk = true;
+foreach (['quote', 'job', 'report', 'collection_account',
+          'consolidated_collection', 'purchase'] as $t) {
+    foreach ($byId as $ch) {
+        if ($ch['entity_type'] === $t
+            && !is_string($ch['payload']['status'] ?? null)) {
+            $docOk = false;
+        }
+    }
+}
+$anyPay = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'payment'))[0] ?? null;
+$anyMov = array_values(array_filter($byId,
+    fn($ch) => $ch['entity_type'] === 'inventory_movement'))[0] ?? null;
+check('f8_pull_status_solo_tipos_documentales', $docOk
+    && $anyPay !== null && !array_key_exists('status', $anyPay['payload'])
+    && ($anyPay['payload']['assignmentStatus'] ?? '') !== ''
+    && $anyMov !== null && !array_key_exists('status', $anyMov['payload'])
+    && ($anyMov['payload']['movementType'] ?? '') !== '',
+    json_encode(['pay' => $anyPay['payload'] ?? null,
+                 'mov' => $anyMov['payload'] ?? null]));
+
 // ---- Payloads fabricados contra una Compra CONFIRMADA ----
 // Regresión del defecto de edición: una actualización que declara
 // `items: []` sobre una compra confirmada no puede persistirse — el

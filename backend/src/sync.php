@@ -70,13 +70,36 @@ const DEPENDENCIES = [
     'inventory_stock'     => [],
 ];
 
+/** Tipos cuya columna `entities.status` es el estado documental canónico
+ *  que el cliente reconstruye desde `payload.status`. En los demás tipos
+ *  la columna guarda otra semántica (payment → assignmentStatus,
+ *  inventory_movement → movementType) y el payload no define `status`. */
+const DOC_STATUS_TYPES = [
+    'purchase', 'quote', 'job', 'report',
+    'collection_account', 'consolidated_collection',
+];
+
+/** Proyección común (serverState/pull): la columna `status` autoritativa
+ *  manda sobre el `status` del JSON persistido — un documento escrito por
+ *  una ruta que restaura el payload previo (la anulación de Compra, que
+ *  conservaba status=CONFIRMADA) no puede servirse con un estado que la
+ *  columna ya superó. Solo lectura: el payload almacenado no se muta. */
+function withAuthoritativeStatus(array $row, array $state): array
+{
+    if (in_array((string) ($row['entity_type'] ?? ''), DOC_STATUS_TYPES, true)
+        && ($row['status'] ?? null) !== null) {
+        $state['status'] = $row['status'];
+    }
+    return $state;
+}
+
 /** Estado remoto para resultados CONFLICT/REJECTED: el payload persistido
  *  más los metadatos del servidor (official_number, has_version_conflict),
  *  que no viajan dentro del payload, de modo que la resolución
  *  "conservar remoto" del cliente preserve el documento completo. */
 function serverState(array $row): array
 {
-    $state = json_decode($row['payload'], true) ?: [];
+    $state = withAuthoritativeStatus($row, json_decode($row['payload'], true) ?: []);
     $state['official_number'] = $row['official_number'];
     $state['has_version_conflict'] = (int) ($row['has_version_conflict'] ?? 0) === 1;
     $state['server_version'] = (int) ($row['server_version'] ?? 0);
@@ -2195,6 +2218,7 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
         }
         $archived = (bool) ($payload['archived'] ?? false);
         $payload = $prevData;
+        $payload['status'] = 'ANULADA';
         $payload['archived'] = $archived;
         updateEntity($pdo, 'purchase', $entityId, $locked, $payload,
             'ANULADA', $locked['official_number']);
@@ -2279,6 +2303,9 @@ function applyPurchase(PDO $pdo, string $userId, string $deviceId, string $opId,
     if ($newStatus === 'ANULADA') {
         $archived = (bool) ($payload['archived'] ?? false);
         $payload = $prevData;
+        // La columna pasa a ANULADA y el payload debe contar la misma
+        // historia: el cliente reconstruye su estado desde payload.status.
+        $payload['status'] = 'ANULADA';
         $payload['archived'] = $archived;
         $normItems = $prevItems; // trazabilidad del audit
     }
@@ -2662,7 +2689,7 @@ function handlePull(): void
     $cursor = (int) ($_GET['cursor'] ?? 0);
     $stmt = db()->prepare(
         'SELECT entity_type, id, server_version, server_seq, server_order, official_number,
-                has_version_conflict, payload
+                has_version_conflict, status, payload
          FROM entities WHERE user_id = ? AND server_seq > ?
          ORDER BY server_seq ASC LIMIT 500'
     );
@@ -2670,6 +2697,14 @@ function handlePull(): void
     $changes = [];
     $next = $cursor;
     foreach ($stmt->fetchAll() as $row) {
+        $payload = json_decode($row['payload'], true);
+        // Misma curación que serverState() (función común): la columna
+        // `status` manda sobre el JSON persistido, de modo que una fila
+        // escrita antes de la corrección (columna ANULADA / payload
+        // CONFIRMADA) no resucite como confirmada en el cliente.
+        if (is_array($payload)) {
+            $payload = withAuthoritativeStatus($row, $payload);
+        }
         $changes[] = [
             'entity_type' => $row['entity_type'],
             'entity_id' => $row['id'],
@@ -2678,7 +2713,7 @@ function handlePull(): void
             'server_order' => $row['server_order'] === null ? null : (int) $row['server_order'],
             'official_number' => $row['official_number'],
             'has_version_conflict' => (int) $row['has_version_conflict'] === 1,
-            'payload' => json_decode($row['payload'], true),
+            'payload' => $payload,
         ];
         $next = max($next, (int) $row['server_seq']);
     }
