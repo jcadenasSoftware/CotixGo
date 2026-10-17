@@ -317,29 +317,45 @@ object DbMigrationManager {
      * Limpieza bloqueante de los artefactos claros de una fase de
      * migración. Los sidecars de la base en servicio (`db-wal`, `-shm`,
      * `-journal`) solo son residuos eliminables cuando el swap quedó
-     * confirmado — existe `.bak`, la copia clara renombrada — porque
-     * entonces pertenecen a la base de origen, no a la cifrada. Sin esa
-     * confirmación no se puede distinguir una WAL clara residual de la
+     * confirmado: existe `.bak` **y es la base clara renombrada** —
+     * entonces pertenecen al origen, que conservó su nombre de archivo
+     * al renombrarse, no a la cifrada. Un `.bak` presente que no
+     * acredita el swap (no claro, o sin base en servicio) es un estado
+     * forense inconsistente: no se toca nada y la app queda bloqueada.
+     * Sin `.bak` no se puede distinguir una WAL clara residual de la
      * WAL activa de la base cifrada (SQLCipher usa la misma cabecera),
      * así que no se tocan: borrarlos destruye escrituras no
      * checkpointeadas (pérdida silenciosa de usuarios, cola y datos
-     * financieros — defecto observado en campo).
+     * financieros — defecto observado en campo). `.bak` se borra el
+     * último y solo si el resto ya está limpio: queda como testigo del
+     * swap para que un cierre forzado permita reintentar el borrado de
+     * los restos claros en el siguiente arranque.
      */
     private fun runCleanup(context: Context) {
         writeState(context, State.CLEANUP_PENDING)
         val db = dbFile(context)
         val bak = bakFile(context)
         val tmp = tmpFile(context)
-        val leftovers = (listOf(bak, tmp) +
-            (if (bak.exists()) sidecars(db) else emptyList()) +
-            sidecars(bak)).filter { it.exists() }
+        // Pérdida de clave primero: una cifrada sin blob bloquea antes
+        // de tocar cualquier artefacto.
+        requireBlobIfEncryptedDb(context, db)
+        val swapConfirmed = bak.exists()
+        if (swapConfirmed && (!isClearSqlite(bak) || !db.exists())) {
+            writeState(context, State.FAILED, "swap_witness_inconsistent")
+            throw DbBlockedException(State.FAILED, "swap_witness_inconsistent")
+        }
+        val remnants = ((if (swapConfirmed) sidecars(db) else emptyList()) +
+            listOf(tmp) + sidecars(tmp) + sidecars(bak))
+            .filter { it.exists() }
         var failed = false
-        for (f in leftovers) if (!deleter(f) && f.exists()) failed = true
+        for (f in remnants) if (!deleter(f) && f.exists()) failed = true
+        // .bak al final: solo se borra cuando los restos claros ya no
+        // existen — si algo falla, el testigo sobrevive para el reintento.
+        if (!failed && bak.exists() && !deleter(bak) && bak.exists()) failed = true
         if (failed) {
             writeState(context, State.CLEANUP_PENDING, "cleanup_incomplete")
             throw DbBlockedException(State.CLEANUP_PENDING, "cleanup_incomplete")
         }
-        requireBlobIfEncryptedDb(context, db)
         writeState(context, State.MIGRATED)
     }
 

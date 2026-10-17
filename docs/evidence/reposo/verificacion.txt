@@ -191,3 +191,42 @@ Resultados (esta corrección, por serial dirigido):
 - 021e6d4a0403 (Xiaomi): LocalEncryptionTest + BootMigrationTest
   21/21 PASS; MigrationTest 6/6 PASS.
 - assembleDebug/assembleDebugAndroidTest con JDK 21: OK.
+
+== Corrida I — enmienda (endurecimiento post-revisión, mismo PR) ==
+
+La revisión independiente detectó dos puntos de endurecimiento sobre la
+primera versión de la corrección, ambos acotados a runCleanup():
+
+1. Orden de borrado: .bak se eliminaba primero, de modo que un cierre
+   forzado entre su borrado y el de los sidecars dejaba un resto claro
+   sin testigo — preservado para siempre tras converger a MIGRATED.
+   Ahora los restos claros se borran primero y .bak el último, solo si
+   el resto ya no existe: el testigo sobrevive a un fallo/cierre y el
+   arranque siguiente reintenta el borrado completo.
+2. Validación del testigo: .bak por sí solo autorizaba el borrado de
+   sidecars de la base en servicio. Ahora debe ser la base clara
+   renombrada — cabecera "SQLite format 3" válida y base en servicio
+   presente. Un .bak presente que no acredita el swap (no claro, o sin
+   base) bloquea con FAILED/"swap_witness_inconsistent" sin tocar
+   nada. Sin .bak los sidecars se conservan (comportamiento previo).
+   La pérdida de clave (requireBlobIfEncryptedDb) se verifica antes
+   que cualquier borrado — precedencia M1 conservada.
+   No se reintroduce heurística sobre cabeceras WAL (descartada: la WAL
+   de SQLCipher lleva la misma cabecera estándar que una clara).
+
+Regresiones (LocalEncryptionTest, 2 nuevas + 1 actualizada):
+- cleanupFailure_bakWitness_survivesForRetry: fallo de borrado sobre un
+  resto claro → .bak permanece como testigo, estado CLEANUP_PENDING;
+  reintento sin el fallo → limpieza completa y MIGRATED.
+- foreignBak_encryptedDb_neverDeletesActiveSidecars: .bak de bytes
+  no-claros junto a base cifrada con WAL activa y marcador ausente →
+  FAILED/"swap_witness_inconsistent"; WAL/SHM/base/.bak intactos;
+  bloqueo persistente al siguiente ensureReady.
+- cleanup_deletesOnlyConfirmedClearArtifacts: el .bak del caso
+  confirmado pasa a bytes con cabecera SQLite clara (testigo válido);
+  la cobertura se mantiene.
+
+Resultados (endurecimiento, por serial dirigido):
+- emulator-5554: LocalEncryptionTest + BootMigrationTest 23/23 PASS.
+- 021e6d4a0403 (Xiaomi): 23/23 PASS.
+- compileDebugAndroidTestKotlin con JDK 21: OK.

@@ -107,6 +107,10 @@ class LocalEncryptionTest {
         return String(head, Charsets.US_ASCII) == "SQLite format 3"
     }
 
+    /** Bytes que pasan el chequeo de origen claro: cabecera SQLite + página. */
+    private fun clearBakBytes(): ByteArray =
+        "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII) + ByteArray(1008) { 0x5A }
+
     private fun tableCount(db: SQLiteDatabase, table: String): Long {
         val c = db.rawQuery("SELECT COUNT(*) FROM \"$table\"", emptyArray())
         c.moveToFirst(); val n = c.getLong(0); c.close(); return n
@@ -568,9 +572,9 @@ class LocalEncryptionTest {
         val encBytes = dbFile().readBytes()
 
         // Artefactos claros de una fase de migración confirmada (swap
-        // realizado → existe .bak): .bak, WAL clara y SHM residuales
-        // sí se eliminan; la base cifrada queda intacta.
-        bakFile().writeBytes(ByteArray(64) { 0x41 })
+        // realizado → existe .bak claro válido): .bak, WAL clara y SHM
+        // residuales sí se eliminan; la base cifrada queda intacta.
+        bakFile().writeBytes(clearBakBytes())
         val staleWal = File(dbFile().path + "-wal")
         staleWal.writeBytes(
             byteArrayOf(0x37, 0x7F, 0x06, 0x82.toByte()) + ByteArray(60),
@@ -602,6 +606,101 @@ class LocalEncryptionTest {
         assertTrue("La WAL no-clara (activa) no se borra", liveWal.exists())
         assertTrue("El SHM sin swap confirmado no se borra", liveShm.exists())
         assertTrue(dbFile().readBytes().contentEquals(encBytes))
+    }
+
+    @Test
+    fun cleanupFailure_bakWitness_survivesForRetry() {
+        // Migración real completada; luego se recrea el residuo de un
+        // swap interrumpido: .bak claro válido + WAL/SHM claros.
+        seedClearV9().close()
+        DbMigrationManager.ensureReady(ctx)
+        assertEquals(DbMigrationManager.State.MIGRATED,
+            DbMigrationManager.currentState(ctx))
+        val encBytes = dbFile().readBytes()
+        bakFile().writeBytes(clearBakBytes())
+        val staleWal = File(dbFile().path + "-wal")
+        staleWal.writeBytes(clearBakBytes())
+        val staleShm = File(dbFile().path + "-shm")
+        staleShm.writeBytes(ByteArray(48) { 0x5A })
+        writeMarker(DbMigrationManager.State.SWAP_PENDING)
+
+        // Fallo de borrado en un resto claro: .bak debe permanecer como
+        // testigo para que el próximo arranque reintente — nunca se
+        // borra el testigo quedando restos por limpiar.
+        val realDelete = { f: File -> f.delete() }
+        DbMigrationManager.setTestHooks(
+            dbName = testDbName, markerName = testMarker,
+            delete = { f -> if (f.path == staleWal.path) false else realDelete(f) },
+        )
+        try {
+            DbMigrationManager.ensureReady(ctx)
+            fail("La limpieza incompleta debe bloquear")
+        } catch (e: DbMigrationManager.DbBlockedException) {
+            assertEquals("cleanup_incomplete", e.reason)
+        }
+        assertEquals(DbMigrationManager.State.CLEANUP_PENDING,
+            DbMigrationManager.currentState(ctx))
+        assertTrue("El testigo .bak sobrevive al fallo", bakFile().exists())
+        assertTrue("El resto no borrado sigue presente", staleWal.exists())
+        assertFalse("El resto que sí se pudo borrar ya no está",
+            staleShm.exists())
+
+        // Reintento en el arranque siguiente: el testigo autoriza de
+        // nuevo el borrado de restos y la limpieza termina completa.
+        DbMigrationManager.setTestHooks(dbName = testDbName, markerName = testMarker)
+        DbMigrationManager.ensureReady(ctx)
+        assertEquals(DbMigrationManager.State.MIGRATED,
+            DbMigrationManager.currentState(ctx))
+        assertFalse(bakFile().exists())
+        assertFalse(staleWal.exists())
+        assertTrue("La base cifrada permanece intacta",
+            dbFile().readBytes().contentEquals(encBytes))
+    }
+
+    @Test
+    fun foreignBak_encryptedDb_neverDeletesActiveSidecars() {
+        // .bak que no es la base clara renombrada (ajeno/corrupto/
+        // cifrado) junto a una base cifrada activa: ningún sidecar se
+        // borra y la ruta bloquea fail-closed en lugar de inferir swap.
+        AppDatabase.resetForTest()
+        val db = AppDatabase.get(ctx)
+        db.openHelper.writableDatabase.execSQL(
+            "INSERT INTO users (id, name, mainCurrency, email, createdAt, updatedAt, pendingSync, serverVersion)" +
+                " VALUES ('u1', 'Usuario Sintético', 'COP', 'u@synthetic.local', 1, 1, 0, 1)",
+        )
+        val wal = File(dbFile().path + "-wal")
+        val shm = File(dbFile().path + "-shm")
+        assertTrue(wal.exists() && wal.length() > 0)
+        val encBytes = dbFile().readBytes()
+
+        // Testigo inválido: bytes no-claros (una copia cifrada serviría
+        // igual — aquí basura ajena), con marcador ausente como en el
+        // escenario del defecto.
+        bakFile().writeBytes(ByteArray(1024) { 0x3C })
+        assertTrue(markerFile().delete())
+        try {
+            DbMigrationManager.ensureReady(ctx)
+            fail("Un .bak no claro debe bloquear, no limpiar")
+        } catch (e: DbMigrationManager.DbBlockedException) {
+            assertEquals("swap_witness_inconsistent", e.reason)
+        }
+        assertEquals(DbMigrationManager.State.FAILED,
+            DbMigrationManager.currentState(ctx))
+        assertTrue("La WAL activa no puede borrarse", wal.exists())
+        assertTrue("El SHM activo no puede borrarse", shm.exists())
+        assertTrue("La base cifrada permanece intacta",
+            dbFile().readBytes().contentEquals(encBytes))
+        assertTrue("El .bak ajeno tampoco se borra", bakFile().exists())
+
+        // Bloqueo persistente: el siguiente arranque sigue en FAILED.
+        try {
+            DbMigrationManager.ensureReady(ctx)
+            fail("FAILED debe seguir bloqueando")
+        } catch (e: DbMigrationManager.DbBlockedException) {
+            // esperado
+        }
+        assertTrue(wal.exists())
+        db.close()
     }
 
     // ---------- Claves ----------
