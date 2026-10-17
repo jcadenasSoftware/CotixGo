@@ -134,3 +134,60 @@ Verificación ejecutada en esta revisión:
 
 La corrección mantiene la regla de solo datos sintéticos y el comportamiento
 fail-closed informado.
+
+== Corrida I — defecto de pérdida local por limpieza de sidecars activos ==
+Rama: fix/migration-sidecar-loss — base: main @ d89bc841e21af116158d3cbfb52d5d196a1b8b7e (merge PR #26).
+Dispositivos: emulator-5554 (E2eIsolated, dedicado) y Xiaomi físico
+021e6d4a0403 (M2003J15SC). Solo datos sintéticos. JDK 21, Gradle 8.11.1.
+
+Reproducción original (emulador dedicado, evidencia preservada antes de
+cualquier corrección): instalación nueva a las 02:25 sin marcador ni base;
+currentState() computaba MIGRATED sin escribir db_migration.state. Tras
+uso normal (cuenta vinculada, pulls, compras sintéticas) la WAL llegó a
+~585 KB. Relanzamiento a las 03:25 → app en ONBOARDING con preferencias
+de sesión intactas (account_email, token_enc) y SQLCipher abriendo la
+base sin error ("Database keying operation returned:0"). Forense vía
+run-as: files/db_migration.state contenía "state=MIGRATED" con timestamp
+2026-10-17 03:08:17 GMT — escrito en mitad de la sesión por la ruta
+migrate→runCleanup, no en la instalación ni en el relanzamiento; la WAL
+observada creció hasta 1.087.712 bytes antes de perderse los datos.
+Mecanismo: arranque posterior con "sin marcador + base" → NOT_MIGRATED
+→ migrate() → base no clara → runCleanup() borraba cotixgo.db-wal/-shm/
+-journal de la base cifrada activa — escrituras no checkpointeadas
+(users, sync_operations, datos financieros) huérfanas y perdidas.
+
+Corrección aplicada:
+- ensureReady() fija MIGRATED durable (marcador) antes de servir cuando
+  currentState lo computa sin marcador (instalación nueva).
+- writeState() escribe atómica (tmp + rename, con fallback directo).
+- runCleanup() solo elimina sidecars de la base en servicio cuando
+  existe .bak (swap confirmado — son los del origen claro renombrado);
+  sin .bak no se tocan: la WAL de SQLCipher lleva la misma cabecera
+  estándar que una clara, no son distinguibles (descartada la heurística
+  de cabecera tras fallar en la primera iteración de la corrección).
+- Estado NOT_MIGRATED/corrupto + base cifrada → converge a MIGRATED
+  reescribiendo el marcador sin tocar sidecars; sin dbkey.bin sigue
+  bloqueando con KeyUnavailableException (fail-closed intacto).
+
+Regresiones añadidas (LocalEncryptionTest, 3 casos nuevos):
+- freshInstall_persistsMarkerBeforeServingDb: sin marcador ni base,
+  AppDatabase.get fija MIGRATED durable en el primer arranque.
+- missingMarker_encryptedDb_neverDeletesActiveSidecars: instalación
+  nueva por el camino de producción, INSERTs reales en users +
+  sync_operations PENDING + payments, WAL>0 verificada; marcador
+  borrado; ensureReady de "segundo proceso" con la conexión viva;
+  WAL/SHM preservadas, marcador reconverge a MIGRATED y una conexión
+  independiente + recreación del singleton ven usuarios, cola y pago.
+  Limitación declarada: el "reinicio" es cierre de Room + recreación
+  del singleton, no muerte real del proceso — la transición durable
+  verificada es la misma.
+- cleanup_deletesOnlyConfirmedClearArtifacts: con .bak presente
+  (swap confirmado) WAL/SHM claras residuales sí se eliminan y la base
+  cifrada queda intacta; sin .bak los sidecars no claros se preservan.
+
+Resultados (esta corrección, por serial dirigido):
+- emulator-5554: LocalEncryptionTest + BootMigrationTest 21/21 PASS;
+  MigrationTest 6/6 PASS.
+- 021e6d4a0403 (Xiaomi): LocalEncryptionTest + BootMigrationTest
+  21/21 PASS; MigrationTest 6/6 PASS.
+- assembleDebug/assembleDebugAndroidTest con JDK 21: OK.

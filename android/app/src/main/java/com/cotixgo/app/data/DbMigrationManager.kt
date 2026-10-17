@@ -101,7 +101,16 @@ object DbMigrationManager {
         val p = Properties()
         p.setProperty("state", s.name)
         if (reason != null) p.setProperty("reason", reason)
-        markerFile(context).outputStream().use { p.store(it, null) }
+        // Escritura atómica (tmp + rename): un corte a mitad dejaría un
+        // marcador ilegible, leído como NOT_MIGRATED en el arranque
+        // siguiente y abriendo la vía de limpieza sobre la base activa.
+        val m = markerFile(context)
+        val tmp = File(m.path + ".tmp")
+        tmp.outputStream().use { p.store(it, null) }
+        if (!tmp.renameTo(m)) {
+            tmp.delete()
+            m.outputStream().use { p.store(it, null) }
+        }
     }
 
     private fun isClearSqlite(f: File): Boolean {
@@ -144,6 +153,12 @@ object DbMigrationManager {
                     writeState(ctx, State.FAILED, "clear_db_after_migrated")
                     throw DbBlockedException(State.FAILED, "clear_db_after_migrated")
                 }
+                // Estado durable de instalación nueva: currentState()
+                // computa MIGRATED sin marcador cuando no hay ni marcador
+                // ni base. Fijarlo antes de servir evita que un arranque
+                // posterior relea "sin marcador + base" como NOT_MIGRATED
+                // y dispare la limpieza sobre los sidecars activos.
+                if (!markerFile(ctx).exists()) writeState(ctx, State.MIGRATED)
                 requireBlobIfEncryptedDb(ctx, f)
                 return
             }
@@ -298,14 +313,26 @@ object DbMigrationManager {
         }
     }
 
-    /** Limpieza bloqueante de todos los artefactos claros accesibles. */
+    /**
+     * Limpieza bloqueante de los artefactos claros de una fase de
+     * migración. Los sidecars de la base en servicio (`db-wal`, `-shm`,
+     * `-journal`) solo son residuos eliminables cuando el swap quedó
+     * confirmado — existe `.bak`, la copia clara renombrada — porque
+     * entonces pertenecen a la base de origen, no a la cifrada. Sin esa
+     * confirmación no se puede distinguir una WAL clara residual de la
+     * WAL activa de la base cifrada (SQLCipher usa la misma cabecera),
+     * así que no se tocan: borrarlos destruye escrituras no
+     * checkpointeadas (pérdida silenciosa de usuarios, cola y datos
+     * financieros — defecto observado en campo).
+     */
     private fun runCleanup(context: Context) {
         writeState(context, State.CLEANUP_PENDING)
         val db = dbFile(context)
         val bak = bakFile(context)
         val tmp = tmpFile(context)
-        val leftovers = (listOf(bak, tmp) + sidecars(db) + sidecars(bak))
-            .filter { it.exists() }
+        val leftovers = (listOf(bak, tmp) +
+            (if (bak.exists()) sidecars(db) else emptyList()) +
+            sidecars(bak)).filter { it.exists() }
         var failed = false
         for (f in leftovers) if (!deleter(f) && f.exists()) failed = true
         if (failed) {

@@ -451,6 +451,159 @@ class LocalEncryptionTest {
         }
     }
 
+    // ---------- Instalación nueva: marcador durable + sidecars activos ----------
+    // Regresión del defecto de pérdida local observado en campo: en
+    // instalación nueva currentState() computaba MIGRATED sin persistir
+    // el marcador; en el arranque siguiente "sin marcador + base" se
+    // leía NOT_MIGRATED y la ruta de migración ejecutaba runCleanup(),
+    // que borraba -wal/-shm/-journal de la base cifrada activa — las
+    // escrituras no checkpointeadas (usuarios, cola, datos financieros)
+    // se perdían silenciosamente. La muerte de proceso se simula aquí
+    // cerrando Room y recreando el singleton: limitación declarada, no
+    // es un kill real; la transición durable verificada es la misma.
+
+    @Test
+    fun freshInstall_persistsMarkerBeforeServingDb() {
+        AppDatabase.resetForTest()
+        assertFalse(markerFile().exists())
+        assertFalse(dbFile().exists())
+
+        val db = AppDatabase.get(ctx)
+
+        assertTrue("El marcador debe fijarse en el primer arranque",
+            markerFile().exists())
+        assertEquals(DbMigrationManager.State.MIGRATED,
+            DbMigrationManager.currentState(ctx))
+        db.close()
+    }
+
+    @Test
+    fun missingMarker_encryptedDb_neverDeletesActiveSidecars() {
+        // Instalación nueva real por el camino de producción.
+        AppDatabase.resetForTest()
+        val db = AppDatabase.get(ctx)
+
+        // Negocio + cola pendiente + fila financiera: escrituras reales
+        // que viven en la WAL hasta el checkpoint.
+        db.openHelper.writableDatabase.execSQL(
+            "INSERT INTO users (id, name, mainCurrency, email, createdAt, updatedAt, pendingSync, serverVersion)" +
+                " VALUES ('u1', 'Usuario Sintético', 'COP', 'u@synthetic.local', 1, 1, 0, 1)",
+        )
+        db.openHelper.writableDatabase.execSQL(
+            "INSERT INTO sync_operations (opId, seq, entityType, entityId, opType, baseServerVersion," +
+                " payloadJson, supersedesOpId, deviceId, state, resultJson, resultCode, attempts," +
+                " createdAt, updatedAt) VALUES ('op1', 1, 'payment', 'pay1', 'upsert', 0, '{}', NULL," +
+                " 'dev1', 'PENDING', NULL, NULL, 0, 1, 1)",
+        )
+        db.openHelper.writableDatabase.execSQL(
+            "INSERT INTO payments (id, userId, clientId, collectionMethodId, amount, paidAtEpochDay," +
+                " reference, notes, appliedAmount, unassignedAmount, effectiveAmount, refundedAmount," +
+                " annulled, assignedAccountId, assignedConsolidatedId, assignedTargetType," +
+                " assignmentStatus, serverAppliedAmount, serverUnassignedAmount, serverRefundedAmount," +
+                " createdAt, updatedAt, pendingSync, serverVersion) VALUES ('pay1', 'u1', 'c1', NULL," +
+                " '40.00', 1, '', '', '0.00', '40.00', '40.00', '0.00', 0, NULL, NULL, NULL," +
+                " 'UNASSIGNED', '0.00', '0.00', '0.00', 1, 1, 1, 0)",
+        )
+
+        val wal = File(dbFile().path + "-wal")
+        val shm = File(dbFile().path + "-shm")
+        assertTrue("La WAL debe contener escrituras reales",
+            wal.exists() && wal.length() > 0)
+        assertTrue(shm.exists())
+
+        // Escenario del defecto: marcador ausente junto a una base
+        // cifrada activa (instalación previa al fix, marcador perdido o
+        // escritura truncada del estado).
+        assertTrue(markerFile().delete())
+
+        // Segundo proceso simulado: el gate corre mientras la conexión
+        // original mantiene abierta la WAL viva.
+        DbMigrationManager.ensureReady(ctx)
+
+        // Los sidecars activos no se eliminan y el estado converge.
+        assertTrue("La WAL activa no puede borrarse", wal.exists())
+        assertTrue("El SHM activo no puede borrarse", shm.exists())
+        assertEquals(DbMigrationManager.State.MIGRATED,
+            DbMigrationManager.currentState(ctx))
+        assertTrue(markerFile().exists())
+
+        // Una conexión independiente ve las mismas escrituras — si los
+        // sidecars se hubieran borrado, esta base aparecería vacía.
+        val fresh = Room.databaseBuilder(ctx, AppDatabase::class.java, testDbName)
+            .openHelperFactory(DbMigrationManager.encryptedFactory(ctx))
+            .addMigrations(*migrations)
+            .build()
+        fresh.openHelper.readableDatabase.query("SELECT COUNT(*) FROM users").use {
+            it.moveToFirst(); assertEquals(1L, it.getLong(0))
+        }
+        fresh.openHelper.readableDatabase.query(
+            "SELECT state FROM sync_operations WHERE opId='op1'",
+        ).use { it.moveToFirst(); assertEquals("PENDING", it.getString(0)) }
+        fresh.close()
+
+        // "Reinicio" equivalente (cierre de Room + recreación del
+        // singleton — declarado, no muerte real del proceso): usuarios,
+        // cola y datos financieros permanecen íntegros.
+        AppDatabase.resetForTest()
+        val db2 = AppDatabase.get(ctx)
+        db2.openHelper.readableDatabase.query("SELECT name FROM users WHERE id='u1'").use {
+            assertTrue(it.moveToFirst()); assertEquals("Usuario Sintético", it.getString(0))
+        }
+        db2.openHelper.readableDatabase.query(
+            "SELECT state FROM sync_operations WHERE opId='op1'",
+        ).use { it.moveToFirst(); assertEquals("PENDING", it.getString(0)) }
+        db2.openHelper.readableDatabase.query(
+            "SELECT amount FROM payments WHERE id='pay1'",
+        ).use { it.moveToFirst(); assertEquals("40.00", it.getString(0)) }
+        db2.close()
+    }
+
+    @Test
+    fun cleanup_deletesOnlyConfirmedClearArtifacts() {
+        // Migración real completada: base cifrada servida, sin residuos.
+        seedClearV9().close()
+        DbMigrationManager.ensureReady(ctx)
+        assertEquals(DbMigrationManager.State.MIGRATED,
+            DbMigrationManager.currentState(ctx))
+        val encBytes = dbFile().readBytes()
+
+        // Artefactos claros de una fase de migración confirmada (swap
+        // realizado → existe .bak): .bak, WAL clara y SHM residuales
+        // sí se eliminan; la base cifrada queda intacta.
+        bakFile().writeBytes(ByteArray(64) { 0x41 })
+        val staleWal = File(dbFile().path + "-wal")
+        staleWal.writeBytes(
+            byteArrayOf(0x37, 0x7F, 0x06, 0x82.toByte()) + ByteArray(60),
+        )
+        val staleShm = File(dbFile().path + "-shm")
+        staleShm.writeBytes(ByteArray(48) { 0x5A })
+        writeMarker(DbMigrationManager.State.SWAP_PENDING)
+        DbMigrationManager.ensureReady(ctx)
+        assertEquals(DbMigrationManager.State.MIGRATED,
+            DbMigrationManager.currentState(ctx))
+        assertFalse(bakFile().exists())
+        assertFalse("La WAL clara residual se elimina", staleWal.exists())
+        assertFalse("El SHM residual tras swap confirmado se elimina",
+            staleShm.exists())
+        assertTrue("La base cifrada permanece intacta",
+            dbFile().readBytes().contentEquals(encBytes))
+
+        // Contraste: sin swap confirmado (sin .bak), una WAL no-clara
+        // (cifrada, activa) y un SHM jamás se eliminan — convergencia a
+        // MIGRATED sin tocar los sidecars de la base en servicio.
+        val liveWal = File(dbFile().path + "-wal")
+        liveWal.writeBytes(ByteArray(96) { 0x11 })
+        val liveShm = File(dbFile().path + "-shm")
+        liveShm.writeBytes(ByteArray(48) { 0x22 })
+        writeMarker(DbMigrationManager.State.CLEANUP_PENDING)
+        DbMigrationManager.ensureReady(ctx)
+        assertEquals(DbMigrationManager.State.MIGRATED,
+            DbMigrationManager.currentState(ctx))
+        assertTrue("La WAL no-clara (activa) no se borra", liveWal.exists())
+        assertTrue("El SHM sin swap confirmado no se borra", liveShm.exists())
+        assertTrue(dbFile().readBytes().contentEquals(encBytes))
+    }
+
     // ---------- Claves ----------
 
     @Test
