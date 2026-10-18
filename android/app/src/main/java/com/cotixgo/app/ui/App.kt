@@ -255,23 +255,23 @@ private fun CotixGoNavHost(
                 val boundEmail by vm.accountEmail.collectAsStateWithLifecycle()
                 DashboardScreen(
                     userName = userName.orEmpty(),
+                    loading = !bootstrapped,
+                    items = com.cotixgo.app.core.dashboardItems(
+                        quotes, jobs, reports, collectionAccounts, today,
+                    ),
+                    todayEpochDay = today,
                     syncPending = pending,
                     syncPaused = pausedCount,
                     boundEmail = boundEmail,
-                    expiringQuotes = quotes
-                        .filter {
-                            !it.archived && it.status == com.cotixgo.app.core.QuoteStatus.EMITIDA.name &&
-                                com.cotixgo.app.core.effectiveQuoteStatus(
-                                    com.cotixgo.app.core.QuoteStatus.valueOf(it.status),
-                                    it.expiryDateEpochDay, today,
-                                ) == com.cotixgo.app.core.QuoteStatus.EMITIDA
-                        }
-                        .sortedBy { it.expiryDateEpochDay }
-                        .take(5),
                     onNewClient = { nav.navigate(Routes.CLIENT_NEW) },
                     onNewQuote = { nav.navigate(Routes.QUOTE_NEW) },
                     onNewJob = { nav.navigate(Routes.jobNew()) },
+                    onNewAccount = { nav.navigate(Routes.COLLECTION_NEW) },
                     onOpenQuote = { nav.navigate(Routes.quoteDetail(it)) },
+                    onOpenJob = { nav.navigate(Routes.jobDetail(it)) },
+                    onOpenReport = { nav.navigate(Routes.reportDetail(it)) },
+                    onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
+                    onSyncAttention = { nav.navigate(Routes.CONFLICTS) },
                     onSettings = { nav.navigate(Routes.SETTINGS) },
                 )
             }
