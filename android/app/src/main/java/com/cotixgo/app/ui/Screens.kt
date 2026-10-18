@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -85,20 +87,41 @@ fun OnboardingScreen(onComplete: (String, String) -> Unit) {
     }
 }
 
-// ---------- Dashboard mínimo ----------
+// ---------- Dashboard (docs/04 §2.1) ----------
+
+@Composable
+private fun DashboardItemCard(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Text(title)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     userName: String,
-    expiringQuotes: List<com.cotixgo.app.data.QuoteEntity>,
+    loading: Boolean,
+    items: com.cotixgo.app.core.DashboardItems,
+    todayEpochDay: Long,
     syncPending: Int,
     syncPaused: Int,
     boundEmail: String?,
     onNewClient: () -> Unit,
     onNewQuote: () -> Unit,
     onNewJob: () -> Unit,
+    onNewAccount: () -> Unit,
     onOpenQuote: (String) -> Unit,
+    onOpenJob: (String) -> Unit,
+    onOpenReport: (String) -> Unit,
+    onOpenAccount: (String) -> Unit,
+    onSyncAttention: () -> Unit,
     onSettings: () -> Unit,
 ) {
     Scaffold(
@@ -113,20 +136,29 @@ fun DashboardScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp),
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text("Hola, $userName", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                when {
-                    boundEmail == null -> "Sin cuenta vinculada"
-                    syncPaused > 0 -> "$syncPaused operaciones requieren atención"
-                    syncPending > 0 -> "$syncPending operaciones pendientes de sincronizar"
-                    else -> "Sincronizado"
-                },
-                color = if (syncPaused > 0) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.secondary,
-            )
+            if (syncPaused > 0) {
+                // Enlace accionable a la pantalla de atención de sincronización.
+                TextButton(onClick = onSyncAttention) {
+                    Text(
+                        "$syncPaused operaciones requieren atención",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            } else {
+                Text(
+                    when {
+                        boundEmail == null -> "Sin cuenta vinculada"
+                        syncPending > 0 -> "$syncPending operaciones pendientes de sincronizar"
+                        else -> "Sincronizado"
+                    },
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onNewClient, modifier = Modifier.weight(1f)) {
                     Text("+ Cliente")
@@ -138,19 +170,59 @@ fun DashboardScreen(
             OutlinedButton(onClick = onNewJob, modifier = Modifier.fillMaxWidth()) {
                 Text("+ Trabajo")
             }
-            // Las demás acciones del dashboard llegan con sus fases.
-            OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onNewAccount, modifier = Modifier.fillMaxWidth()) {
                 Text("+ Cuenta de Cobro")
             }
-            if (expiringQuotes.isNotEmpty()) {
-                Text("Próximas a vencer", style = MaterialTheme.typography.titleSmall)
-                expiringQuotes.forEach { q ->
-                    Card(onClick = { onOpenQuote(q.id) }, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text("${q.provisionalNumber} — ${q.clientNameSnapshot}")
-                            Text("Vence: ${java.time.LocalDate.ofEpochDay(q.expiryDateEpochDay)}", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
+            if (loading) {
+                Text("Cargando…", color = MaterialTheme.colorScheme.secondary)
+            } else if (items.isEmpty) {
+                Text("Sin pendientes por revisar.", color = MaterialTheme.colorScheme.secondary)
+            }
+            if (items.attentionQuotes.isNotEmpty()) {
+                Text("Cotizaciones por vencer y vencidas", style = MaterialTheme.typography.titleSmall)
+                items.attentionQuotes.forEach { q ->
+                    val effective = com.cotixgo.app.core.effectiveQuoteStatus(
+                        com.cotixgo.app.core.QuoteStatus.valueOf(q.status),
+                        q.expiryDateEpochDay, todayEpochDay,
+                    )
+                    val date = java.time.LocalDate.ofEpochDay(q.expiryDateEpochDay)
+                    DashboardItemCard(
+                        title = "${q.officialNumber ?: q.provisionalNumber} — ${q.clientNameSnapshot}",
+                        subtitle = if (effective == com.cotixgo.app.core.QuoteStatus.VENCIDA)
+                            "Vencida: $date" else "Vence: $date",
+                        onClick = { onOpenQuote(q.id) },
+                    )
+                }
+            }
+            if (items.activeJobs.isNotEmpty()) {
+                Text("Trabajos programados y en proceso", style = MaterialTheme.typography.titleSmall)
+                items.activeJobs.forEach { j ->
+                    DashboardItemCard(
+                        title = "${j.officialNumber ?: j.provisionalNumber} — ${j.clientNameSnapshot}",
+                        subtitle = if (j.status == com.cotixgo.app.core.JobStatus.EN_PROCESO.name)
+                            "En proceso" else "Programado",
+                        onClick = { onOpenJob(j.id) },
+                    )
+                }
+            }
+            if (items.draftReports.isNotEmpty()) {
+                Text("Informes pendientes", style = MaterialTheme.typography.titleSmall)
+                items.draftReports.forEach { r ->
+                    DashboardItemCard(
+                        title = "${r.officialNumber ?: r.provisionalNumber} — ${r.title}",
+                        subtitle = r.clientNameSnapshot,
+                        onClick = { onOpenReport(r.id) },
+                    )
+                }
+            }
+            if (items.openAccounts.isNotEmpty()) {
+                Text("Cuentas por cobrar", style = MaterialTheme.typography.titleSmall)
+                items.openAccounts.forEach { a ->
+                    DashboardItemCard(
+                        title = "${a.officialNumber ?: a.provisionalNumber} — ${a.clientNameSnapshot}",
+                        subtitle = "Saldo: ${a.balance} ${a.currency}",
+                        onClick = { onOpenAccount(a.id) },
+                    )
                 }
             }
         }
