@@ -749,9 +749,12 @@ private fun CotixGoNavHost(
                 )
             }
             composable(Routes.COLLECTION_NEW) {
-                val allJobLinks by vm.observeAllCollectionAccountJobs()
+                // Solo bloquean vínculos de Cuentas no canceladas; los de
+                // una CANCELADA se conservan como historial pero liberan
+                // el origen (docs/05 §179).
+                val blockingJobLinks by vm.observeBlockingCollectionAccountJobs()
                     .collectAsStateWithLifecycle(emptyList())
-                val allQuoteLinks by vm.observeAllCollectionAccountQuotes()
+                val blockingQuoteLinks by vm.observeBlockingCollectionAccountQuotes()
                     .collectAsStateWithLifecycle(emptyList())
                 CollectionAccountEditorScreen(
                     initial = null,
@@ -763,8 +766,8 @@ private fun CotixGoNavHost(
                     user = user,
                     jobs = jobs,
                     quotes = quotes,
-                    takenJobIds = allJobLinks.map { it.jobId }.toSet(),
-                    takenQuoteIds = allQuoteLinks.map { it.quoteId }.toSet(),
+                    takenJobIds = blockingJobLinks.map { it.jobId }.toSet(),
+                    takenQuoteIds = blockingQuoteLinks.map { it.quoteId }.toSet(),
                     retentions = retentions,
                     initialRetentions = emptyList(),
                     onSave = { input ->
@@ -791,9 +794,9 @@ private fun CotixGoNavHost(
                     .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.CollectionAccountJobEntity>?)
                 val quoteLinks by vm.observeCollectionAccountQuotes(id)
                     .collectAsStateWithLifecycle(null as List<com.cotixgo.app.data.CollectionAccountQuoteEntity>?)
-                val allJobLinks by vm.observeAllCollectionAccountJobs()
+                val blockingJobLinks by vm.observeBlockingCollectionAccountJobs()
                     .collectAsStateWithLifecycle(emptyList())
-                val allQuoteLinks by vm.observeAllCollectionAccountQuotes()
+                val blockingQuoteLinks by vm.observeBlockingCollectionAccountQuotes()
                     .collectAsStateWithLifecycle(emptyList())
                 val acc = account
                 val loadedItems = items
@@ -823,8 +826,10 @@ private fun CotixGoNavHost(
                     user = user,
                     jobs = jobs,
                     quotes = quotes,
-                    takenJobIds = allJobLinks.filter { it.accountId != id }.map { it.jobId }.toSet(),
-                    takenQuoteIds = allQuoteLinks.filter { it.accountId != id }.map { it.quoteId }.toSet(),
+                    takenJobIds = blockingJobLinks.filter { it.accountId != id }
+                        .map { it.jobId }.toSet(),
+                    takenQuoteIds = blockingQuoteLinks.filter { it.accountId != id }
+                        .map { it.quoteId }.toSet(),
                     retentions = retentions,
                     initialRetentions = retNames,
                     onSave = { input ->

@@ -431,4 +431,88 @@ class CollectionRepositoryTest {
         assertTrue(pending.any { it.entityType == "payment" && it.entityId == paymentId })
         assertTrue(pending.any { it.entityType == "payment_assignment" })
     }
+
+    /**
+     * Regresión del defecto de elegibilidad tras cancelar: los vínculos
+     * de una Cuenta CANCELADA se conservan como historial pero ya no
+     * bloquean el origen (docs/05 §179 — "a lo sumo una Cuenta no
+     * cancelada"). Cubre el conjunto `observeBlocking` que alimenta
+     * `takenJobIds`/`takenQuoteIds` del editor, tanto en creación como
+     * en edición, y la paridad con la validación de guardado.
+     */
+    @Test
+    fun cancelacion_liberaOrigenParaElegibilidad_yConservaHistorial() = runTest {
+        val (_, profileId, clientId) = seed()
+        val jobId = repo.saveJob(
+            JobInput(clientId = clientId, profileId = profileId,
+                startDateEpochDay = LocalDate.now().toEpochDay()),
+        )!!
+        val quoteId = seedApprovedQuote(clientId, profileId)
+
+        // Cuenta A ocupa el Trabajo; Cuenta B ocupa la Cotización.
+        val accA = repo.saveCollectionAccount(
+            accountInput(clientId, profileId).copy(jobIds = listOf(jobId)),
+        )!!
+        val accB = repo.saveCollectionAccount(
+            accountInput(clientId, profileId).copy(quoteIds = listOf(quoteId)),
+        )!!
+
+        // Mientras no están canceladas, ambos orígenes siguen bloqueados:
+        // el conjunto bloqueante los contiene y el guardado los rechaza.
+        assertEquals(listOf(jobId),
+            db.collectionAccountJobDao().observeBlocking().first().map { it.jobId })
+        assertEquals(listOf(quoteId),
+            db.collectionAccountQuoteDao().observeBlocking().first().map { it.quoteId })
+        assertNull(
+            repo.saveCollectionAccount(
+                accountInput(clientId, profileId).copy(jobIds = listOf(jobId)),
+            ),
+        )
+
+        // Al cancelar A y B los orígenes quedan libres para la UI y para
+        // el guardado, aunque las filas de vínculo se conservan.
+        assertTrue(repo.cancelCollectionAccount(accA))
+        assertTrue(repo.cancelCollectionAccount(accB))
+        assertTrue(db.collectionAccountJobDao().observeBlocking().first().isEmpty())
+        assertTrue(db.collectionAccountQuoteDao().observeBlocking().first().isEmpty())
+
+        // Historial intacto: la fila vínculo→Cuenta cancelada sigue ahí.
+        assertEquals(listOf(jobId),
+            db.collectionAccountJobDao().forAccount(accA).map { it.jobId })
+        assertEquals(listOf(accA),
+            db.collectionAccountJobDao().forJob(jobId).map { it.accountId })
+        assertEquals(listOf(quoteId),
+            db.collectionAccountQuoteDao().forAccount(accB).map { it.quoteId })
+        assertEquals(listOf(accB),
+            db.collectionAccountQuoteDao().forQuote(quoteId).map { it.accountId })
+        // observeAll conserva todos los vínculos, bloqueantes o no.
+        assertEquals(1, db.collectionAccountJobDao().observeAll().first().size)
+        assertEquals(1, db.collectionAccountQuoteDao().observeAll().first().size)
+
+        // El origen liberado puede reutilizarse en una Cuenta nueva.
+        val accC = repo.saveCollectionAccount(
+            accountInput(clientId, profileId).copy(jobIds = listOf(jobId)),
+        )!!
+        assertEquals(listOf(jobId),
+            db.collectionAccountJobDao().observeBlocking().first().map { it.jobId })
+        val accD = repo.saveCollectionAccount(
+            accountInput(clientId, profileId).copy(quoteIds = listOf(quoteId)),
+        )!!
+
+        // Edición: una Cuenta ajena no puede apropiarse de un origen que
+        // sigue ocupado por otra Cuenta no cancelada (parity con la UI,
+        // que no ofrecería el origen; aquí se exige el rechazo real).
+        assertNull(
+            repo.saveCollectionAccount(
+                accountInput(clientId, profileId).copy(jobIds = listOf(jobId)),
+                existingId = accD,
+            ),
+        )
+        assertNull(
+            repo.saveCollectionAccount(
+                accountInput(clientId, profileId).copy(quoteIds = listOf(quoteId)),
+                existingId = accC,
+            ),
+        )
+    }
 }
