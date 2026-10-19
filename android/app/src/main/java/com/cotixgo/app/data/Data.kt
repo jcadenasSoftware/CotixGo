@@ -840,6 +840,18 @@ interface CollectionAccountJobDao {
     @Query("SELECT * FROM collection_account_jobs")
     fun observeAll(): Flow<List<CollectionAccountJobEntity>>
 
+    /**
+     * Vínculos que bloquean la elegibilidad del Trabajo: solo los de
+     * Cuentas no canceladas (docs/05 §179). Los vínculos de una Cuenta
+     * CANCELADA se conservan como historial pero dejan de bloquear.
+     */
+    @Query(
+        "SELECT j.* FROM collection_account_jobs j " +
+            "INNER JOIN collection_accounts a ON a.id = j.accountId " +
+            "WHERE a.status != 'CANCELADA'",
+    )
+    fun observeBlocking(): Flow<List<CollectionAccountJobEntity>>
+
     @Query("DELETE FROM collection_account_jobs WHERE accountId = :accountId")
     suspend fun deleteForAccount(accountId: String)
 
@@ -860,6 +872,19 @@ interface CollectionAccountQuoteDao {
 
     @Query("SELECT * FROM collection_account_quotes")
     fun observeAll(): Flow<List<CollectionAccountQuoteEntity>>
+
+    /**
+     * Vínculos que bloquean la elegibilidad de la Cotización: solo los
+     * de Cuentas no canceladas (docs/05 §179). Los vínculos de una
+     * Cuenta CANCELADA se conservan como historial pero dejan de
+     * bloquear.
+     */
+    @Query(
+        "SELECT q.* FROM collection_account_quotes q " +
+            "INNER JOIN collection_accounts a ON a.id = q.accountId " +
+            "WHERE a.status != 'CANCELADA'",
+    )
+    fun observeBlocking(): Flow<List<CollectionAccountQuoteEntity>>
 
     @Query("DELETE FROM collection_account_quotes WHERE accountId = :accountId")
     suspend fun deleteForAccount(accountId: String)

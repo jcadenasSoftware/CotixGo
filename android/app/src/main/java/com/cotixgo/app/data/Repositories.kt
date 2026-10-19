@@ -1077,6 +1077,18 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
     fun observeAllCollectionAccountQuotes(): Flow<List<CollectionAccountQuoteEntity>> =
         db.collectionAccountQuoteDao().observeAll()
 
+    /**
+     * Vínculos que bloquean orígenes (solo Cuentas no canceladas). Es
+     * la forma reactiva de la misma regla canónica que aplica
+     * `jobTakenByOtherAccount`/`quoteTakenByOtherAccount` al guardar:
+     * "a lo sumo una Cuenta no cancelada" (docs/05 §179).
+     */
+    fun observeBlockingCollectionAccountJobs(): Flow<List<CollectionAccountJobEntity>> =
+        db.collectionAccountJobDao().observeBlocking()
+
+    fun observeBlockingCollectionAccountQuotes(): Flow<List<CollectionAccountQuoteEntity>> =
+        db.collectionAccountQuoteDao().observeBlocking()
+
     fun observeCollectionMethods(userId: String): Flow<List<CollectionMethodEntity>> =
         db.collectionMethodDao().observeForUser(userId)
 

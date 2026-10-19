@@ -236,6 +236,8 @@ class AppViewModel(
     fun observeCollectionAccountQuotes(id: String) = repo.observeCollectionAccountQuotes(id)
     fun observeAllCollectionAccountJobs() = repo.observeAllCollectionAccountJobs()
     fun observeAllCollectionAccountQuotes() = repo.observeAllCollectionAccountQuotes()
+    fun observeBlockingCollectionAccountJobs() = repo.observeBlockingCollectionAccountJobs()
+    fun observeBlockingCollectionAccountQuotes() = repo.observeBlockingCollectionAccountQuotes()
     fun observePaymentsForAccount(id: String) = repo.observePaymentsForAccount(id)
     fun observeAccountAssignments(id: String) = repo.observeAccountAssignments(id)
     fun observePayment(id: String) = repo.observePayment(id)
