@@ -1042,28 +1042,35 @@ class SyncRepository(
     }
 
     /**
-     * 4. Cierre del Trabajo tras su cola de actividades: una transición a
+     * 4. Cierre del Trabajo tras su cola de hijos: una transición a
      *    estado terminal (`ENTREGADO`/`CANCELADO`, la única vía que el
-     *    documento tiene para quedar cerrado) espera las operaciones de
-     *    `job_activity` del MISMO Trabajo encoladas ANTES de ella
-     *    (`seq` menor), de modo que el servidor aplique primero la
-     *    actividad y luego el cierre. Es orden causal, no reintento: sin
-     *    ella el lote puede aplicar la entrega antes que una actividad
-     *    completada localmente con anterioridad, y un Informe emitido en
-     *    esa ventana capturaría un snapshot de ejecución obsoleto (F5
-     *    solo presenta `COMPLETADA`). La espera cubre los estados de
-     *    cola vigentes (`PENDING`/`RETRY`/`PAUSED` vía
-     *    `pendingOpsForEntity`): una actividad pausada retiene el cierre
-     *    hasta resolverse — nunca se adelanta, se reintenta ni se
-     *    descarta por ella.
+     *    documento tiene para quedar cerrado) espera las operaciones del
+     *    MISMO Trabajo encoladas ANTES de ella (`seq` menor), de modo que
+     *    el servidor aplique primero los hijos y luego el cierre. Es
+     *    orden causal, no reintento: sin ella el lote puede aplicar la
+     *    entrega antes que registros completados localmente con
+     *    anterioridad, y un Informe emitido en esa ventana capturaría un
+     *    snapshot obsoleto (F5 presenta actividades `COMPLETADA` y
+     *    materiales como ejecución documentada). La espera cubre los
+     *    estados de cola vigentes (`PENDING`/`RETRY`/`PAUSED`): un hijo
+     *    pausado retiene el cierre hasta resolverse — nunca se adelanta,
+     *    se reintenta ni se descarta por él.
      *
-     *    Acotada a `job_activity`: `job_material` tiene la misma forma
-     *    de subordinación pero su exposición observada es distinta y la
-     *    decisión de alcance aprobada la deja fuera. No hay ciclo: las
-     *    ops hijas anteriores solo esperan ops del padre con `seq` menor
-     *    (regla 2), esta transición tiene `seq` mayor y no las retiene;
-     *    una hija encolada DESPUÉS del cierre espera a la transición
-     *    por la regla 2 ordinaria, que tampoco se relaja aquí.
+     *    Hijos cubiertos (mismo `jobId`, `seq` menor):
+     *    - `job_activity` (ops por fila del trabajo);
+     *    - `job_material` (idem — descriptivos y vinculados);
+     *    - `inventory_movement` con `movementType = JOB_CONSUMPTION` e
+     *      identificado por `jobId` en el payload de la op: el consumo
+     *      vinculado al material debe fecharse antes del cierre igual
+     *      que el registro que lo origina. Un movimiento que solo
+     *      REFERENCIA el trabajo (p.ej. `SOBRANTE`/`AJUSTE` con `jobId`)
+     *      no es hijo de su ciclo de vida y no retiene el cierre.
+     *
+     *    No hay ciclo: toda espera apunta de `seq` mayor a menor (los
+     *    hijos solo esperan ops del padre con `seq` menor por la regla
+     *    2, y esta transición tiene `seq` mayor y no las retiene); un
+     *    hijo encolado DESPUÉS del cierre espera a la transición por la
+     *    regla 2 ordinaria, que tampoco se relaja aquí.
      */
     private suspend fun terminalJobGateReason(op: SyncOperationEntity): String? {
         if (op.entityType != EntityTypes.JOB || op.opType != "upsert") return null
@@ -1080,6 +1087,27 @@ class SyncRepository(
                     .any { it.seq < op.seq }
             ) {
                 return "activity_pending:${EntityTypes.JOB_ACTIVITY}:${activity.id}"
+            }
+        }
+        for (material in db.jobMaterialDao().observeForJob(op.entityId).first()) {
+            if (db.syncDao()
+                    .pendingOpsForEntity(EntityTypes.JOB_MATERIAL, material.id)
+                    .any { it.seq < op.seq }
+            ) {
+                return "material_pending:${EntityTypes.JOB_MATERIAL}:${material.id}"
+            }
+        }
+        for (child in db.syncDao().unresolvedOps()) {
+            if (child.entityType != EntityTypes.INVENTORY_MOVEMENT ||
+                child.seq >= op.seq) continue
+            val p = runCatching {
+                json.parseToJsonElement(child.payloadJson).jsonObject
+            }.getOrNull() ?: continue
+            if (p["movementType"]?.jsonPrimitive?.content ==
+                com.cotixgo.app.core.MovementType.JOB_CONSUMPTION.name &&
+                p["jobId"]?.jsonPrimitive?.content == op.entityId
+            ) {
+                return "consumption_pending:${EntityTypes.INVENTORY_MOVEMENT}:${child.entityId}"
             }
         }
         return null
