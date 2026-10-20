@@ -284,6 +284,7 @@ Decisiones aprobadas por el titular el 12/10/2026 para planificar F4 (Trabajos l
 - El cliente Android ordena en su propia cola las operaciones pendientes anteriores al cierre para que actividades, materiales y consumos se apliquen antes de la transición terminal.
 - El servidor acepta una actividad, material o consumo que llegue después del cierre — desde otro dispositivo o desde una versión anterior del cliente — mientras supere esas mismas validaciones: el registro se conserva y el inventario refleja el consumo físico declarado.
 - La aceptación tardía no reabre ni cambia el estado terminal del Trabajo. Los snapshots de Informes ya emitidos permanecen inmutables; una escritura tardía aceptada no los modifica.
+- El vínculo `job_quote` —asociación de procedencia entre una Cotización y un Trabajo (`ORIGEN`/`ADICIONAL`)— sigue el mismo principio de no congelación: el servidor no lo rechaza por el estado terminal del Trabajo mientras la operación supere las validaciones vigentes del vínculo (Cotización `APROBADA` y del mismo Cliente), así que un vínculo válido puede sincronizarse después del cierre. No se incorpora al gate de ordenación porque no altera snapshots de Informes, inventario ni la elegibilidad de Cuentas de Cobro. Esta aclaración no cambia las reglas de estado de las Cotizaciones ni habilita escrituras que no superen sus validaciones.
 
 **Dirección de ejecución**
 
