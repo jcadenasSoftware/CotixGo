@@ -982,6 +982,61 @@ class SyncRepository(
             val local = getLocal(depType, depId)
             if (local != null && local.second == 0) return "dep_unsynced:$depType:$depId"
         }
+        return sourceClaimBlockReason(op)
+    }
+
+    /**
+     * 3. Origen reclamado por una Cuenta de Cobro: el servidor evalúa la
+     *    membresía (un origen en a lo sumo una Cuenta NO cancelada,
+     *    docs/05 §179) contra el estado YA aplicado de todas las Cuentas
+     *    que lo vinculan — no contra el estado local. Cuando otra Cuenta
+     *    que hoy vincula el Trabajo/Cotización tiene operaciones
+     *    pendientes anteriores a este reclamo (caso canónico: la
+     *    cancelación que lo libera), enviarlo ahora lo evalúa contra un
+     *    origen aún ocupado y produce un rechazo determinista que pausa
+     *    al reclamo y a sus dependientes. La espera es ordenación, no
+     *    reintento: ningún VALIDATION_ERROR se relaja ni se reenvía.
+     *
+     *    Las filas de membresía locales incluyen el historial de Cuentas
+     *    ya canceladas, así que cualquier dueño con ops pendientes debe
+     *    resolverse primero. Solo se cuentan ops ANTERIORES al reclamo:
+     *    no existe orden circular (las del dueño siempre precedieron al
+     *    reclamo legítimo, que la UI solo permite tras liberar el origen)
+     *    y flujos ajenos quedan intactos. Una Cuenta cuya op declara
+     *    `status = CANCELADA` no reclama — es precisamente la que libera.
+     */
+    private suspend fun sourceClaimBlockReason(op: SyncOperationEntity): String? {
+        if (op.entityType != EntityTypes.COLLECTION_ACCOUNT) return null
+        val p = runCatching {
+            json.parseToJsonElement(op.payloadJson).jsonObject
+        }.getOrNull() ?: return null
+        if (p["status"]?.jsonPrimitive?.content ==
+            com.cotixgo.app.core.CollectionAccountStatus.CANCELADA.name
+        ) return null
+        val jobIds = p["jobIds"]?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.content }.orEmpty()
+        val quoteIds = p["quoteIds"]?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.content }.orEmpty()
+        for (jobId in jobIds) {
+            val blocked = db.collectionAccountJobDao().forJob(jobId)
+                .filter { it.accountId != op.entityId }
+                .any { link ->
+                    db.syncDao()
+                        .pendingOpsForEntity(EntityTypes.COLLECTION_ACCOUNT, link.accountId)
+                        .any { it.seq < op.seq }
+                }
+            if (blocked) return "source_owner_pending:job:$jobId"
+        }
+        for (quoteId in quoteIds) {
+            val blocked = db.collectionAccountQuoteDao().forQuote(quoteId)
+                .filter { it.accountId != op.entityId }
+                .any { link ->
+                    db.syncDao()
+                        .pendingOpsForEntity(EntityTypes.COLLECTION_ACCOUNT, link.accountId)
+                        .any { it.seq < op.seq }
+                }
+            if (blocked) return "source_owner_pending:quote:$quoteId"
+        }
         return null
     }
 
