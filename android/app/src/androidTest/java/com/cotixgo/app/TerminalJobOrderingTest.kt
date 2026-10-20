@@ -7,13 +7,21 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.cotixgo.app.core.Ids
 import com.cotixgo.app.core.JobActivityStatus
 import com.cotixgo.app.core.JobStatus
+import com.cotixgo.app.core.MaterialCondition
+import com.cotixgo.app.core.MaterialOrigin
+import com.cotixgo.app.core.MovementOrigin
+import com.cotixgo.app.core.MovementType
 import com.cotixgo.app.core.nowEpochMillis
 import com.cotixgo.app.data.AppDatabase
 import com.cotixgo.app.data.AppRepository
 import com.cotixgo.app.data.EntityTypes
+import com.cotixgo.app.data.InventoryMovementEntity
 import com.cotixgo.app.data.JobActivityEntity
 import com.cotixgo.app.data.JobActivityInput
 import com.cotixgo.app.data.JobInput
+import com.cotixgo.app.data.JobMaterialEntity
+import com.cotixgo.app.data.JobMaterialInput
+import com.cotixgo.app.data.MaterialInput
 import com.cotixgo.app.data.ReportInput
 import com.cotixgo.app.data.Session
 import com.cotixgo.app.data.SyncPayloads
@@ -464,5 +472,342 @@ class TerminalJobOrderingTest {
         assertEquals("DONE", lastOp(EntityTypes.JOB, jobId).state)
         // Y el orden causal del Trabajo siguió íntegro.
         assertTrue(lastAppliedIdxOfEntity(a1) < entregadoIdx)
+    }
+
+    // ---------- Regresión: materiales y consumos antes del cierre ----------
+
+    /**
+     * `job_material` descriptivo sembrado directamente (fila + op):
+     * localmente el repo no puede crearlo sobre un Trabajo terminal.
+     */
+    private suspend fun seedMaterialBypassingRepo(jobId: String): String {
+        val now = nowEpochMillis()
+        val material = JobMaterialEntity(
+            id = Ids.new(), jobId = jobId, description = "Material tardío",
+            origin = MaterialOrigin.CLIENTE.name,
+            createdAt = now, updatedAt = now,
+        )
+        db.withTransaction {
+            db.jobMaterialDao().upsert(material)
+            sync.enqueue(
+                EntityTypes.JOB_MATERIAL, material.id,
+                SyncPayloads.jobMaterial(material), baseServerVersion = 0,
+            )
+        }
+        return material.id
+    }
+
+    /**
+     * `inventory_movement` sembrado directamente (fila + op) con el
+     * `jobId` dado — reproduce tanto consumos tardíos como movimientos
+     * que solo REFERENCIAN el trabajo (p.ej. `SOBRANTE`).
+     */
+    private suspend fun seedMovementBypassingRepo(
+        jobId: String,
+        movementType: MovementType,
+        origin: MovementOrigin,
+        materialId: String,
+        jobMaterialId: String? = null,
+    ): String {
+        val now = nowEpochMillis()
+        val mov = InventoryMovementEntity(
+            id = Ids.new(), userId = db.userDao().get()!!.id,
+            materialId = materialId, condition = MaterialCondition.NUEVO.name,
+            movementType = movementType.name, origin = origin.name,
+            quantity = "1", unit = "ud",
+            jobId = jobId, jobMaterialId = jobMaterialId,
+            occurredAt = now, createdAt = now, updatedAt = now,
+        )
+        db.withTransaction {
+            db.inventoryMovementDao().upsert(mov)
+            sync.enqueue(
+                EntityTypes.INVENTORY_MOVEMENT, mov.id,
+                SyncPayloads.inventoryMovement(mov), baseServerVersion = 0,
+            )
+        }
+        return mov.id
+    }
+
+    private suspend fun consumptionIdsForJob(jobId: String): List<String> =
+        db.inventoryMovementDao().observeForJob(jobId).first()
+            .filter { it.movementType == MovementType.JOB_CONSUMPTION.name }
+            .map { it.id }
+
+    @Test
+    fun entregado_descriptiveMaterialsEnqueuedBefore_applyFirst() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente MatDesc")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        fake.scripted = true
+        fake.respond = recordingResponder
+        appliedLog.clear()
+        sync.syncNow()
+
+        assertNull(repo.setJobStatus(jobId, JobStatus.EN_PROCESO))
+        val m1 = repo.saveJobMaterial(
+            JobMaterialInput(
+                jobId = jobId, description = "Material previo 1",
+                origin = MaterialOrigin.CLIENTE,
+            ),
+        )!!
+        val m2 = repo.saveJobMaterial(
+            JobMaterialInput(
+                jobId = jobId, description = "Material previo 2",
+                origin = MaterialOrigin.PROFESIONAL, quantity = "3", unit = "ud",
+            ),
+        )!!
+        assertNull(repo.setJobStatus(jobId, JobStatus.ENTREGADO))
+
+        val sentBefore = fake.pushedOps.size
+        sync.syncNow()
+
+        val sent = fake.pushedOps.drop(sentBefore)
+        val entregadoIdx = sent.indexOfFirst {
+            it.str("entity_id") == jobId && it.payloadStatus() == "ENTREGADO"
+        }
+        assertTrue(entregadoIdx > 0)
+        assertTrue(sent.indexOfLast { it.str("entity_id") == m1 } in 0 until entregadoIdx)
+        assertTrue(sent.indexOfLast { it.str("entity_id") == m2 } in 0 until entregadoIdx)
+        assertTrue(maxOf(lastAppliedIdxOfEntity(m1), lastAppliedIdxOfEntity(m2)) <
+            appliedIdxOfJobStatus(jobId, "ENTREGADO"))
+        assertEquals("DONE", lastOp(EntityTypes.JOB_MATERIAL, m1).state)
+        assertEquals("DONE", lastOp(EntityTypes.JOB_MATERIAL, m2).state)
+        assertEquals("DONE", lastOp(EntityTypes.JOB, jobId).state)
+    }
+
+    @Test
+    fun entregado_linkedMaterialAndConsumption_applyFirstInOrder() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente MatVinc")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        val catalogId = repo.saveMaterial(MaterialInput(name = "Cable -MT", unit = "ud"))!!
+        fake.scripted = true
+        fake.respond = recordingResponder
+        appliedLog.clear()
+        sync.syncNow() // trabajo, cliente, perfil y material de catálogo aplicados
+
+        assertNull(repo.setJobStatus(jobId, JobStatus.EN_PROCESO))
+        val jm = repo.saveJobMaterial(
+            JobMaterialInput(
+                jobId = jobId, description = "Consumo vinculado",
+                origin = MaterialOrigin.PROFESIONAL, quantity = "2", unit = "ud",
+                materialId = catalogId, condition = MaterialCondition.NUEVO,
+            ),
+        )!!
+        val movId = consumptionIdsForJob(jobId).single()
+        assertNull(repo.setJobStatus(jobId, JobStatus.ENTREGADO))
+
+        sync.syncNow()
+
+        // Orden causal completo: material → su consumo → cierre.
+        val entregadoIdx = appliedIdxOfJobStatus(jobId, "ENTREGADO")
+        assertTrue(lastAppliedIdxOfEntity(jm) < lastAppliedIdxOfEntity(movId))
+        assertTrue(lastAppliedIdxOfEntity(movId) < entregadoIdx)
+        assertTrue("ENTREGADO viajó tras material y consumo", entregadoIdx > 0)
+        assertEquals(1, fake.sentFor(EntityTypes.INVENTORY_MOVEMENT, movId).size)
+        assertEquals("DONE", lastOp(EntityTypes.JOB_MATERIAL, jm).state)
+        assertEquals("DONE", lastOp(EntityTypes.INVENTORY_MOVEMENT, movId).state)
+        assertEquals("DONE", lastOp(EntityTypes.JOB, jobId).state)
+    }
+
+    @Test
+    fun cancelado_descriptiveMaterialEnqueuedBefore_appliesFirst() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente MatCanc")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        val m1 = repo.saveJobMaterial(
+            JobMaterialInput(
+                jobId = jobId, description = "Material al cancelar",
+                origin = MaterialOrigin.CLIENTE,
+            ),
+        )!!
+        assertNull(repo.setJobStatus(jobId, JobStatus.CANCELADO))
+
+        fake.scripted = true
+        fake.respond = recordingResponder
+        appliedLog.clear()
+        sync.syncNow()
+
+        val cancelIdx = appliedIdxOfJobStatus(jobId, "CANCELADO")
+        assertTrue(cancelIdx > 0)
+        assertTrue(lastAppliedIdxOfEntity(m1) in 0 until cancelIdx)
+        assertEquals("DONE", lastOp(EntityTypes.JOB, jobId).state)
+    }
+
+    @Test
+    fun pausedDescriptiveMaterial_holdsTerminal() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente MatPausa")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        fake.scripted = true
+        appliedLog.clear()
+        sync.syncNow()
+
+        assertNull(repo.setJobStatus(jobId, JobStatus.EN_PROCESO))
+        val m1 = repo.saveJobMaterial(
+            JobMaterialInput(
+                jobId = jobId, description = "Rechazable",
+                origin = MaterialOrigin.CLIENTE,
+            ),
+        )!!
+        assertNull(repo.setJobStatus(jobId, JobStatus.ENTREGADO))
+
+        fake.respond = { op ->
+            if (op.str("entity_type") == EntityTypes.JOB_MATERIAL) {
+                appliedLog += op
+                FakeSyncApi.rejected(op, "VALIDATION_ERROR", "material inválido")
+            } else {
+                recordingResponder(op)
+            }
+        }
+        repeat(2) { sync.syncNow() }
+
+        assertTrue("ENTREGADO nunca viajó",
+            fake.sentFor(EntityTypes.JOB, jobId)
+                .none { it.payloadStatus() == "ENTREGADO" })
+        assertEquals("PAUSED", lastOp(EntityTypes.JOB_MATERIAL, m1).state)
+        assertEquals("PENDING", lastOp(EntityTypes.JOB, jobId).state)
+        assertTrue(appliedIdxOfJobStatus(jobId, "EN_PROCESO") >= 0)
+    }
+
+    @Test
+    fun pausedConsumption_holdsTerminal() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente ConsPausa")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        val catalogId = repo.saveMaterial(MaterialInput(name = "Cable -MT2", unit = "ud"))!!
+        fake.scripted = true
+        appliedLog.clear()
+        sync.syncNow()
+
+        assertNull(repo.setJobStatus(jobId, JobStatus.EN_PROCESO))
+        val jm = repo.saveJobMaterial(
+            JobMaterialInput(
+                jobId = jobId, description = "Consumo rechazable",
+                origin = MaterialOrigin.PROFESIONAL, quantity = "1", unit = "ud",
+                materialId = catalogId, condition = MaterialCondition.NUEVO,
+            ),
+        )!!
+        val movId = consumptionIdsForJob(jobId).single()
+        assertNull(repo.setJobStatus(jobId, JobStatus.ENTREGADO))
+
+        fake.respond = { op ->
+            if (op.str("entity_type") == EntityTypes.INVENTORY_MOVEMENT) {
+                appliedLog += op
+                FakeSyncApi.rejected(op, "VALIDATION_ERROR", "consumo inválido")
+            } else {
+                recordingResponder(op)
+            }
+        }
+        repeat(2) { sync.syncNow() }
+
+        // El material aplicó pero el consumo quedó pausado → el cierre
+        // no se adelanta ni deja un estado a medias.
+        assertTrue(lastAppliedIdxOfEntity(jm) >= 0)
+        assertTrue("ENTREGADO nunca viajó",
+            fake.sentFor(EntityTypes.JOB, jobId)
+                .none { it.payloadStatus() == "ENTREGADO" })
+        assertEquals("PAUSED", lastOp(EntityTypes.INVENTORY_MOVEMENT, movId).state)
+        assertEquals("PENDING", lastOp(EntityTypes.JOB, jobId).state)
+    }
+
+    @Test
+    fun laterSequencedMaterialOps_applyAfterTerminal_noCycle() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente MatTarde")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        val catalogId = repo.saveMaterial(MaterialInput(name = "Cable -MT3", unit = "ud"))!!
+        fake.scripted = true
+        fake.respond = recordingResponder
+        appliedLog.clear()
+        sync.syncNow()
+
+        assertNull(repo.setJobStatus(jobId, JobStatus.EN_PROCESO))
+        assertNull(repo.setJobStatus(jobId, JobStatus.ENTREGADO))
+        // Hijos encolados DESPUÉS del cierre (seq mayor): el gate no los
+        // espera — quien los retiene es la regla 2 (el padre tiene una
+        // op pendiente anterior), así que aplican después, sin ciclo.
+        val lateMat = seedMaterialBypassingRepo(jobId)
+        val lateMov = seedMovementBypassingRepo(
+            jobId, MovementType.JOB_CONSUMPTION, MovementOrigin.TRABAJO,
+            materialId = catalogId, jobMaterialId = lateMat,
+        )
+
+        val sentBefore = fake.pushedOps.size
+        sync.syncNow()
+
+        val sent = fake.pushedOps.drop(sentBefore)
+        val entregadoIdx = sent.indexOfFirst {
+            it.str("entity_id") == jobId && it.payloadStatus() == "ENTREGADO"
+        }
+        assertTrue(entregadoIdx > 0)
+        assertTrue(sent.indexOfFirst { it.str("entity_id") == lateMat } > entregadoIdx)
+        assertTrue(sent.indexOfFirst { it.str("entity_id") == lateMov } > entregadoIdx)
+        assertEquals("DONE", lastOp(EntityTypes.JOB, jobId).state)
+        assertEquals("DONE", lastOp(EntityTypes.JOB_MATERIAL, lateMat).state)
+        assertEquals("DONE", lastOp(EntityTypes.INVENTORY_MOVEMENT, lateMov).state)
+    }
+
+    @Test
+    fun sobranteReferencingJob_doesNotBlockTerminal() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente Sobrante")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        val catalogId = repo.saveMaterial(MaterialInput(name = "Cable -MT4", unit = "ud"))!!
+        fake.scripted = true
+        appliedLog.clear()
+        sync.syncNow()
+
+        assertNull(repo.setJobStatus(jobId, JobStatus.EN_PROCESO))
+        // Movimiento que REFERENCIA el trabajo pero no es hijo de su
+        // ciclo (AJUSTE/SOBRANTE): encolado antes del cierre y pausado,
+        // no debe retener la transición terminal.
+        val sob = seedMovementBypassingRepo(
+            jobId, MovementType.ADJUSTMENT_IN, MovementOrigin.SOBRANTE,
+            materialId = catalogId,
+        )
+        assertNull(repo.setJobStatus(jobId, JobStatus.ENTREGADO))
+
+        fake.respond = { op ->
+            if (op.str("entity_type") == EntityTypes.INVENTORY_MOVEMENT) {
+                appliedLog += op
+                FakeSyncApi.rejected(op, "VALIDATION_ERROR", "sobrante inválido")
+            } else {
+                recordingResponder(op)
+            }
+        }
+        repeat(2) { sync.syncNow() }
+
+        assertTrue("ENTREGADO aplicó pese al sobrante pausado",
+            appliedIdxOfJobStatus(jobId, "ENTREGADO") >= 0)
+        assertEquals("DONE", lastOp(EntityTypes.JOB, jobId).state)
+        assertEquals("PAUSED", lastOp(EntityTypes.INVENTORY_MOVEMENT, sob).state)
+    }
+
+    @Test
+    fun otherJobMaterialOps_doNotBlockTerminal() = runBlocking {
+        val (client, profile) = seedClientProfile("Cliente AjenoMat")
+        val jobId = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        val jobId2 = repo.saveJob(JobInput(clientId = client.id, profileId = profile.id))!!
+        fake.scripted = true
+        appliedLog.clear()
+        sync.syncNow()
+
+        assertNull(repo.setJobStatus(jobId, JobStatus.EN_PROCESO))
+        val mOther = repo.saveJobMaterial(
+            JobMaterialInput(
+                jobId = jobId2, description = "Material del otro trabajo",
+                origin = MaterialOrigin.CLIENTE,
+            ),
+        )!!
+        assertNull(repo.setJobStatus(jobId, JobStatus.ENTREGADO))
+
+        fake.respond = { op ->
+            if (op.str("entity_id") == mOther) {
+                appliedLog += op
+                FakeSyncApi.rejected(op, "VALIDATION_ERROR", "material inválido")
+            } else {
+                recordingResponder(op)
+            }
+        }
+        repeat(2) { sync.syncNow() }
+
+        // El material pausado del OTRO trabajo no retiene este cierre.
+        assertTrue(appliedIdxOfJobStatus(jobId, "ENTREGADO") >= 0)
+        assertEquals("DONE", lastOp(EntityTypes.JOB, jobId).state)
+        assertEquals("PAUSED", lastOp(EntityTypes.JOB_MATERIAL, mOther).state)
     }
 }
