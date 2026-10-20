@@ -982,6 +982,7 @@ class SyncRepository(
             val local = getLocal(depType, depId)
             if (local != null && local.second == 0) return "dep_unsynced:$depType:$depId"
         }
+        terminalJobGateReason(op)?.let { return it }
         return sourceClaimBlockReason(op)
     }
 
@@ -1036,6 +1037,50 @@ class SyncRepository(
                         .any { it.seq < op.seq }
                 }
             if (blocked) return "source_owner_pending:quote:$quoteId"
+        }
+        return null
+    }
+
+    /**
+     * 4. Cierre del Trabajo tras su cola de actividades: una transición a
+     *    estado terminal (`ENTREGADO`/`CANCELADO`, la única vía que el
+     *    documento tiene para quedar cerrado) espera las operaciones de
+     *    `job_activity` del MISMO Trabajo encoladas ANTES de ella
+     *    (`seq` menor), de modo que el servidor aplique primero la
+     *    actividad y luego el cierre. Es orden causal, no reintento: sin
+     *    ella el lote puede aplicar la entrega antes que una actividad
+     *    completada localmente con anterioridad, y un Informe emitido en
+     *    esa ventana capturaría un snapshot de ejecución obsoleto (F5
+     *    solo presenta `COMPLETADA`). La espera cubre los estados de
+     *    cola vigentes (`PENDING`/`RETRY`/`PAUSED` vía
+     *    `pendingOpsForEntity`): una actividad pausada retiene el cierre
+     *    hasta resolverse — nunca se adelanta, se reintenta ni se
+     *    descarta por ella.
+     *
+     *    Acotada a `job_activity`: `job_material` tiene la misma forma
+     *    de subordinación pero su exposición observada es distinta y la
+     *    decisión de alcance aprobada la deja fuera. No hay ciclo: las
+     *    ops hijas anteriores solo esperan ops del padre con `seq` menor
+     *    (regla 2), esta transición tiene `seq` mayor y no las retiene;
+     *    una hija encolada DESPUÉS del cierre espera a la transición
+     *    por la regla 2 ordinaria, que tampoco se relaja aquí.
+     */
+    private suspend fun terminalJobGateReason(op: SyncOperationEntity): String? {
+        if (op.entityType != EntityTypes.JOB || op.opType != "upsert") return null
+        val status = runCatching {
+            json.parseToJsonElement(op.payloadJson).jsonObject["status"]
+                ?.jsonPrimitive?.content
+        }.getOrNull() ?: return null
+        if (status != com.cotixgo.app.core.JobStatus.ENTREGADO.name &&
+            status != com.cotixgo.app.core.JobStatus.CANCELADO.name
+        ) return null
+        for (activity in db.jobActivityDao().forJob(op.entityId)) {
+            if (db.syncDao()
+                    .pendingOpsForEntity(EntityTypes.JOB_ACTIVITY, activity.id)
+                    .any { it.seq < op.seq }
+            ) {
+                return "activity_pending:${EntityTypes.JOB_ACTIVITY}:${activity.id}"
+            }
         }
         return null
     }
