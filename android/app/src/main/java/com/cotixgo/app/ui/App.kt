@@ -1,18 +1,47 @@
 package com.cotixgo.app.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -112,6 +141,50 @@ fun CotixGoApp(repo: AppRepository, sync: SyncRepository, auth: AuthRepository) 
     }
 }
 
+/**
+ * Fila del menú "Más": solo enlaza pantallas ya existentes; no agrega
+ * funciones ni datos nuevos (referencia visual: navegación con "Más").
+ */
+@Composable
+private fun MoreSheetRow(
+    label: String,
+    tileColor: Color,
+    leading: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.Transparent,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Surface(
+                modifier = Modifier.size(38.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = tileColor,
+            ) {
+                Box(contentAlignment = Alignment.Center) { leading() }
+            }
+            Text(
+                label,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CotixGoNavHost(
     nav: NavHostController,
@@ -145,6 +218,8 @@ private fun CotixGoNavHost(
     Scaffold(
         bottomBar = {
             if (showBar) {
+                var showMore by remember { mutableStateOf(false) }
+                // Referencia: Inicio, Clientes, Cotizaciones, Trabajos, Más.
                 NavigationBar {
                     NavigationBarItem(
                         selected = currentRoute == Routes.DASHBOARD,
@@ -154,7 +229,7 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("⌂") },
+                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
                         label = { Text("Inicio") },
                     )
                     NavigationBarItem(
@@ -165,7 +240,7 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("◎") },
+                        icon = { Icon(Icons.Filled.Person, contentDescription = null) },
                         label = { Text("Clientes") },
                     )
                     NavigationBarItem(
@@ -176,7 +251,12 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("▤") },
+                        icon = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.List,
+                                contentDescription = null,
+                            )
+                        },
                         label = { Text("Cotiz.") },
                     )
                     NavigationBarItem(
@@ -187,42 +267,116 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("⚒") },
+                        icon = { Icon(Icons.Filled.Build, contentDescription = null) },
                         label = { Text("Trabajos") },
                     )
                     NavigationBarItem(
-                        selected = currentRoute == Routes.REPORTS,
-                        onClick = {
-                            nav.navigate(Routes.REPORTS) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Text("▣") },
-                        label = { Text("Informes") },
+                        selected = currentRoute == Routes.REPORTS ||
+                            currentRoute == Routes.COLLECTIONS ||
+                            currentRoute == Routes.INVENTORY,
+                        onClick = { showMore = true },
+                        icon = { Icon(Icons.Filled.Menu, contentDescription = null) },
+                        label = { Text("Más") },
                     )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.COLLECTIONS,
-                        onClick = {
-                            nav.navigate(Routes.COLLECTIONS) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Text("$") },
-                        label = { Text("Cobros") },
-                    )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.INVENTORY,
-                        onClick = {
-                            nav.navigate(Routes.INVENTORY) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Text("▦") },
-                        label = { Text("Inventario") },
-                    )
+                }
+                // "Más" como bottom sheet: solo enlaza pantallas existentes.
+                if (showMore) {
+                    ModalBottomSheet(onDismissRequest = { showMore = false }) {
+                        Column(Modifier.padding(bottom = 24.dp)) {
+                            Text(
+                                "Más",
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            MoreSheetRow(
+                                label = "Informes",
+                                tileColor = CotixGoBlueSoft,
+                                leading = {
+                                    Icon(Icons.Filled.Create, contentDescription = null,
+                                        tint = CotixGoBlue, modifier = Modifier.size(20.dp))
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.REPORTS) {
+                                        popUpTo(Routes.DASHBOARD)
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Cobros",
+                                tileColor = CotixGoAmberSoft,
+                                leading = {
+                                    Text(
+                                        "$",
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.COLLECTIONS) {
+                                        popUpTo(Routes.DASHBOARD)
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Inventario",
+                                tileColor = MaterialTheme.colorScheme.secondaryContainer,
+                                leading = {
+                                    Icon(
+                                        Icons.Filled.ShoppingCart,
+                                        contentDescription = null,
+                                        tint = CotixGoNavy,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.INVENTORY) {
+                                        popUpTo(Routes.DASHBOARD)
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Cuenta y sincronización",
+                                tileColor = MaterialTheme.colorScheme.secondaryContainer,
+                                leading = {
+                                    Icon(
+                                        Icons.Filled.AccountCircle,
+                                        contentDescription = null,
+                                        tint = CotixGoNavy,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.ACCOUNT)
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Ajustes",
+                                tileColor = MaterialTheme.colorScheme.secondaryContainer,
+                                leading = {
+                                    Icon(
+                                        Icons.Filled.Settings,
+                                        contentDescription = null,
+                                        tint = CotixGoNavy,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.SETTINGS)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         },
@@ -273,6 +427,7 @@ private fun CotixGoNavHost(
                     onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
                     onSyncAttention = { nav.navigate(Routes.CONFLICTS) },
                     onSettings = { nav.navigate(Routes.SETTINGS) },
+                    onAccount = { nav.navigate(Routes.ACCOUNT) },
                 )
             }
             composable(Routes.CLIENTS) {

@@ -16,6 +16,7 @@ import com.cotixgo.app.data.JobEntity
 import com.cotixgo.app.data.QuoteEntity
 import com.cotixgo.app.data.ReportEntity
 import com.cotixgo.app.ui.DashboardScreen
+import com.cotixgo.app.ui.dashboardDayLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -105,7 +106,7 @@ class DashboardScreenTest {
     fun accionCuentaDeCobro_habilitadaYNavega() {
         var navigated = false
         screen(onNewAccount = { navigated = true })
-        compose.onNodeWithText("+ Cuenta de Cobro").assertIsEnabled().performClick()
+        compose.onNodeWithText("Cuenta de Cobro").assertIsEnabled().performClick()
         assertTrue(navigated)
     }
 
@@ -126,8 +127,8 @@ class DashboardScreenTest {
         compose.onNodeWithText("Trabajos programados y en proceso").assertExists()
         compose.onNodeWithText("Informes pendientes").assertExists()
         compose.onNodeWithText("Cuentas por cobrar").assertExists()
-        val vencida = java.time.LocalDate.ofEpochDay(expiredQuote.expiryDateEpochDay)
-        val vence = java.time.LocalDate.ofEpochDay(emittedQuote.expiryDateEpochDay)
+        val vencida = dashboardDayLabel(expiredQuote.expiryDateEpochDay)
+        val vence = dashboardDayLabel(emittedQuote.expiryDateEpochDay)
         compose.onNodeWithText("Vencida: $vencida", substring = true).assertExists()
         compose.onNodeWithText("Vence: $vence", substring = true).assertExists()
 

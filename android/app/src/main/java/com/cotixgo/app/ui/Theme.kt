@@ -1,26 +1,41 @@
 package com.cotixgo.app.ui
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-// Identidad CotixGo según la referencia visual: azul marino + acento naranja.
-private val CotixGoNavy = Color(0xFF0A1633)
-private val CotixGoBlue = Color(0xFF2E7CF6)
-private val CotixGoOrange = Color(0xFFFF9F2E)
-private val CotixGoSurface = Color(0xFF0F1E42)
-private val CotixGoOnSurface = Color(0xFFE9EEF8)
+// Identidad CotixGo según la referencia visual: azul marino + azul
+// brillante + ámbar sobre superficies claras (uso en campo, legibilidad).
+val CotixGoNavy = Color(0xFF0A1633)
+val CotixGoBlue = Color(0xFF2E7CF6)
+val CotixGoAmber = Color(0xFFFF9F2E)
 
-private val CotixGoColorScheme = darkColorScheme(
+// Tonos suaves para tarjetas de estado e insignias.
+val CotixGoBlueSoft = Color(0xFFDCE9FF)
+val CotixGoAmberSoft = Color(0xFFFFEACC)
+val CotixGoGreen = Color(0xFF1E8E4E)
+val CotixGoGreenSoft = Color(0xFFE1F3E8)
+val CotixGoSlate = Color(0xFF54617E)
+
+private val CotixGoColorScheme = lightColorScheme(
     primary = CotixGoBlue,
-    secondary = CotixGoOrange,
-    background = CotixGoNavy,
-    surface = CotixGoSurface,
     onPrimary = Color.White,
-    onSecondary = CotixGoNavy,
-    onBackground = CotixGoOnSurface,
-    onSurface = CotixGoOnSurface,
+    primaryContainer = CotixGoBlueSoft,
+    onPrimaryContainer = CotixGoNavy,
+    secondary = CotixGoSlate,
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE6EBF5),
+    onSecondaryContainer = CotixGoNavy,
+    tertiary = Color(0xFF8A5A00),
+    onTertiary = Color.White,
+    background = Color(0xFFF4F6FB),
+    onBackground = Color(0xFF16233F),
+    surface = Color.White,
+    onSurface = Color(0xFF16233F),
+    surfaceVariant = Color(0xFFE8EDF6),
+    onSurfaceVariant = Color(0xFF4A5670),
+    outline = Color(0xFFC3CBDC),
 )
 
 @Composable
