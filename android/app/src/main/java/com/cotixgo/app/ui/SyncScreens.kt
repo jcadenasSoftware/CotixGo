@@ -1,25 +1,35 @@
 package com.cotixgo.app.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -31,8 +41,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.cotixgo.app.R
 import com.cotixgo.app.data.QuoteVersionEntity
 import com.cotixgo.app.data.SyncConflictEntity
 import com.cotixgo.app.data.SyncOperationEntity
@@ -65,19 +82,54 @@ fun AccountScreen(
     var newPass by remember { mutableStateOf("") }
     var confirmed by remember { mutableStateOf(false) }
     var baseUrl by remember { mutableStateOf(apiBaseUrl) }
+    val loginMode = boundEmail == null && mode == "login"
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Cuenta y sincronización") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            if (loginMode) {
+                Surface(color = MaterialTheme.colorScheme.surface) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .padding(horizontal = 4.dp),
+                    ) {
+                        IconButton(
+                            onClick = { mode = "menu" },
+                            modifier = Modifier.align(Alignment.CenterStart),
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Volver",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Image(
+                            painter = painterResource(R.drawable.cotixgo_logo_horizontal),
+                            contentDescription = "CotixGo",
+                            modifier = Modifier.align(Alignment.Center).height(36.dp),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                }
+            } else {
+                TopAppBar(title = { Text("Cuenta y sincronización") })
+            }
+        },
+    ) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (boundEmail == null) {
-                Text("Sin cuenta vinculada", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "El trabajo local sigue disponible sin conexión. Vincular una cuenta activa la sincronización con el servidor.",
-                    color = MaterialTheme.colorScheme.secondary,
-                )
+                if (mode != "login") {
+                    Text("Sin cuenta vinculada", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "El trabajo local sigue disponible sin conexión. Vincular una cuenta activa la sincronización con el servidor.",
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
                 when (mode) {
                     "register" -> {
                         OutlinedTextField(value = name, onValueChange = { name = it },
@@ -93,16 +145,57 @@ fun AccountScreen(
                         TextButton(onClick = { mode = "menu" }) { Text("Volver") }
                     }
                     "login" -> {
-                        OutlinedTextField(value = email, onValueChange = { email = it },
-                            label = { Text("Correo") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        OutlinedTextField(value = pass, onValueChange = { pass = it },
-                            label = { Text("Contraseña") }, visualTransformation = PasswordVisualTransformation(),
-                            modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        Button(onClick = { onLogin(email, pass) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Entrar y vincular")
+                        Column(
+                            modifier = Modifier.fillMaxWidth().imePadding(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    "Iniciar sesión",
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    color = CotixGoNavy,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    "Entra con tu correo para vincular la cuenta y sincronizar tu trabajo.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                            OutlinedTextField(
+                                value = email, onValueChange = { email = it },
+                                label = { Text("Correo") }, modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Email,
+                                    imeAction = ImeAction.Next,
+                                ),
+                            )
+                            OutlinedTextField(
+                                value = pass, onValueChange = { pass = it },
+                                label = { Text("Contraseña") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Password,
+                                    imeAction = ImeAction.Done,
+                                ),
+                            )
+                            Button(
+                                onClick = { onLogin(email, pass) },
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                            ) {
+                                Text("Entrar y vincular")
+                            }
+                            TextButton(onClick = { mode = "recover" }) {
+                                Text("Recuperar acceso")
+                            }
                         }
-                        TextButton(onClick = { mode = "recover" }) { Text("Recuperar acceso") }
-                        TextButton(onClick = { mode = "menu" }) { Text("Volver") }
                     }
                     "recover" -> {
                         Text("Recuperación por correo (simulada en desarrollo local: no se envía correo real).",
