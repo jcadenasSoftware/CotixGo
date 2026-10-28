@@ -56,6 +56,7 @@ data class AppliedRetentionSnapshot(
 data class QuoteSnapshot(
     val version: Int,
     val provisionalNumber: String,
+    val title: String = "",
     val client: ClientSnapshot,
     val profile: ProfileSnapshot,
     val issueDate: String,

@@ -1,0 +1,3584 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 13,
+    "identityHash": "8bc058bc5d347651acb34589448b74d1",
+    "entities": [
+      {
+        "tableName": "users",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `mainCurrency` TEXT, `email` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mainCurrency",
+            "columnName": "mainCurrency",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "email",
+            "columnName": "email",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "professional_profiles",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `businessName` TEXT NOT NULL, `description` TEXT NOT NULL, `commercialInfo` TEXT NOT NULL, `logoRef` TEXT, `vigenciaDias` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "businessName",
+            "columnName": "businessName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commercialInfo",
+            "columnName": "commercialInfo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "logoRef",
+            "columnName": "logoRef",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "vigenciaDias",
+            "columnName": "vigenciaDias",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_professional_profiles_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_professional_profiles_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "clients",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `type` TEXT NOT NULL, `name` TEXT NOT NULL, `docType` TEXT NOT NULL, `docNumber` TEXT NOT NULL, `phone` TEXT NOT NULL, `email` TEXT NOT NULL, `address` TEXT NOT NULL, `notes` TEXT NOT NULL, `archived` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "docType",
+            "columnName": "docType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "docNumber",
+            "columnName": "docNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "phone",
+            "columnName": "phone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "email",
+            "columnName": "email",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "address",
+            "columnName": "address",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_clients_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_clients_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "services",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `profileId` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL, `suggestedPrice` TEXT NOT NULL, `archived` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "suggestedPrice",
+            "columnName": "suggestedPrice",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_services_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_services_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_services_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_services_profileId` ON `${TABLE_NAME}` (`profileId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "retention_configs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `name` TEXT NOT NULL, `ratePercent` TEXT NOT NULL, `appliesTo` TEXT NOT NULL, `archived` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ratePercent",
+            "columnName": "ratePercent",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliesTo",
+            "columnName": "appliesTo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_retention_configs_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_retention_configs_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "quotes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `clientId` TEXT NOT NULL, `profileId` TEXT NOT NULL, `provisionalNumber` TEXT NOT NULL, `title` TEXT NOT NULL, `status` TEXT NOT NULL, `issueDateEpochDay` INTEGER NOT NULL, `validityDays` INTEGER NOT NULL, `expiryDateEpochDay` INTEGER NOT NULL, `currency` TEXT NOT NULL, `notes` TEXT NOT NULL, `currentVersion` INTEGER NOT NULL, `emittedVersion` INTEGER NOT NULL, `gross` TEXT NOT NULL, `totalRetained` TEXT NOT NULL, `net` TEXT NOT NULL, `clientNameSnapshot` TEXT NOT NULL, `archived` INTEGER NOT NULL, `officialNumber` TEXT, `versionConflict` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientId",
+            "columnName": "clientId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provisionalNumber",
+            "columnName": "provisionalNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "issueDateEpochDay",
+            "columnName": "issueDateEpochDay",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "validityDays",
+            "columnName": "validityDays",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiryDateEpochDay",
+            "columnName": "expiryDateEpochDay",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currency",
+            "columnName": "currency",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentVersion",
+            "columnName": "currentVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "emittedVersion",
+            "columnName": "emittedVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "gross",
+            "columnName": "gross",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalRetained",
+            "columnName": "totalRetained",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "net",
+            "columnName": "net",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientNameSnapshot",
+            "columnName": "clientNameSnapshot",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "officialNumber",
+            "columnName": "officialNumber",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "versionConflict",
+            "columnName": "versionConflict",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_quotes_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_quotes_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_quotes_clientId",
+            "unique": false,
+            "columnNames": [
+              "clientId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_quotes_clientId` ON `${TABLE_NAME}` (`clientId`)"
+          },
+          {
+            "name": "index_quotes_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_quotes_profileId` ON `${TABLE_NAME}` (`profileId`)"
+          },
+          {
+            "name": "index_quotes_provisionalNumber",
+            "unique": true,
+            "columnNames": [
+              "provisionalNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_quotes_provisionalNumber` ON `${TABLE_NAME}` (`provisionalNumber`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "quote_versions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `quoteId` TEXT NOT NULL, `version` INTEGER NOT NULL, `snapshotJson` TEXT NOT NULL, `serverOrder` INTEGER, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quoteId",
+            "columnName": "quoteId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "version",
+            "columnName": "version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "snapshotJson",
+            "columnName": "snapshotJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverOrder",
+            "columnName": "serverOrder",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_quote_versions_quoteId",
+            "unique": false,
+            "columnNames": [
+              "quoteId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_quote_versions_quoteId` ON `${TABLE_NAME}` (`quoteId`)"
+          },
+          {
+            "name": "index_quote_versions_quoteId_version",
+            "unique": false,
+            "columnNames": [
+              "quoteId",
+              "version"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_quote_versions_quoteId_version` ON `${TABLE_NAME}` (`quoteId`, `version`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "jobs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `clientId` TEXT NOT NULL, `profileId` TEXT NOT NULL, `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL, `startDateEpochDay` INTEGER, `estimatedDateEpochDay` INTEGER, `deliveryDateEpochDay` INTEGER, `executionAddress` TEXT NOT NULL, `notes` TEXT NOT NULL, `clientNameSnapshot` TEXT NOT NULL, `archived` INTEGER NOT NULL, `officialNumber` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientId",
+            "columnName": "clientId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provisionalNumber",
+            "columnName": "provisionalNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startDateEpochDay",
+            "columnName": "startDateEpochDay",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "estimatedDateEpochDay",
+            "columnName": "estimatedDateEpochDay",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "deliveryDateEpochDay",
+            "columnName": "deliveryDateEpochDay",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "executionAddress",
+            "columnName": "executionAddress",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientNameSnapshot",
+            "columnName": "clientNameSnapshot",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "officialNumber",
+            "columnName": "officialNumber",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_jobs_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_jobs_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_jobs_clientId",
+            "unique": false,
+            "columnNames": [
+              "clientId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_jobs_clientId` ON `${TABLE_NAME}` (`clientId`)"
+          },
+          {
+            "name": "index_jobs_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_jobs_profileId` ON `${TABLE_NAME}` (`profileId`)"
+          },
+          {
+            "name": "index_jobs_provisionalNumber",
+            "unique": true,
+            "columnNames": [
+              "provisionalNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_jobs_provisionalNumber` ON `${TABLE_NAME}` (`provisionalNumber`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "job_quotes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `jobId` TEXT NOT NULL, `quoteId` TEXT NOT NULL, `relationType` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quoteId",
+            "columnName": "quoteId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relationType",
+            "columnName": "relationType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_job_quotes_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_job_quotes_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          },
+          {
+            "name": "index_job_quotes_quoteId",
+            "unique": false,
+            "columnNames": [
+              "quoteId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_job_quotes_quoteId` ON `${TABLE_NAME}` (`quoteId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "job_activities",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `jobId` TEXT NOT NULL, `description` TEXT NOT NULL, `status` TEXT NOT NULL, `position` INTEGER NOT NULL, `startedAt` INTEGER, `finishedAt` INTEGER, `notes` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "startedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "finishedAt",
+            "columnName": "finishedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_job_activities_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_job_activities_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "job_materials",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `jobId` TEXT NOT NULL, `description` TEXT NOT NULL, `origin` TEXT NOT NULL, `quantity` TEXT NOT NULL, `unit` TEXT NOT NULL, `notes` TEXT NOT NULL, `materialId` TEXT, `condition` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "origin",
+            "columnName": "origin",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quantity",
+            "columnName": "quantity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "materialId",
+            "columnName": "materialId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "condition",
+            "columnName": "condition",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_job_materials_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_job_materials_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          },
+          {
+            "name": "index_job_materials_materialId",
+            "unique": false,
+            "columnNames": [
+              "materialId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_job_materials_materialId` ON `${TABLE_NAME}` (`materialId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "job_photos",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `jobId` TEXT NOT NULL, `fileName` TEXT NOT NULL, `fileReady` INTEGER NOT NULL, `fileSynced` INTEGER NOT NULL, `deleted` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileName",
+            "columnName": "fileName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileReady",
+            "columnName": "fileReady",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileSynced",
+            "columnName": "fileSynced",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deleted",
+            "columnName": "deleted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_job_photos_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_job_photos_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "reports",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `clientId` TEXT NOT NULL, `profileId` TEXT NOT NULL, `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL, `title` TEXT NOT NULL, `destination` TEXT NOT NULL, `content` TEXT NOT NULL, `currentVersion` INTEGER NOT NULL, `emittedVersion` INTEGER NOT NULL, `clientNameSnapshot` TEXT NOT NULL, `archived` INTEGER NOT NULL, `officialNumber` TEXT, `versionConflict` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientId",
+            "columnName": "clientId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provisionalNumber",
+            "columnName": "provisionalNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "destination",
+            "columnName": "destination",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "content",
+            "columnName": "content",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentVersion",
+            "columnName": "currentVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "emittedVersion",
+            "columnName": "emittedVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientNameSnapshot",
+            "columnName": "clientNameSnapshot",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "officialNumber",
+            "columnName": "officialNumber",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "versionConflict",
+            "columnName": "versionConflict",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_reports_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reports_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_reports_clientId",
+            "unique": false,
+            "columnNames": [
+              "clientId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reports_clientId` ON `${TABLE_NAME}` (`clientId`)"
+          },
+          {
+            "name": "index_reports_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reports_profileId` ON `${TABLE_NAME}` (`profileId`)"
+          },
+          {
+            "name": "index_reports_provisionalNumber",
+            "unique": true,
+            "columnNames": [
+              "provisionalNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_reports_provisionalNumber` ON `${TABLE_NAME}` (`provisionalNumber`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "report_jobs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `reportId` TEXT NOT NULL, `jobId` TEXT NOT NULL, `position` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reportId",
+            "columnName": "reportId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_report_jobs_reportId",
+            "unique": false,
+            "columnNames": [
+              "reportId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_report_jobs_reportId` ON `${TABLE_NAME}` (`reportId`)"
+          },
+          {
+            "name": "index_report_jobs_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_report_jobs_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "report_versions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `reportId` TEXT NOT NULL, `version` INTEGER NOT NULL, `snapshotJson` TEXT NOT NULL, `previousVersionId` TEXT, `serverOrder` INTEGER, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reportId",
+            "columnName": "reportId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "version",
+            "columnName": "version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "snapshotJson",
+            "columnName": "snapshotJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "previousVersionId",
+            "columnName": "previousVersionId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "serverOrder",
+            "columnName": "serverOrder",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_report_versions_reportId",
+            "unique": false,
+            "columnNames": [
+              "reportId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_report_versions_reportId` ON `${TABLE_NAME}` (`reportId`)"
+          },
+          {
+            "name": "index_report_versions_reportId_version",
+            "unique": false,
+            "columnNames": [
+              "reportId",
+              "version"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_report_versions_reportId_version` ON `${TABLE_NAME}` (`reportId`, `version`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collection_accounts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `clientId` TEXT NOT NULL, `profileId` TEXT NOT NULL, `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL, `currency` TEXT NOT NULL, `gross` TEXT NOT NULL, `totalRetained` TEXT NOT NULL, `net` TEXT NOT NULL, `appliedAmount` TEXT NOT NULL, `balance` TEXT NOT NULL, `issuedAt` INTEGER NOT NULL, `dueDateEpochDay` INTEGER, `conditions` TEXT NOT NULL, `clientSnapshotJson` TEXT NOT NULL, `profileSnapshotJson` TEXT NOT NULL, `retentionsSnapshotJson` TEXT NOT NULL, `clientNameSnapshot` TEXT NOT NULL, `archived` INTEGER NOT NULL, `officialNumber` TEXT, `serverAppliedAmount` TEXT NOT NULL, `serverBalance` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientId",
+            "columnName": "clientId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provisionalNumber",
+            "columnName": "provisionalNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currency",
+            "columnName": "currency",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "gross",
+            "columnName": "gross",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalRetained",
+            "columnName": "totalRetained",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "net",
+            "columnName": "net",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliedAmount",
+            "columnName": "appliedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "balance",
+            "columnName": "balance",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "issuedAt",
+            "columnName": "issuedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dueDateEpochDay",
+            "columnName": "dueDateEpochDay",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "conditions",
+            "columnName": "conditions",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientSnapshotJson",
+            "columnName": "clientSnapshotJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileSnapshotJson",
+            "columnName": "profileSnapshotJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "retentionsSnapshotJson",
+            "columnName": "retentionsSnapshotJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientNameSnapshot",
+            "columnName": "clientNameSnapshot",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "officialNumber",
+            "columnName": "officialNumber",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "serverAppliedAmount",
+            "columnName": "serverAppliedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverBalance",
+            "columnName": "serverBalance",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collection_accounts_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_accounts_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_collection_accounts_clientId",
+            "unique": false,
+            "columnNames": [
+              "clientId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_accounts_clientId` ON `${TABLE_NAME}` (`clientId`)"
+          },
+          {
+            "name": "index_collection_accounts_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_accounts_profileId` ON `${TABLE_NAME}` (`profileId`)"
+          },
+          {
+            "name": "index_collection_accounts_provisionalNumber",
+            "unique": true,
+            "columnNames": [
+              "provisionalNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_collection_accounts_provisionalNumber` ON `${TABLE_NAME}` (`provisionalNumber`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collection_account_items",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `position` INTEGER NOT NULL, `conceptType` TEXT NOT NULL, `description` TEXT NOT NULL, `quantity` TEXT NOT NULL, `unit` TEXT NOT NULL, `unitPrice` TEXT NOT NULL, `lineTotal` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conceptType",
+            "columnName": "conceptType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quantity",
+            "columnName": "quantity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unitPrice",
+            "columnName": "unitPrice",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lineTotal",
+            "columnName": "lineTotal",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collection_account_items_accountId",
+            "unique": false,
+            "columnNames": [
+              "accountId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_account_items_accountId` ON `${TABLE_NAME}` (`accountId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collection_account_jobs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `jobId` TEXT NOT NULL, `position` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collection_account_jobs_accountId",
+            "unique": false,
+            "columnNames": [
+              "accountId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_account_jobs_accountId` ON `${TABLE_NAME}` (`accountId`)"
+          },
+          {
+            "name": "index_collection_account_jobs_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_account_jobs_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collection_account_quotes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `quoteId` TEXT NOT NULL, `position` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quoteId",
+            "columnName": "quoteId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collection_account_quotes_accountId",
+            "unique": false,
+            "columnNames": [
+              "accountId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_account_quotes_accountId` ON `${TABLE_NAME}` (`accountId`)"
+          },
+          {
+            "name": "index_collection_account_quotes_quoteId",
+            "unique": false,
+            "columnNames": [
+              "quoteId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_account_quotes_quoteId` ON `${TABLE_NAME}` (`quoteId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "collection_methods",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `name` TEXT NOT NULL, `detail` TEXT NOT NULL, `archived` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detail",
+            "columnName": "detail",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_collection_methods_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_collection_methods_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "payments",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `clientId` TEXT NOT NULL, `collectionMethodId` TEXT, `amount` TEXT NOT NULL, `paidAtEpochDay` INTEGER NOT NULL, `reference` TEXT NOT NULL, `notes` TEXT NOT NULL, `appliedAmount` TEXT NOT NULL, `unassignedAmount` TEXT NOT NULL, `effectiveAmount` TEXT NOT NULL, `refundedAmount` TEXT NOT NULL, `annulled` INTEGER NOT NULL, `assignedAccountId` TEXT, `assignedConsolidatedId` TEXT, `assignedTargetType` TEXT, `assignmentStatus` TEXT NOT NULL, `serverAppliedAmount` TEXT NOT NULL, `serverUnassignedAmount` TEXT NOT NULL, `serverRefundedAmount` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientId",
+            "columnName": "clientId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collectionMethodId",
+            "columnName": "collectionMethodId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "amount",
+            "columnName": "amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paidAtEpochDay",
+            "columnName": "paidAtEpochDay",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reference",
+            "columnName": "reference",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliedAmount",
+            "columnName": "appliedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unassignedAmount",
+            "columnName": "unassignedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "effectiveAmount",
+            "columnName": "effectiveAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "refundedAmount",
+            "columnName": "refundedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "annulled",
+            "columnName": "annulled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "assignedAccountId",
+            "columnName": "assignedAccountId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "assignedConsolidatedId",
+            "columnName": "assignedConsolidatedId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "assignedTargetType",
+            "columnName": "assignedTargetType",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "assignmentStatus",
+            "columnName": "assignmentStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverAppliedAmount",
+            "columnName": "serverAppliedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverUnassignedAmount",
+            "columnName": "serverUnassignedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverRefundedAmount",
+            "columnName": "serverRefundedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_payments_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payments_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_payments_clientId",
+            "unique": false,
+            "columnNames": [
+              "clientId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payments_clientId` ON `${TABLE_NAME}` (`clientId`)"
+          },
+          {
+            "name": "index_payments_assignedAccountId",
+            "unique": false,
+            "columnNames": [
+              "assignedAccountId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payments_assignedAccountId` ON `${TABLE_NAME}` (`assignedAccountId`)"
+          },
+          {
+            "name": "index_payments_assignedConsolidatedId",
+            "unique": false,
+            "columnNames": [
+              "assignedConsolidatedId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payments_assignedConsolidatedId` ON `${TABLE_NAME}` (`assignedConsolidatedId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "payment_assignments",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `paymentId` TEXT NOT NULL, `action` TEXT NOT NULL, `targetType` TEXT NOT NULL, `accountId` TEXT, `consolidatedId` TEXT, `fromAccountId` TEXT, `fromConsolidatedId` TEXT, `amount` TEXT NOT NULL, `releasedAmount` TEXT, `reason` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentId",
+            "columnName": "paymentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetType",
+            "columnName": "targetType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "consolidatedId",
+            "columnName": "consolidatedId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "fromAccountId",
+            "columnName": "fromAccountId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "fromConsolidatedId",
+            "columnName": "fromConsolidatedId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "amount",
+            "columnName": "amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "releasedAmount",
+            "columnName": "releasedAmount",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_payment_assignments_paymentId",
+            "unique": false,
+            "columnNames": [
+              "paymentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_assignments_paymentId` ON `${TABLE_NAME}` (`paymentId`)"
+          },
+          {
+            "name": "index_payment_assignments_accountId",
+            "unique": false,
+            "columnNames": [
+              "accountId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_assignments_accountId` ON `${TABLE_NAME}` (`accountId`)"
+          },
+          {
+            "name": "index_payment_assignments_consolidatedId",
+            "unique": false,
+            "columnNames": [
+              "consolidatedId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_assignments_consolidatedId` ON `${TABLE_NAME}` (`consolidatedId`)"
+          },
+          {
+            "name": "index_payment_assignments_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_assignments_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "consolidated_collections",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `clientId` TEXT NOT NULL, `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL, `currency` TEXT NOT NULL, `totalAmount` TEXT NOT NULL, `appliedAmount` TEXT NOT NULL, `balance` TEXT NOT NULL, `clientNameSnapshot` TEXT NOT NULL, `archived` INTEGER NOT NULL, `officialNumber` TEXT, `serverAppliedAmount` TEXT NOT NULL, `serverBalance` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientId",
+            "columnName": "clientId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provisionalNumber",
+            "columnName": "provisionalNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currency",
+            "columnName": "currency",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalAmount",
+            "columnName": "totalAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliedAmount",
+            "columnName": "appliedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "balance",
+            "columnName": "balance",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientNameSnapshot",
+            "columnName": "clientNameSnapshot",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "officialNumber",
+            "columnName": "officialNumber",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "serverAppliedAmount",
+            "columnName": "serverAppliedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverBalance",
+            "columnName": "serverBalance",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_consolidated_collections_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_consolidated_collections_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_consolidated_collections_clientId",
+            "unique": false,
+            "columnNames": [
+              "clientId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_consolidated_collections_clientId` ON `${TABLE_NAME}` (`clientId`)"
+          },
+          {
+            "name": "index_consolidated_collections_provisionalNumber",
+            "unique": true,
+            "columnNames": [
+              "provisionalNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_consolidated_collections_provisionalNumber` ON `${TABLE_NAME}` (`provisionalNumber`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "consolidated_collection_accounts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `consolidatedId` TEXT NOT NULL, `accountId` TEXT NOT NULL, `position` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "consolidatedId",
+            "columnName": "consolidatedId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accountId",
+            "columnName": "accountId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_consolidated_collection_accounts_consolidatedId",
+            "unique": false,
+            "columnNames": [
+              "consolidatedId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_consolidated_collection_accounts_consolidatedId` ON `${TABLE_NAME}` (`consolidatedId`)"
+          },
+          {
+            "name": "index_consolidated_collection_accounts_accountId",
+            "unique": false,
+            "columnNames": [
+              "accountId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_consolidated_collection_accounts_accountId` ON `${TABLE_NAME}` (`accountId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "payment_adjustments",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `paymentId` TEXT NOT NULL, `kind` TEXT NOT NULL, `reason` TEXT NOT NULL, `newEffectiveAmount` TEXT, `effectiveBefore` TEXT NOT NULL, `effectiveAfter` TEXT NOT NULL, `releasedAmount` TEXT NOT NULL, `releasedFromType` TEXT, `releasedFromId` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentId",
+            "columnName": "paymentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "newEffectiveAmount",
+            "columnName": "newEffectiveAmount",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "effectiveBefore",
+            "columnName": "effectiveBefore",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "effectiveAfter",
+            "columnName": "effectiveAfter",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "releasedAmount",
+            "columnName": "releasedAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "releasedFromType",
+            "columnName": "releasedFromType",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "releasedFromId",
+            "columnName": "releasedFromId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_payment_adjustments_paymentId",
+            "unique": false,
+            "columnNames": [
+              "paymentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_adjustments_paymentId` ON `${TABLE_NAME}` (`paymentId`)"
+          },
+          {
+            "name": "index_payment_adjustments_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_adjustments_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "payment_refunds",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `paymentId` TEXT NOT NULL, `amount` TEXT NOT NULL, `refundedAtEpochDay` INTEGER NOT NULL, `collectionMethodId` TEXT, `reason` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentId",
+            "columnName": "paymentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "amount",
+            "columnName": "amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "refundedAtEpochDay",
+            "columnName": "refundedAtEpochDay",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collectionMethodId",
+            "columnName": "collectionMethodId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_payment_refunds_paymentId",
+            "unique": false,
+            "columnNames": [
+              "paymentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_refunds_paymentId` ON `${TABLE_NAME}` (`paymentId`)"
+          },
+          {
+            "name": "index_payment_refunds_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_refunds_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "materials",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `name` TEXT NOT NULL, `unit` TEXT NOT NULL, `description` TEXT NOT NULL, `archived` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_materials_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_materials_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "material_stocks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`materialId` TEXT NOT NULL, `stockNew` TEXT NOT NULL, `stockUsed` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`materialId`))",
+        "fields": [
+          {
+            "fieldPath": "materialId",
+            "columnName": "materialId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stockNew",
+            "columnName": "stockNew",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stockUsed",
+            "columnName": "stockUsed",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "materialId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "purchases",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `provisionalNumber` TEXT NOT NULL, `status` TEXT NOT NULL, `purchaseDateEpochDay` INTEGER NOT NULL, `supplierPlace` TEXT NOT NULL, `reference` TEXT NOT NULL, `notes` TEXT NOT NULL, `currency` TEXT NOT NULL, `totalAmount` TEXT NOT NULL, `archived` INTEGER NOT NULL, `officialNumber` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provisionalNumber",
+            "columnName": "provisionalNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "purchaseDateEpochDay",
+            "columnName": "purchaseDateEpochDay",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "supplierPlace",
+            "columnName": "supplierPlace",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reference",
+            "columnName": "reference",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currency",
+            "columnName": "currency",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalAmount",
+            "columnName": "totalAmount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "officialNumber",
+            "columnName": "officialNumber",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_purchases_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_purchases_userId` ON `${TABLE_NAME}` (`userId`)"
+          },
+          {
+            "name": "index_purchases_provisionalNumber",
+            "unique": true,
+            "columnNames": [
+              "provisionalNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_purchases_provisionalNumber` ON `${TABLE_NAME}` (`provisionalNumber`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "purchase_items",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `purchaseId` TEXT NOT NULL, `position` INTEGER NOT NULL, `materialId` TEXT NOT NULL, `materialNameSnapshot` TEXT NOT NULL, `quantity` TEXT NOT NULL, `unit` TEXT NOT NULL, `unitPrice` TEXT NOT NULL, `lineTotal` TEXT NOT NULL, `condition` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "purchaseId",
+            "columnName": "purchaseId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "materialId",
+            "columnName": "materialId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "materialNameSnapshot",
+            "columnName": "materialNameSnapshot",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quantity",
+            "columnName": "quantity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unitPrice",
+            "columnName": "unitPrice",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lineTotal",
+            "columnName": "lineTotal",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "condition",
+            "columnName": "condition",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_purchase_items_purchaseId",
+            "unique": false,
+            "columnNames": [
+              "purchaseId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_purchase_items_purchaseId` ON `${TABLE_NAME}` (`purchaseId`)"
+          },
+          {
+            "name": "index_purchase_items_materialId",
+            "unique": false,
+            "columnNames": [
+              "materialId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_purchase_items_materialId` ON `${TABLE_NAME}` (`materialId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "inventory_movements",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `userId` TEXT NOT NULL, `materialId` TEXT NOT NULL, `condition` TEXT NOT NULL, `movementType` TEXT NOT NULL, `origin` TEXT NOT NULL, `quantity` TEXT NOT NULL, `unit` TEXT NOT NULL, `unitCost` TEXT, `purchaseId` TEXT, `jobId` TEXT, `jobMaterialId` TEXT, `note` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `pendingSync` INTEGER NOT NULL, `serverVersion` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userId",
+            "columnName": "userId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "materialId",
+            "columnName": "materialId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "condition",
+            "columnName": "condition",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "movementType",
+            "columnName": "movementType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "origin",
+            "columnName": "origin",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quantity",
+            "columnName": "quantity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unitCost",
+            "columnName": "unitCost",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "purchaseId",
+            "columnName": "purchaseId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "jobMaterialId",
+            "columnName": "jobMaterialId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurredAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pendingSync",
+            "columnName": "pendingSync",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverVersion",
+            "columnName": "serverVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_inventory_movements_materialId",
+            "unique": false,
+            "columnNames": [
+              "materialId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_inventory_movements_materialId` ON `${TABLE_NAME}` (`materialId`)"
+          },
+          {
+            "name": "index_inventory_movements_purchaseId",
+            "unique": false,
+            "columnNames": [
+              "purchaseId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_inventory_movements_purchaseId` ON `${TABLE_NAME}` (`purchaseId`)"
+          },
+          {
+            "name": "index_inventory_movements_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_inventory_movements_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          },
+          {
+            "name": "index_inventory_movements_userId",
+            "unique": false,
+            "columnNames": [
+              "userId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_inventory_movements_userId` ON `${TABLE_NAME}` (`userId`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "sync_operations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`opId` TEXT NOT NULL, `seq` INTEGER NOT NULL, `entityType` TEXT NOT NULL, `entityId` TEXT NOT NULL, `opType` TEXT NOT NULL, `baseServerVersion` INTEGER NOT NULL, `payloadJson` TEXT NOT NULL, `supersedesOpId` TEXT, `state` TEXT NOT NULL, `resultJson` TEXT, `resultCode` TEXT, `deviceId` TEXT NOT NULL, `attempts` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`opId`))",
+        "fields": [
+          {
+            "fieldPath": "opId",
+            "columnName": "opId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seq",
+            "columnName": "seq",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityType",
+            "columnName": "entityType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityId",
+            "columnName": "entityId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "opType",
+            "columnName": "opType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "baseServerVersion",
+            "columnName": "baseServerVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJson",
+            "columnName": "payloadJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "supersedesOpId",
+            "columnName": "supersedesOpId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultJson",
+            "columnName": "resultJson",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "resultCode",
+            "columnName": "resultCode",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attempts",
+            "columnName": "attempts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "opId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_operations_entityType_entityId",
+            "unique": false,
+            "columnNames": [
+              "entityType",
+              "entityId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_operations_entityType_entityId` ON `${TABLE_NAME}` (`entityType`, `entityId`)"
+          },
+          {
+            "name": "index_sync_operations_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_operations_state` ON `${TABLE_NAME}` (`state`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "sync_conflicts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `entityType` TEXT NOT NULL, `entityId` TEXT NOT NULL, `remoteJson` TEXT NOT NULL, `remoteServerVersion` INTEGER NOT NULL, `detectedAt` INTEGER NOT NULL, `resolved` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityType",
+            "columnName": "entityType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entityId",
+            "columnName": "entityId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "remoteJson",
+            "columnName": "remoteJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "remoteServerVersion",
+            "columnName": "remoteServerVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detectedAt",
+            "columnName": "detectedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resolved",
+            "columnName": "resolved",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_conflicts_resolved",
+            "unique": false,
+            "columnNames": [
+              "resolved"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_conflicts_resolved` ON `${TABLE_NAME}` (`resolved`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "sync_meta",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`key` TEXT NOT NULL, `value` TEXT NOT NULL, PRIMARY KEY(`key`))",
+        "fields": [
+          {
+            "fieldPath": "key",
+            "columnName": "key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "value",
+            "columnName": "value",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "key"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '8bc058bc5d347651acb34589448b74d1')"
+    ]
+  }
+}

@@ -37,7 +37,7 @@ class AuthRepository(
         } catch (e: ApiException) {
             e.message
         } catch (e: Exception) {
-            "Sin conexión con el servidor local."
+            connError()
         }
     }
 
@@ -51,7 +51,7 @@ class AuthRepository(
         } catch (e: ApiException) {
             e.message
         } catch (e: Exception) {
-            "Sin conexión con el servidor local."
+            connError()
         }
     }
 
@@ -62,8 +62,17 @@ class AuthRepository(
     } catch (e: ApiException) {
         e.message ?: "No se pudo procesar la recuperación."
     } catch (e: Exception) {
-        "Sin conexión con el servidor local."
+        connError()
     }
+
+    /** Error de red honesto: si la compilación no tiene endpoint (release sin
+     *  API_BASE_URL), lo dice; si hay URL configurada, es fallo de conexión. */
+    private fun connError(): String =
+        if (session.apiBaseUrl.isEmpty()) {
+            "El servidor de producción no está configurado en esta compilación."
+        } else {
+            "Sin conexión con el servidor local."
+        }
 
     /**
      * Cambio de cuenta (regla aprobada): reautenticación de la cuenta actual,
@@ -85,7 +94,7 @@ class AuthRepository(
         } catch (e: ApiException) {
             return "Reautenticación fallida: ${e.message}"
         } catch (e: Exception) {
-            return "Sin conexión con el servidor local; el cambio queda bloqueado."
+            return connError() + " El cambio queda bloqueado."
         }
         // 2. Verificación de estado limpio.
         val blockers = sync.switchBlockers()
@@ -98,7 +107,7 @@ class AuthRepository(
         } catch (e: ApiException) {
             return "No se pudo entrar con la cuenta nueva: ${e.message}. Datos locales conservados."
         } catch (e: Exception) {
-            return "Sin conexión con el servidor local; el cambio queda bloqueado."
+            return connError() + " El cambio queda bloqueado."
         }
         val userId = res.str("user_id") ?: return "Respuesta inválida del servidor."
         val token = res.str("token") ?: return "Respuesta inválida del servidor."

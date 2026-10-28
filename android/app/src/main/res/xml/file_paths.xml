@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Temporales de captura de cámara (evidencia de Trabajos). -->
+    <cache-path name="photo_tmp" path="photo_tmp/" />
+    <!-- Evidencia persistida en el almacenamiento privado de la app. -->
+    <files-path name="photos" path="photos/" />
+</paths>

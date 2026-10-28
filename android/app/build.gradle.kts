@@ -22,8 +22,13 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Endpoint de producción PENDIENTE de configuración — vacío a
+            // propósito: la build release nunca debe usar localhost ni la
+            // URL de desarrollo. Completar al publicar el backend real.
+            buildConfigField("String", "API_BASE_URL", "\"\"")
         }
         debug {
+            buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8080\"")
         }
     }
 

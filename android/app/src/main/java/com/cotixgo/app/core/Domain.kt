@@ -20,18 +20,31 @@ fun nowEpochMillis(): Long = Instant.now().toEpochMilli()
 
 enum class ClientType { PERSONA, EMPRESA }
 
+/** Tipos de documento de identidad sugeridos por tipo de cliente; "Otro" siempre disponible. */
+object ClientDocTypes {
+    const val OTRO = "Otro"
+    fun forType(type: ClientType): List<String> = when (type) {
+        ClientType.PERSONA -> listOf("CC", "CE", "Pasaporte", OTRO)
+        ClientType.EMPRESA -> listOf("NIT", OTRO)
+    }
+}
+
 data class ClientInput(
     val type: ClientType,
     val name: String,
+    val docType: String = "",
+    val docNumber: String = "",
     val phone: String = "",
     val email: String = "",
     val address: String = "",
     val notes: String = "",
 )
 
-/** Validación de campos mínimos aprobados: nombre obligatorio; correo opcional. */
+/** Validación de campos mínimos: nombre y documento obligatorios; correo opcional. */
 fun validateClient(input: ClientInput): String? {
     if (input.name.isBlank()) return "El nombre es obligatorio."
+    if (input.docType.isBlank()) return "El tipo de documento es obligatorio."
+    if (input.docNumber.isBlank()) return "El número de documento es obligatorio."
     if (input.email.isNotBlank() && !input.email.contains('@')) return "El correo no es válido."
     return null
 }
@@ -330,3 +343,38 @@ fun isPositiveQuantity(q: String): Boolean =
 fun normDecimal(d: String): String =
     runCatching { java.math.BigDecimal(d.trim()).stripTrailingZeros().toPlainString() }
         .getOrDefault("0")
+
+/** Códigos ISO 4217 vigentes (lista oficial). `java.util.Currency` en
+ *  Android acepta cualquier código de 3 letras (ICU es permisivo), así que
+ *  la fuente de verdad es este conjunto explícito. */
+val ISO_4217_CODES: Set<String> = setOf(
+    "AED","AFN","ALL","AMD","ANG","AOA","ARS","AUD","AWG","AZN",
+    "BAM","BBD","BDT","BGN","BHD","BIF","BMD","BND","BOB","BOV","BRL","BSD","BTN","BWP","BYN","BZD",
+    "CAD","CDF","CHE","CHF","CHW","CLF","CLP","CNY","COP","COU","CRC","CUP","CVE","CZK",
+    "DJF","DKK","DOP","DZD",
+    "EGP","ERN","ETB","EUR",
+    "FJD","FKP",
+    "GBP","GEL","GHS","GIP","GMD","GNF","GTQ","GYD",
+    "HKD","HNL","HTG","HUF",
+    "IDR","ILS","INR","IQD","IRR","ISK",
+    "JMD","JOD","JPY",
+    "KES","KGS","KHR","KMF","KPW","KRW","KWD","KYD","KZT",
+    "LAK","LBP","LKR","LRD","LSL","LYD",
+    "MAD","MDL","MGA","MKD","MMK","MNT","MOP","MRU","MUR","MVR","MWK","MXN","MXV","MYR","MZN",
+    "NAD","NGN","NIO","NOK","NPR","NZD",
+    "OMR",
+    "PAB","PEN","PGK","PHP","PKR","PLN","PYG",
+    "QAR",
+    "RON","RSD","RUB","RWF",
+    "SAR","SBD","SCR","SDG","SEK","SGD","SHP","SLE","SOS","SRD","SSP","STN","SVC","SYP","SZL",
+    "THB","TJS","TMT","TND","TOP","TRY","TTD","TWD","TZS",
+    "UAH","UGX","USD","USN","UYI","UYU","UYW","UZS",
+    "VED","VES","VND","VUV",
+    "WST",
+    "XAF","XAG","XAU","XBA","XBB","XBC","XBD","XCD","XDR","XOF","XPD","XPF","XPT","XSU","XTS","XUA",
+    "YER",
+    "ZAR","ZMW","ZWG",
+)
+
+fun isValidCurrencyCode(code: String): Boolean =
+    code.uppercase() in ISO_4217_CODES
