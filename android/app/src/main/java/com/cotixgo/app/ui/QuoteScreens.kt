@@ -6,20 +6,33 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -27,6 +40,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -38,13 +52,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cotixgo.app.BuildConfig
 import com.cotixgo.app.core.ConceptType
+import java.math.BigDecimal
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
+import java.util.Locale
 import com.cotixgo.app.core.MaterialOrigin
 import com.cotixgo.app.core.QuoteCalc
 import com.cotixgo.app.core.QuoteStatus
 import com.cotixgo.app.core.effectiveQuoteStatus
+import com.cotixgo.app.core.isValidCurrencyCode
 import com.cotixgo.app.core.toMoney
 import com.cotixgo.app.core.toQty
 import com.cotixgo.app.data.ClientEntity
@@ -91,7 +115,24 @@ fun QuotesListScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Cotizaciones") }) },
+        topBar = {
+            Surface(color = MaterialTheme.colorScheme.surface) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Cotizaciones",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = CotixGoNavy,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        },
         floatingActionButton = { Button(onClick = onNew) { Text("+ Cotización") } },
     ) { padding ->
         Column(
@@ -108,27 +149,207 @@ fun QuotesListScreen(
                 }
             }
             if (visible.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No hay cotizaciones en esta vista.")
+                val (emptyTitle, emptyHint) = when (tab) {
+                    0 -> "No hay cotizaciones abiertas." to
+                        "Crea la primera con + Cotización."
+                    1 -> "No hay cotizaciones cerradas." to
+                        "Las aprobadas, vencidas o canceladas aparecerán aquí."
+                    else -> "No hay cotizaciones archivadas." to
+                        "Las que archives aparecerán aquí."
+                }
+                Box(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            emptyTitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                        )
+                        Text(
+                            emptyHint,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                 }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(visible, key = { it.id }) { q ->
-                        Card(onClick = { onOpen(q.id) }, modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(q.provisionalNumber, style = MaterialTheme.typography.titleMedium)
-                                Text(q.clientNameSnapshot, style = MaterialTheme.typography.bodySmall)
-                                Text(
-                                    "${label(q.effectiveStatus())} · ${q.currency} ${q.net}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
+                        QuoteListCard(quote = q, onClick = { onOpen(q.id) })
                     }
                 }
             }
         }
     }
+}
+
+/** Tarjeta compacta de cotización: número, cliente, vencimiento | estado, total. */
+@Composable
+private fun QuoteListCard(quote: QuoteEntity, onClick: () -> Unit) {
+    val effective = quote.effectiveStatus()
+    val (statusBg, statusFg) = when (effective) {
+        QuoteStatus.EMITIDA -> CotixGoBlueSoft to CotixGoBlue
+        QuoteStatus.APROBADA -> CotixGoGreenSoft to CotixGoGreen
+        QuoteStatus.RECHAZADA, QuoteStatus.VENCIDA ->
+            MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.surfaceVariant to
+            MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val number = quote.officialNumber ?: quote.provisionalNumber
+    val expiryText = when (effective) {
+        QuoteStatus.VENCIDA -> "Vencida: ${dashboardDayLabel(quote.expiryDateEpochDay)}"
+        QuoteStatus.BORRADOR, QuoteStatus.EMITIDA, QuoteStatus.RECHAZADA ->
+            "Vence: ${dashboardDayLabel(quote.expiryDateEpochDay)}"
+        else -> null
+    }
+    val expiryColor = if (effective == QuoteStatus.VENCIDA) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MaterialTheme.colorScheme.secondary
+    }
+
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = QuoteCardShape,
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 104.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Surface(
+                modifier = Modifier.size(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = statusBg,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.List,
+                        contentDescription = null,
+                        tint = statusFg,
+                    )
+                }
+            }
+            Column(
+                Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                if (quote.title.isBlank()) {
+                    Text(
+                        "Sin título",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.secondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    Text(
+                        quote.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    number,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    quote.clientNameSnapshot,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (expiryText != null) {
+                    Text(
+                        expiryText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = expiryColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Surface(shape = RoundedCornerShape(50), color = statusBg) {
+                    Text(
+                        label(effective),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = statusFg,
+                    )
+                }
+                Text(
+                    quoteAmountLabel(quote.net, quote.currency),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = CotixGoNavy,
+                    maxLines = 1,
+                )
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
+private val QuoteCardShape = RoundedCornerShape(14.dp)
+
+/** Símbolo corto por código ISO de moneda; vacío si no hay uno conocido. */
+private fun quoteCurrencySymbol(code: String): String = when (code) {
+    "COP" -> "$"
+    "USD" -> "US$"
+    "EUR" -> "€"
+    else -> ""
+}
+
+/** Importe localizado sin moneda: `180.000,00`. Solo presentación. */
+private fun fmtQuoteAmount(amount: String): String = try {
+    DecimalFormat("#,##0.00", DecimalFormatSymbols(Locale("es", "CO")))
+        .format(BigDecimal(amount))
+} catch (e: Exception) {
+    amount
+}
+
+/** Formato visual del importe: `$ 180.000,00 COP`. Solo presentación. */
+private fun quoteAmountLabel(amount: String, currency: String): String {
+    val formatted = fmtQuoteAmount(amount)
+    val symbol = quoteCurrencySymbol(currency)
+    return if (symbol.isEmpty()) "$formatted $currency" else "$symbol $formatted $currency"
+}
+
+/** Fecha ISO `2026-10-26` → formato localizado `26 oct 2026`. */
+private fun fmtIsoDay(iso: String): String = try {
+    dashboardDayLabel(LocalDate.parse(iso).toEpochDay())
+} catch (e: Exception) {
+    iso
 }
 
 // ---------- Editor de Cotización ----------
@@ -153,11 +374,18 @@ fun QuoteEditorScreen(
     user: UserEntity?,
     retentions: List<RetentionConfigEntity>,
     services: List<ServiceEntity>,
+    lacksVersionSnapshot: Boolean = false,
     onSave: (QuoteInput, List<ServiceInput>) -> Unit,
     onBack: () -> Unit,
 ) {
     var clientId by remember { mutableStateOf(initial?.client?.id ?: "") }
-    var validity by remember { mutableStateOf(initial?.validityDays?.toString() ?: (profile?.vigenciaDias?.toString() ?: "")) }
+    var title by remember { mutableStateOf(initial?.title ?: "") }
+    // Un default histórico inválido (<1) no precarga: el campo queda vacío
+    // para que el usuario escriba una vigencia válida (requerida al guardar).
+    var validity by remember {
+        mutableStateOf(initial?.validityDays?.toString()
+            ?: (profile?.vigenciaDias?.takeIf { it >= 1 }?.toString() ?: ""))
+    }
     var currency by remember { mutableStateOf(initial?.currency ?: (user?.mainCurrency ?: "")) }
     var notes by remember { mutableStateOf(initial?.notes ?: "") }
     val lines = remember {
@@ -298,12 +526,31 @@ fun QuoteEditorScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text(if (initial == null) "Nueva cotización" else "Editar cotización") }) },
+        topBar = {
+            Surface(color = MaterialTheme.colorScheme.surface) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
+                    }
+                    Text(
+                        if (initial == null) "Nueva cotización" else "Editar cotización",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = CotixGoNavy,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+            }
+        },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            item { QuoteFormSectionTitle("Datos") }
             item {
                 Box {
                     OutlinedButton(onClick = { clientMenu = true }, modifier = Modifier.fillMaxWidth()) {
@@ -312,45 +559,97 @@ fun QuoteEditorScreen(
                         )
                     }
                     DropdownMenu(expanded = clientMenu, onDismissRequest = { clientMenu = false }) {
+                        if (clients.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("No hay clientes disponibles") },
+                                onClick = {}, enabled = false,
+                            )
+                        }
                         clients.forEach { c ->
                             DropdownMenuItem(text = { Text(c.name) }, onClick = { clientId = c.id; clientMenu = false })
                         }
                     }
                 }
             }
-            item { Text("Perfil: ${profile?.businessName ?: "—"}", style = MaterialTheme.typography.bodySmall) }
-            item { Text("Emisión: ${LocalDate.ofEpochDay(issueDay)}", style = MaterialTheme.typography.bodySmall) }
+            item {
+                OutlinedTextField(
+                    value = title, onValueChange = { title = it },
+                    label = { Text("Título de la cotización *") },
+                    placeholder = { Text("Ej.: Instalación de cámaras") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+            }
+            item { QuoteFormSectionTitle("Vigencia y moneda") }
+            item {
+                Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        QuoteDetailField("Perfil", profile?.businessName ?: "—")
+                        QuoteDetailField("Emisión", dashboardDayLabel(issueDay))
+                        if (validityDays > 0) {
+                            QuoteDetailField("Vence", dashboardDayLabel(expiryDay))
+                        }
+                    }
+                }
+            }
             item {
                 OutlinedTextField(
                     value = validity, onValueChange = { validity = it.filter(Char::isDigit) },
                     label = { Text("Vigencia (días) *") }, modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
-                if (validityDays > 0) {
-                    Text("Vence: ${LocalDate.ofEpochDay(expiryDay)}", style = MaterialTheme.typography.bodySmall)
-                }
             }
             item {
                 OutlinedTextField(
                     value = currency, onValueChange = { currency = it.uppercase().take(3) },
-                    label = { Text("Moneda (ISO 4217) *") }, modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Moneda") },
+                    supportingText = { Text("Código de moneda, como COP o USD") },
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
+            item { QuoteFormSectionTitle("Conceptos") }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { lineDialog = LineDraft() }) { Text("+ Línea manual") }
-                    OutlinedButton(onClick = { catalogDialog = true }) { Text("Desde catálogo") }
+                    OutlinedButton(onClick = { lineDialog = LineDraft() }, modifier = Modifier.weight(1f)) { Text("+ Línea manual") }
+                    OutlinedButton(onClick = { catalogDialog = true }, modifier = Modifier.weight(1f)) { Text("Desde catálogo") }
                 }
+            }
+            if (lines.isEmpty()) {
+                item { QuoteDetailEmpty("Sin conceptos todavía. Agrega una línea manual o desde el catálogo.") }
             }
             items(lines.size) { i ->
                 val l = lines[i]
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("[${l.conceptType.name}] ${l.description.ifBlank { "(sin descripción)" }}")
-                        Text(
-                            "${l.quantity} ${l.unit} × ${l.unitPrice} = ${QuoteCalc.format(l.quantity.toQty().multiply(l.unitPrice.toMoney()))}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    l.description.ifBlank { "(sin descripción)" },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "[${l.conceptType.name}] · ${l.quantity} ${l.unit} × $ ${fmtQuoteAmount(l.unitPrice)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                            Text(
+                                "$ ${fmtQuoteAmount(QuoteCalc.format(l.quantity.toQty().multiply(l.unitPrice.toMoney())))}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = CotixGoNavy,
+                            )
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = { editIndex = i; lineDialog = l }) { Text("Editar") }
                             TextButton(onClick = { lines.removeAt(i) }) { Text("Quitar") }
@@ -359,49 +658,66 @@ fun QuoteEditorScreen(
                 }
             }
             if (retentions.any { !it.archived }) {
+                item { QuoteFormSectionTitle("Retenciones") }
                 item {
-                    Text("Retenciones", style = MaterialTheme.typography.titleSmall)
-                    retentions.filter { !it.archived }.forEach { r ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = r.name in selectedRetentions,
-                                onCheckedChange = {
-                                    if (it) selectedRetentions.add(r.name) else selectedRetentions.remove(r.name)
-                                },
-                            )
-                            Text("${r.name} (${r.ratePercent}%)")
+                    Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                        ) {
+                            retentions.filter { !it.archived }.forEach { r ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Checkbox(
+                                        checked = r.name in selectedRetentions,
+                                        onCheckedChange = {
+                                            if (it) selectedRetentions.add(r.name) else selectedRetentions.remove(r.name)
+                                        },
+                                    )
+                                    Text("${r.name} (${r.ratePercent}%)")
+                                }
+                            }
                         }
                     }
                 }
             }
+            item { QuoteFormSectionTitle("Totales") }
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Bruto: ${QuoteCalc.format(calc.gross)}")
-                    calc.retentions.forEach { Text("${it.name} (${it.ratePercent}%): -${QuoteCalc.format(it.amount)}", style = MaterialTheme.typography.bodySmall) }
-                    Text("Total retenido: ${QuoteCalc.format(calc.totalRetained)}", style = MaterialTheme.typography.bodySmall)
-                    Text("Neto: ${QuoteCalc.format(calc.net)}", style = MaterialTheme.typography.titleSmall)
+                Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        QuoteTotalRow("Bruto", quoteAmountLabel(QuoteCalc.format(calc.gross), currency))
+                        calc.retentions.forEach {
+                            QuoteTotalRow("- ${it.name} (${it.ratePercent}%)", "- ${quoteAmountLabel(QuoteCalc.format(it.amount), currency)}")
+                        }
+                        QuoteTotalRow("Neto", quoteAmountLabel(QuoteCalc.format(calc.net), currency), emphasis = true)
+                    }
                 }
             }
             item {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedTextField(
-                        value = targetNet, onValueChange = { targetNet = it },
-                        label = { Text("Neto objetivo") },
-                        modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    )
-                    OutlinedButton(onClick = {
-                        val serviceRates = calcSpecs.filter { ConceptType.SERVICIO in it.appliesTo }.map { it.ratePercent }
-                        inverseResult = QuoteCalc.requiredGrossForNet(targetNet.toMoney(), serviceRates)
-                            ?.let { "Bruto requerido: ${QuoteCalc.format(it)}" }
-                            ?: "No se puede calcular (tasas >= 100%)"
-                    }) { Text("Inverso") }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = targetNet, onValueChange = { targetNet = it },
+                            label = { Text("Neto que quiero recibir") },
+                            supportingText = { Text("Calcula el bruto necesario para alcanzar el neto indicado") },
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        )
+                        OutlinedButton(onClick = {
+                            val serviceRates = calcSpecs.filter { ConceptType.SERVICIO in it.appliesTo }.map { it.ratePercent }
+                            inverseResult = QuoteCalc.requiredGrossForNet(targetNet.toMoney(), serviceRates)
+                                ?.let { "Bruto requerido: ${QuoteCalc.format(it)}" }
+                                ?: "No se puede calcular (tasas >= 100%)"
+                        }) { Text("Calcular bruto") }
+                    }
+                    inverseResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
-                inverseResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
+            item { QuoteFormSectionTitle("Condiciones") }
             item {
                 OutlinedTextField(
                     value = notes, onValueChange = { notes = it },
@@ -409,11 +725,16 @@ fun QuoteEditorScreen(
                 )
             }
             item {
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    Button(
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        onClick = {
                         when {
                             clientId.isBlank() -> error = "El cliente es obligatorio."
+                            title.isBlank() -> error = "El título de la cotización es obligatorio."
+                            lacksVersionSnapshot && lines.isEmpty() ->
+                                error = "Esta cotización no tiene líneas guardadas para reconstruir: guardarla así pondría sus importes en cero. Agrega las líneas o toca Cancelar para volver sin guardar."
                             validityDays <= 0 -> error = "La vigencia en días es obligatoria."
                             currency.length != 3 -> error = "La moneda debe ser un código ISO 4217."
                             lines.any { it.description.isBlank() } -> error = "Toda línea necesita descripción."
@@ -423,6 +744,7 @@ fun QuoteEditorScreen(
                                     QuoteInput(
                                         clientId = clientId,
                                         profileId = profile?.id ?: "",
+                                        title = title,
                                         issueDateEpochDay = issueDay,
                                         validityDays = validityDays,
                                         currency = currency,
@@ -456,8 +778,8 @@ fun QuoteEditorScreen(
                                 )
                             }
                         }
-                    }) { Text("Guardar") }
-                    TextButton(onClick = onBack) { Text("Cancelar") }
+                    }) { Text("Guardar cotización") }
+                    TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Cancelar") }
                 }
             }
         }
@@ -472,6 +794,7 @@ fun QuoteDetailScreen(
     quote: QuoteEntity?,
     versions: List<QuoteVersionEntity>,
     latestSnapshot: QuoteSnapshot?,
+    profileName: String? = null,
     emitFailed: Boolean,
     onEmit: () -> Unit,
     onApprove: () -> Unit,
@@ -517,84 +840,368 @@ fun QuoteDetailScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text(quote.provisionalNumber) }) },
+        topBar = {
+            Surface(color = MaterialTheme.colorScheme.surface) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
+                    }
+                    Text(
+                        "Cotización",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = CotixGoNavy,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+            }
+        },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             item {
-                Text("${label(effective)} · versión ${quote.currentVersion}", style = MaterialTheme.typography.titleMedium)
-                Text("${quote.currency} ${quote.net} neto", style = MaterialTheme.typography.titleSmall)
+                val (chipBg, chipFg) = when (effective) {
+                    QuoteStatus.EMITIDA -> Color(0xFFDBEAFE) to Color(0xFF1D4ED8)
+                    QuoteStatus.APROBADA -> Color(0xFFD1FAE5) to Color(0xFF065F46)
+                    QuoteStatus.RECHAZADA -> Color(0xFFFEE2E2) to Color(0xFFB91C1C)
+                    QuoteStatus.VENCIDA -> Color(0xFFFEE2E2) to Color(0xFFB91C1C)
+                    else -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            quote.title.ifBlank { "Sin título" },
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = CotixGoNavy,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "N° ${quote.officialNumber ?: quote.provisionalNumber} · versión ${quote.currentVersion}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                    Surface(shape = RoundedCornerShape(50), color = chipBg) {
+                        Text(
+                            label(effective),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = chipFg,
+                        )
+                    }
+                }
             }
-            latestSnapshot?.let { s ->
+            val s = latestSnapshot
+            if (s != null) {
                 item {
-                    Text("Cliente: ${s.client.name}")
-                    Text("Perfil: ${s.profile.businessName}", style = MaterialTheme.typography.bodySmall)
+                    Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            QuoteDetailField("Cliente", s.client.name)
+                            QuoteDetailField("Perfil", s.profile.businessName)
+                            QuoteDetailField("Emisión", fmtIsoDay(s.issueDate))
+                            QuoteDetailField("Vigencia", "${s.validityDays} días")
+                            QuoteDetailField("Vence", fmtIsoDay(s.expiryDate))
+                        }
+                    }
+                }
+                item {
                     Text(
-                        "Emisión ${s.issueDate} · vigencia ${s.validityDays} días · vence ${s.expiryDate}",
-                        style = MaterialTheme.typography.bodySmall,
+                        "Conceptos",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = CotixGoNavy,
                     )
                 }
-                items(s.lines) { l ->
+                if (s.lines.isEmpty()) {
+                    item { QuoteDetailEmpty("Sin conceptos registrados.") }
+                } else {
+                    items(s.lines) { l ->
+                        Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        l.description,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        "[${l.conceptType}] · ${l.quantity} ${l.unit} × $ ${fmtQuoteAmount(l.unitPrice)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.secondary,
+                                    )
+                                }
+                                Text(
+                                    "$ ${fmtQuoteAmount(l.lineTotal)}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = CotixGoNavy,
+                                )
+                            }
+                        }
+                    }
+                }
+                item {
                     Text(
-                        "[${l.conceptType}] ${l.description} — ${l.quantity} ${l.unit} × ${l.unitPrice} = ${l.lineTotal}",
-                        style = MaterialTheme.typography.bodySmall,
+                        "Retenciones",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = CotixGoNavy,
+                    )
+                }
+                if (s.retentions.isEmpty()) {
+                    item { QuoteDetailEmpty("Sin retenciones aplicadas.") }
+                } else {
+                    items(s.retentions) { r ->
+                        Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "${r.name} (${r.ratePercent}%)",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    "- $ ${fmtQuoteAmount(r.amount)}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = CotixGoNavy,
+                                )
+                            }
+                        }
+                    }
+                }
+                item { QuoteTotalsCard(s.gross, s.totalRetained, s.net, s.currency) }
+            } else {
+                // Cotización sin snapshot (p. ej. datos sembrados o migrados):
+                // respaldo con los datos reales de QuoteEntity; el detalle de
+                // líneas y retenciones no está persistido fuera de versiones.
+                item {
+                    Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            QuoteDetailField("Cliente", quote.clientNameSnapshot.ifBlank { "—" })
+                            profileName?.let { QuoteDetailField("Perfil", it) }
+                            QuoteDetailField("Emisión", dashboardDayLabel(quote.issueDateEpochDay))
+                            QuoteDetailField("Vigencia", "${quote.validityDays} días")
+                            QuoteDetailField("Vence", dashboardDayLabel(quote.expiryDateEpochDay))
+                            QuoteDetailField("Moneda", quote.currency)
+                            if (quote.notes.isNotBlank()) QuoteDetailField("Notas", quote.notes)
+                        }
+                    }
+                }
+                item {
+                    Text(
+                        "Conceptos",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = CotixGoNavy,
                     )
                 }
                 item {
-                    Text("Bruto: ${s.gross}")
-                    s.retentions.forEach { Text("${it.name} (${it.ratePercent}%): -${it.amount}", style = MaterialTheme.typography.bodySmall) }
-                    Text("Neto: ${s.net}", style = MaterialTheme.typography.titleSmall)
+                    QuoteDetailEmpty(
+                        "Los conceptos y retenciones de esta cotización no están disponibles: no tiene líneas persistidas en el historial.",
+                    )
                 }
+                item { QuoteTotalsCard(quote.gross, quote.totalRetained, quote.net, quote.currency) }
             }
             if (emitFailed) {
                 item { Text("La cotización necesita al menos una línea para emitirse.", color = MaterialTheme.colorScheme.error) }
             }
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     when (effective) {
                         QuoteStatus.BORRADOR -> {
-                            Button(onClick = onEmit) { Text("Emitir") }
-                            OutlinedButton(onClick = onEdit) { Text("Editar") }
-                            OutlinedButton(onClick = onCancel) { Text("Cancelar cotización") }
+                            Button(onClick = onEmit, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Emitir") }
                         }
                         QuoteStatus.EMITIDA -> {
-                            Button(onClick = onApprove) { Text("Aprobar") }
-                            OutlinedButton(onClick = onReject) { Text("Rechazar") }
-                            OutlinedButton(onClick = onEdit) { Text("Editar") }
-                            OutlinedButton(onClick = onCancel) { Text("Cancelar cotización") }
+                            Button(onClick = onApprove, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Aprobar") }
                         }
                         QuoteStatus.RECHAZADA -> {
-                            Button(onClick = onRevertReject) { Text("Revertir a emitida") }
+                            Button(onClick = onRevertReject, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Revertir a emitida") }
                         }
                         QuoteStatus.VENCIDA -> {
-                            Button(onClick = { revalidateDialog = true }) { Text("Revalidar") }
+                            Button(onClick = { revalidateDialog = true }, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Revalidar") }
                         }
                         else -> {}
                     }
                     // Creación manual del Trabajo desde APROBADA (F4):
                     // nunca automática — la acción la decide el usuario.
                     if (effective == QuoteStatus.APROBADA) {
-                        Button(onClick = onCreateJob) { Text("Crear trabajo") }
+                        Button(onClick = onCreateJob, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Crear trabajo") }
                     }
-                    OutlinedButton(onClick = { onArchive(!quote.archived) }) {
-                        Text(if (quote.archived) "Desarchivar" else "Archivar")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (effective == QuoteStatus.BORRADOR || effective == QuoteStatus.EMITIDA) {
+                            OutlinedButton(onClick = onEdit, modifier = Modifier.weight(1f)) { Text("Editar") }
+                        }
+                        if (effective == QuoteStatus.EMITIDA) {
+                            OutlinedButton(onClick = onReject, modifier = Modifier.weight(1f)) { Text("Rechazar") }
+                        }
+                        OutlinedButton(onClick = { onArchive(!quote.archived) }, modifier = Modifier.weight(1f)) {
+                            Text(if (quote.archived) "Desarchivar" else "Archivar")
+                        }
                     }
-                    TextButton(onClick = onBack) { Text("Volver") }
+                    if (effective == QuoteStatus.BORRADOR || effective == QuoteStatus.EMITIDA) {
+                        OutlinedButton(
+                            onClick = onCancel,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                        ) { Text("Cancelar cotización") }
+                    }
                 }
             }
             if (versions.isNotEmpty()) {
                 item {
-                    Text("Versiones", style = MaterialTheme.typography.titleSmall)
-                    versions.forEach { v ->
-                        TextButton(onClick = { onOpenVersion(v.version) }) {
-                            Text("Versión ${v.version}" + if (v.version == quote.emittedVersion) " (emitida)" else "")
+                    Text(
+                        "Versiones",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = CotixGoNavy,
+                    )
+                }
+                items(versions) { v ->
+                    Surface(
+                        onClick = { onOpenVersion(v.version) },
+                        shape = QuoteCardShape,
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Versión ${v.version}",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            if (v.version == quote.emittedVersion) {
+                                Text(
+                                    "emitida",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.secondary,
+                            )
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/** Fila etiqueta/valor para la tarjeta de datos del detalle de Cotización. */
+@Composable
+private fun QuoteDetailField(label: String, value: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text(
+            label,
+            modifier = Modifier.width(96.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Text(
+            value,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/** Encabezado de sección del formulario de cotización. */
+@Composable
+private fun QuoteFormSectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = CotixGoNavy,
+    )
+}
+
+/** Tarjeta de totales del detalle (misma estructura con snapshot o entidad). */
+@Composable
+private fun QuoteTotalsCard(gross: String, totalRetained: String, net: String, currency: String) {
+    Surface(shape = QuoteCardShape, color = MaterialTheme.colorScheme.surface) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            QuoteTotalRow("Bruto", "$ ${fmtQuoteAmount(gross)} $currency")
+            QuoteTotalRow("Retenido", "- $ ${fmtQuoteAmount(totalRetained)} $currency")
+            QuoteTotalRow("Neto", "$ ${fmtQuoteAmount(net)} $currency", emphasis = true)
+        }
+    }
+}
+
+@Composable
+private fun QuoteTotalRow(label: String, value: String, emphasis: Boolean = false) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            style = if (emphasis) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+            fontWeight = if (emphasis) FontWeight.Bold else FontWeight.Normal,
+            color = if (emphasis) CotixGoNavy else MaterialTheme.colorScheme.secondary,
+        )
+        Text(
+            value,
+            style = if (emphasis) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+            fontWeight = if (emphasis) FontWeight.Bold else FontWeight.Normal,
+            color = if (emphasis) CotixGoNavy else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/** Estado vacío suave para secciones del detalle sin contenido persistido. */
+@Composable
+private fun QuoteDetailEmpty(message: String) {
+    Surface(
+        shape = QuoteCardShape,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+    ) {
+        Text(
+            message,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
     }
 }
 
@@ -619,6 +1226,14 @@ fun QuoteVersionScreen(snapshot: QuoteSnapshot?, onBack: () -> Unit) {
                 }
                 item { Text("Bruto: ${s.gross} · Retenido: ${s.totalRetained} · Neto: ${s.net}") }
             }
+            item {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                snapshot?.let { s ->
+                    Button(onClick = { printQuotePdf(context, s) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Vista previa (PDF)")
+                    }
+                }
+            }
             item { TextButton(onClick = onBack) { Text("Volver") } }
         }
     }
@@ -630,6 +1245,7 @@ fun QuoteVersionScreen(snapshot: QuoteSnapshot?, onBack: () -> Unit) {
 @Composable
 fun ServicesScreen(
     services: List<ServiceEntity>,
+    currency: String,
     onSave: (ServiceInput, String?) -> Unit,
     onArchive: (String, Boolean) -> Unit,
 ) {
@@ -652,6 +1268,7 @@ fun ServicesScreen(
                     OutlinedTextField(
                         value = price, onValueChange = { price = it }, label = { Text("Precio sugerido") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        supportingText = { Text("En $currency (moneda principal del perfil)") },
                     )
                 }
             },
@@ -681,6 +1298,21 @@ fun ServicesScreen(
                         selected = showArchived == (i == 1), onClick = { showArchived = i == 1 },
                         shape = SegmentedButtonDefaults.itemShape(index = i, count = 2),
                     ) { Text(t) }
+                }
+            }
+            if (visible.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Card {
+                        Text(
+                            if (!showArchived) {
+                                "Sin servicios en el catálogo. Usa + Servicio para crear el primero."
+                            } else {
+                                "Sin servicios archivados."
+                            },
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
                 }
             }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -746,6 +1378,14 @@ fun RetentionsScreen(
                             Text(t.name)
                         }
                     }
+                    Text(
+                        "En cada cotización debes seleccionar esta retención. " +
+                            "Se calcula sobre la suma de las líneas de los tipos " +
+                            "marcados y reduce el neto. Cada versión guardada " +
+                            "conserva los valores calculados.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
             },
             confirmButton = {
@@ -774,6 +1414,21 @@ fun RetentionsScreen(
                         selected = showArchived == (i == 1), onClick = { showArchived = i == 1 },
                         shape = SegmentedButtonDefaults.itemShape(index = i, count = 2),
                     ) { Text(t) }
+                }
+            }
+            if (visible.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Card {
+                        Text(
+                            if (!showArchived) {
+                                "Sin retenciones. Usa + Retención para crear la primera."
+                            } else {
+                                "Sin retenciones archivadas."
+                            },
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
                 }
             }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -808,6 +1463,11 @@ fun ProfileScreen(
     var desc by remember { mutableStateOf(profile?.description ?: "") }
     var info by remember { mutableStateOf(profile?.commercialInfo ?: "") }
     var vigencia by remember { mutableStateOf(profile?.vigenciaDias?.toString() ?: "") }
+    // Un valor almacenado inválido se muestra como error al abrir; vacío=sin
+    // default (válido), con valor debe ser >= 1.
+    var vigenciaError by remember {
+        mutableStateOf(vigencia.isNotEmpty() && (vigencia.toIntOrNull() ?: 0) < 1)
+    }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Perfil profesional") }) }) { padding ->
         Column(
@@ -818,17 +1478,33 @@ fun ProfileScreen(
             OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Descripción") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = info, onValueChange = { info = it }, label = { Text("Información comercial") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(
-                value = vigencia, onValueChange = { vigencia = it.filter(Char::isDigit) },
+                value = vigencia,
+                onValueChange = {
+                    vigencia = it.filter(Char::isDigit)
+                    vigenciaError = vigencia.isNotEmpty() && (vigencia.toIntOrNull() ?: 0) < 1
+                },
                 label = { Text("Vigencia predeterminada de cotizaciones (días)") },
                 modifier = Modifier.fillMaxWidth(),
+                isError = vigenciaError,
+                supportingText = {
+                    if (vigenciaError) {
+                        Text("La vigencia predeterminada debe ser de al menos 1 día.")
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = {
-                    if (name.isNotBlank()) onSave(name, desc, info, vigencia.toIntOrNull())
+                    val invalid = vigencia.isNotEmpty() && (vigencia.toIntOrNull() ?: 0) < 1
+                    if (invalid) {
+                        vigenciaError = true
+                    } else if (name.isNotBlank()) {
+                        onSave(name, desc, info, vigencia.toIntOrNull())
+                    }
                 }) { Text("Guardar") }
                 TextButton(onClick = onBack) { Text("Volver") }
             }
+
         }
     }
 }
@@ -854,15 +1530,35 @@ fun SettingsScreen(
             modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            var currencyError by remember { mutableStateOf(false) }
+            fun currencyValid(c: String): Boolean = isValidCurrencyCode(c)
             OutlinedTextField(
-                value = currency, onValueChange = { currency = it.uppercase().take(3) },
-                label = { Text("Moneda principal (ISO 4217)") }, modifier = Modifier.fillMaxWidth(),
+                value = currency, onValueChange = { currency = it.uppercase().take(3); currencyError = false },
+                label = { Text("Moneda principal") }, modifier = Modifier.fillMaxWidth(),
+                isError = currencyError,
+                supportingText = {
+                    Text(
+                        if (currencyError) "Código ISO 4217 no válido — usa uno real (COP, USD, EUR…)."
+                        else "Código ISO 4217 de 3 letras — por ejemplo COP o USD."
+                    )
+                },
             )
-            Button(onClick = { if (currency.length == 3) onCurrency(currency) }) { Text("Guardar moneda") }
-            OutlinedButton(onClick = onServices, modifier = Modifier.fillMaxWidth()) { Text("Catálogo de servicios") }
-            OutlinedButton(onClick = onRetentions, modifier = Modifier.fillMaxWidth()) { Text("Retenciones") }
-            OutlinedButton(onClick = onProfile, modifier = Modifier.fillMaxWidth()) { Text("Perfil profesional") }
-            OutlinedButton(onClick = onAccount, modifier = Modifier.fillMaxWidth()) { Text("Cuenta y sincronización") }
+            Button(onClick = {
+                if (currencyValid(currency)) onCurrency(currency) else currencyError = true
+            }) { Text("Guardar moneda") }
+            @Composable
+            fun navRow(label: String, onClick: () -> Unit) {
+                OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(label, modifier = Modifier.weight(1f))
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+                    }
+                }
+            }
+            navRow("Catálogo de servicios", onServices)
+            navRow("Retenciones", onRetentions)
+            navRow("Perfil profesional", onProfile)
+            navRow("Cuenta y sincronización", onAccount)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
