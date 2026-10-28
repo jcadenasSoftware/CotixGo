@@ -25,6 +25,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -44,6 +45,7 @@ import com.cotixgo.app.core.MovementType
 import com.cotixgo.app.core.PurchaseStatus
 import com.cotixgo.app.core.PurchaseTransitions
 import com.cotixgo.app.core.isPositiveQuantity
+import com.cotixgo.app.core.movementIsInbound
 import com.cotixgo.app.core.validateMaterial
 import com.cotixgo.app.data.InventoryMovementEntity
 import com.cotixgo.app.data.InventoryMovementInput
@@ -70,6 +72,30 @@ private fun movementOriginLabel(origin: String): String = when (origin) {
     "SOBRANTE" -> "Sobrante"
     else -> "Ajuste"
 }
+
+/** Chip de estado de Compra (misma paleta que Cobros/Pagos). */
+@Composable
+private fun PurchaseStatusChip(status: String) {
+    val (bg, fg) = when (status) {
+        "CONFIRMADA" -> MaterialTheme.colorScheme.primaryContainer to
+            MaterialTheme.colorScheme.onPrimaryContainer
+        "ANULADA" -> MaterialTheme.colorScheme.errorContainer to
+            MaterialTheme.colorScheme.onErrorContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant to
+            MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(color = bg, shape = MaterialTheme.shapes.small) {
+        Text(
+            purchaseStatusLabel(status),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = fg,
+        )
+    }
+}
+
+/** Fecha localizada (mismo helper que el resto de la app — español). */
+private fun fmtDay(epochDay: Long): String = dashboardDayLabel(epochDay)
 
 private fun purchaseStatusLabel(s: String): String = when (s) {
     "CONFIRMADA" -> "Confirmada"
@@ -189,7 +215,17 @@ fun InventoryScreen(
                     }
                 }
                 1 -> {
-                    if (purchases.isEmpty()) Text("Todavía no hay compras registradas.")
+                    if (purchases.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Card {
+                                Text(
+                                    "Todavía no hay compras registradas.",
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                        }
+                    }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(purchases, key = { it.id }) { p ->
                             Card(onClick = { onOpenPurchase(p.id) }, modifier = Modifier.fillMaxWidth()) {
@@ -198,11 +234,15 @@ fun InventoryScreen(
                                         p.officialNumber ?: p.provisionalNumber,
                                         style = MaterialTheme.typography.titleMedium,
                                     )
-                                    Text(
-                                        "${LocalDate.ofEpochDay(p.purchaseDateEpochDay)} · ${purchaseStatusLabel(p.status)}" +
-                                            (if (p.archived) " · Archivada" else ""),
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            fmtDay(p.purchaseDateEpochDay) +
+                                                (if (p.archived) " · Archivada" else ""),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        PurchaseStatusChip(p.status)
+                                    }
                                     Text(
                                         "${p.totalAmount} ${p.currency}",
                                         style = MaterialTheme.typography.bodySmall,
@@ -216,19 +256,53 @@ fun InventoryScreen(
                     }
                 }
                 else -> {
-                    if (movements.isEmpty()) Text("Sin movimientos de inventario.")
+                    if (movements.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Card {
+                                Text(
+                                    "Sin movimientos de inventario.",
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                        }
+                    }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(movements, key = { it.id }) { m ->
-                            Card(modifier = Modifier.fillMaxWidth()) {
+                            Card(
+                                onClick = { m.purchaseId?.let(onOpenPurchase) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
                                 Column(Modifier.padding(12.dp)) {
                                     Text(
                                         materialsById[m.materialId]?.name ?: "Material",
                                         style = MaterialTheme.typography.titleSmall,
                                     )
-                                    Text(
-                                        "${movementOriginLabel(m.origin)} · ${movementSign(m.movementType)}${m.quantity} ${m.unit} · ${if (m.condition == "USADO") "Usado" else "Nuevo"}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
+                                    // El signo de la cantidad se colorea por sentido
+                                    // real del movimiento (entrada/salida).
+                                    val inbound = runCatching {
+                                        movementIsInbound(MovementType.valueOf(m.movementType))
+                                    }.getOrDefault(true)
+                                    val qtyColor = if (inbound) {
+                                        androidx.compose.ui.graphics.Color(0xFF2E7D32)
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    }
+                                    Row {
+                                        Text(
+                                            "${movementOriginLabel(m.origin)} · ",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                        Text(
+                                            "${movementSign(m.movementType)}${m.quantity} ${m.unit}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = qtyColor,
+                                        )
+                                        Text(
+                                            " · " + (if (m.condition == "USADO") "Usado" else "Nuevo"),
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
                                     val ref = m.jobId?.let { jobsById[it]?.let { j -> j.officialNumber ?: j.provisionalNumber } }
                                     if (ref != null) {
                                         Text("Trabajo $ref", style = MaterialTheme.typography.bodySmall)
@@ -287,6 +361,11 @@ fun MaterialFormDialog(
                 OutlinedTextField(
                     value = description, onValueChange = { description = it },
                     label = { Text("Descripción") }, modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "El stock se actualiza mediante compras y movimientos.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
                 )
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
@@ -358,7 +437,6 @@ fun MaterialDetailScreen(
                 OutlinedButton(onClick = { onArchive(!material.archived) }) {
                     Text(if (material.archived) "Desarchivar" else "Archivar")
                 }
-                TextButton(onClick = onBack) { Text("Volver") }
             }
             Text("Movimientos", style = MaterialTheme.typography.titleSmall)
             if (movements.isEmpty()) Text("Sin movimientos registrados.")
@@ -479,6 +557,11 @@ fun MovementFormDialog(
                     modifier = Modifier.fillMaxWidth(), singleLine = true,
                 )
                 if (origin == MovementOrigin.SOBRANTE) {
+                    Text(
+                        "Registra una entrada de material recuperado o sobrante; asociar un trabajo es opcional.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                     Box {
                         OutlinedButton(onClick = { jobMenu = true }, modifier = Modifier.fillMaxWidth()) {
                             Text(
@@ -547,6 +630,7 @@ fun PurchaseEditorScreen(
     initialItems: List<PurchaseItemEntity>,
     materials: List<MaterialEntity>,
     confirmError: String?,
+    currency: String,
     onSave: (PurchaseInput, Boolean, (String?) -> Unit) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -697,6 +781,18 @@ fun PurchaseEditorScreen(
                 )
             }
             item {
+                // Moneda de la compra: la principal del perfil (no editable
+                // en el formulario — `savePurchase` la toma del usuario).
+                Text(
+                    "Moneda: $currency (moneda principal del perfil)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text(
+                    "Un borrador no afecta existencias; solo la compra confirmada actualiza el stock.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 confirmError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -22,6 +23,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -37,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.cotixgo.app.core.CalcLine
@@ -110,6 +113,76 @@ private fun ConfirmedEffectText(
 
 // ---------- Cobros: Cuentas / Pagos / Métodos ----------
 
+/** Franja compacta de 52.dp: flecha + título (mismo patrón que Informes). */
+@Composable
+fun CollectionTopBar(title: String, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onBack) {
+            Text("‹", style = MaterialTheme.typography.headlineSmall)
+        }
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/** Chip de estado de Pago (misma paleta que el resto de Cobros). */
+@Composable
+private fun PaymentStatusChip(status: PaymentAssignmentStatus, annulled: Boolean) {
+    val (bg, fg) = when {
+        annulled -> MaterialTheme.colorScheme.errorContainer to
+            MaterialTheme.colorScheme.onErrorContainer
+        status == PaymentAssignmentStatus.ASSIGNED -> MaterialTheme.colorScheme.primaryContainer to
+            MaterialTheme.colorScheme.onPrimaryContainer
+        status == PaymentAssignmentStatus.PARTIAL_ASSIGNED -> MaterialTheme.colorScheme.tertiaryContainer to
+            MaterialTheme.colorScheme.onTertiaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant to
+            MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(color = bg, shape = MaterialTheme.shapes.small) {
+        Text(
+            assignmentLabel(status) + if (annulled) " · ANULADO" else "",
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = fg,
+        )
+    }
+}
+
+/** Chip de estado de Cuenta de cobro (misma paleta que Cotizaciones/Trabajos). */
+@Composable
+fun CollectionStatusChip(status: CollectionAccountStatus, archived: Boolean) {
+    val (bg, fg) = when {
+        archived -> MaterialTheme.colorScheme.surfaceVariant to
+            MaterialTheme.colorScheme.onSurfaceVariant
+        status == CollectionAccountStatus.PENDIENTE -> MaterialTheme.colorScheme.secondaryContainer to
+            MaterialTheme.colorScheme.onSecondaryContainer
+        status == CollectionAccountStatus.PARCIAL -> MaterialTheme.colorScheme.tertiaryContainer to
+            MaterialTheme.colorScheme.onTertiaryContainer
+        status == CollectionAccountStatus.PAGADA -> MaterialTheme.colorScheme.primaryContainer to
+            MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.errorContainer to
+            MaterialTheme.colorScheme.onErrorContainer
+    }
+    Surface(color = bg, shape = MaterialTheme.shapes.small) {
+        Text(
+            collectionLabel(status) + if (archived) " · Archivada" else "",
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = fg,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CollectionsScreen(
@@ -133,6 +206,30 @@ fun CollectionsScreen(
     var tab by remember { mutableStateOf(0) } // 0 Cuentas, 1 Consolidados, 2 Pagos, 3 Métodos
     var methodDialog by remember { mutableStateOf<CollectionMethodEntity?>(null) }
     var newMethod by remember { mutableStateOf(false) }
+    var confirmArchiveMethod by remember { mutableStateOf<CollectionMethodEntity?>(null) }
+
+    // Archivar método: confirmación — deja de aparecer en nuevos pagos.
+    confirmArchiveMethod?.let { mm ->
+        AlertDialog(
+            onDismissRequest = { confirmArchiveMethod = null },
+            title = { Text("Archivar método") },
+            text = {
+                Text(
+                    "Este método dejará de aparecer al registrar nuevos pagos. " +
+                        "Los pagos existentes conservarán sus datos.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    onSetMethodArchived(mm.id, true)
+                    confirmArchiveMethod = null
+                }) { Text("Archivar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmArchiveMethod = null }) { Text("Cancelar") }
+            },
+        )
+    }
 
     if (methodDialog != null || newMethod) {
         CollectionMethodDialog(
@@ -161,12 +258,15 @@ fun CollectionsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                listOf("Cuentas", "Consol.", "Pagos", "Métodos").forEachIndexed { i, t ->
+                // Peso ~longitud para que "Consolidados" no se parta.
+                val tabLabels = listOf("Cuentas", "Consolidados", "Pagos", "Métodos")
+                tabLabels.forEachIndexed { i, t ->
                     SegmentedButton(
                         selected = tab == i,
                         onClick = { tab = i },
-                        shape = SegmentedButtonDefaults.itemShape(index = i, count = 4),
-                    ) { Text(t) }
+                        shape = SegmentedButtonDefaults.itemShape(index = i, count = tabLabels.size),
+                        modifier = Modifier.weight(t.length.toFloat()),
+                    ) { Text(t, maxLines = 1, softWrap = false) }
                 }
             }
             when (tab) {
@@ -174,7 +274,13 @@ fun CollectionsScreen(
                     val visible = accounts.filter { !it.archived }
                     if (visible.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No hay cuentas de cobro.")
+                            Card {
+                                Text(
+                                    "No hay cuentas de cobro.",
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -205,7 +311,13 @@ fun CollectionsScreen(
                     val visibleCons = consolidateds.filter { !it.archived }
                     if (visibleCons.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No hay consolidados de cuentas.")
+                            Card {
+                                Text(
+                                    "No hay consolidados de cuentas.",
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -235,7 +347,13 @@ fun CollectionsScreen(
                 2 -> {
                     if (payments.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No hay pagos registrados.")
+                            Card {
+                                Text(
+                                    "No hay pagos registrados.",
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
                         }
                     } else {
                         val consById = consolidateds.associateBy { it.id }
@@ -261,15 +379,20 @@ fun CollectionsScreen(
                                                 accountsById[aid]?.let { it.officialNumber ?: it.provisionalNumber }
                                             }
                                         }
+                                        // Una sola descripción: destino único si
+                                        // está asignado; disponible si no lo está.
                                         Text(
-                                            assignmentLabel(PaymentAssignmentStatus.valueOf(pay.assignmentStatus)) +
-                                                (dest?.let { " · $it" } ?: "") +
-                                                if (pay.unassignedAmount.toMoney().signum() > 0) {
-                                                    " · Sin asignar: ${pay.unassignedAmount}"
-                                                } else "" +
-                                                    if (pay.refundedAmount.toMoney().signum() > 0) {
-                                                        " · Reembolsado: ${pay.refundedAmount}"
-                                                    } else "",
+                                            run {
+                                                val st = PaymentAssignmentStatus.valueOf(pay.assignmentStatus)
+                                                when {
+                                                    st == PaymentAssignmentStatus.UNASSIGNED ->
+                                                        "Sin asignar · Disponible: ${pay.unassignedAmount}"
+                                                    else ->
+                                                        "${assignmentLabel(st)}${dest?.let { " · $it" } ?: ""}"
+                                                } + if (pay.refundedAmount.toMoney().signum() > 0) {
+                                                    " · Reembolsado: ${pay.refundedAmount}"
+                                                } else ""
+                                            },
                                             style = MaterialTheme.typography.bodySmall,
                                         )
                                         val pop = latestOps[
@@ -299,7 +422,13 @@ fun CollectionsScreen(
                 else -> {
                     if (methods.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No hay métodos de cobro.")
+                            Card {
+                                Text(
+                                    "No hay métodos de cobro.",
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -315,7 +444,13 @@ fun CollectionsScreen(
                                         }
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             TextButton(onClick = { methodDialog = m }) { Text("Editar") }
-                                            TextButton(onClick = { onSetMethodArchived(m.id, !m.archived) }) {
+                                            TextButton(onClick = {
+                                                if (m.archived) {
+                                                    onSetMethodArchived(m.id, false)
+                                                } else {
+                                                    confirmArchiveMethod = m
+                                                }
+                                            }) {
                                                 Text(if (m.archived) "Desarchivar" else "Archivar")
                                             }
                                         }
@@ -352,6 +487,7 @@ private fun CollectionMethodDialog(
                 OutlinedTextField(
                     value = detail, onValueChange = { detail = it },
                     label = { Text("Detalle (opcional)") }, modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
                 )
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
@@ -641,16 +777,22 @@ fun CollectionAccountEditorScreen(
                 }
             }
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Bruto: ${QuoteCalc.format(calc.gross)}")
-                    calc.retentions.forEach {
-                        Text(
-                            "${it.name} (${it.ratePercent}%): -${QuoteCalc.format(it.amount)}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                // Tarjeta de totales: agrupa bruto/retenciones y destaca el neto.
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Bruto: ${QuoteCalc.format(calc.gross)}")
+                        calc.retentions.forEach {
+                            Text(
+                                "${it.name} (${it.ratePercent}%): -${QuoteCalc.format(it.amount)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Text("Total retenido: ${QuoteCalc.format(calc.totalRetained)}", style = MaterialTheme.typography.bodySmall)
+                        Text("Neto a cobrar: ${QuoteCalc.format(calc.net)}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     }
-                    Text("Total retenido: ${QuoteCalc.format(calc.totalRetained)}", style = MaterialTheme.typography.bodySmall)
-                    Text("Neto a cobrar: ${QuoteCalc.format(calc.net)}", style = MaterialTheme.typography.titleSmall)
                 }
             }
             item {
@@ -773,27 +915,38 @@ fun CollectionAccountDetailScreen(
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(account.officialNumber ?: account.provisionalNumber) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("‹") } },
-            )
-        },
+        topBar = { CollectionTopBar("Cuenta de cobro", onBack) },
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Text(
-                    "${collectionLabel(status)}${if (account.archived) " · Archivada" else ""}",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text("Cliente: ${account.clientNameSnapshot}", style = MaterialTheme.typography.bodySmall)
-                Text("Emitida: ${java.time.Instant.ofEpochMilli(account.issuedAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate()}",
-                    style = MaterialTheme.typography.bodySmall)
-                account.dueDateEpochDay?.let {
-                    Text("Vence: ${LocalDate.ofEpochDay(it)}", style = MaterialTheme.typography.bodySmall)
+                // Número en el contenido + chip de estado.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        account.officialNumber ?: account.provisionalNumber,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    CollectionStatusChip(status, account.archived)
+                }
+            }
+            item {
+                // Datos base con formato de fecha localizado.
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Cliente: ${account.clientNameSnapshot}", style = MaterialTheme.typography.bodySmall)
+                        Text("Emitida: ${java.time.Instant.ofEpochMilli(account.issuedAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate()}",
+                            style = MaterialTheme.typography.bodySmall)
+                        account.dueDateEpochDay?.let {
+                            Text("Vence: ${LocalDate.ofEpochDay(it)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
             item {
@@ -809,16 +962,34 @@ fun CollectionAccountDetailScreen(
                 }
             }
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Bruto: ${account.gross}")
-                    Text("Retenido: ${account.totalRetained}", style = MaterialTheme.typography.bodySmall)
-                    Text("Neto: ${account.net}", style = MaterialTheme.typography.titleSmall)
-                    Text("Aplicado: ${account.appliedAmount} · Saldo: ${account.balance} ${account.currency}",
-                        style = MaterialTheme.typography.titleSmall)
-                    ConfirmedEffectText(
-                        "saldo ${account.serverBalance} · aplicado ${account.serverAppliedAmount} ${account.currency}",
-                        effects["ACCOUNT:${account.id}"],
-                    )
+                // Tarjeta de totales — neto destacado.
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Bruto: ${account.gross} ${account.currency}")
+                        Text("Retenido: ${account.totalRetained}", style = MaterialTheme.typography.bodySmall)
+                        Text("Neto a cobrar: ${account.net} ${account.currency}",
+                            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            item {
+                // Saldos: separado lo local de lo confirmado por el servidor.
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Aplicado a pagos: ${account.appliedAmount} ${account.currency}")
+                        Text("Saldo pendiente de cobro: ${account.balance} ${account.currency}")
+                        // La línea ya imprime el prefijo "Confirmado:".
+                        ConfirmedEffectText(
+                            "servidor: saldo ${account.serverBalance} · aplicado ${account.serverAppliedAmount} ${account.currency}",
+                            effects["ACCOUNT:${account.id}"],
+                        )
+                    }
                 }
             }
             if (activeConsolidated != null) {
@@ -903,12 +1074,21 @@ fun CollectionAccountDetailScreen(
                 }
             }
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Editar secundaria; Cancelar cuenta claramente destructiva;
+                // Archivar separada a ancho completo.
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (editable) {
-                        OutlinedButton(onClick = onEdit) { Text("Editar") }
-                        OutlinedButton(onClick = { confirmCancel = true }) { Text("Cancelar cuenta") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onEdit) { Text("Editar") }
+                            TextButton(onClick = { confirmCancel = true }) {
+                                Text("Cancelar cuenta", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
                     }
-                    OutlinedButton(onClick = { onSetArchived(!account.archived) }) {
+                    OutlinedButton(
+                        onClick = { onSetArchived(!account.archived) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Text(if (account.archived) "Desarchivar" else "Archivar")
                     }
                 }
@@ -1018,7 +1198,7 @@ fun PaymentEditorScreen(
                         when {
                             selA != null -> "Aplicar a ${selA.officialNumber ?: selA.provisionalNumber} (saldo ${selA.balance})"
                             selC != null -> "Aplicar a consolidado ${selC.officialNumber ?: selC.provisionalNumber} (saldo ${selC.balance})"
-                            else -> "Sin asignar (opcional)"
+                            else -> "Cuenta o consolidado (opcional)"
                         },
                     )
                 }
@@ -1040,6 +1220,11 @@ fun PaymentEditorScreen(
                     }
                 }
             }
+            Text(
+                "El pago puede registrarse sin asignarlo a una cuenta ni consolidado.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
             OutlinedTextField(
                 value = reference, onValueChange = { reference = it },
                 label = { Text("Referencia (opcional)") }, modifier = Modifier.fillMaxWidth(),
@@ -1300,49 +1485,80 @@ fun PaymentDetailScreen(
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Pago ${payment.effectiveAmount.takeIf { it.isNotBlank() } ?: payment.amount}") },
-                navigationIcon = { TextButton(onClick = onBack) { Text("‹") } },
-            )
-        },
+        topBar = { CollectionTopBar("Pago", onBack) },
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Text(
-                    assignmentLabel(PaymentAssignmentStatus.valueOf(payment.assignmentStatus)) +
-                        if (payment.annulled) " · ANULADO" else "",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text("Cliente: $clientName", style = MaterialTheme.typography.bodySmall)
-                Text("Fecha: ${LocalDate.ofEpochDay(payment.paidAtEpochDay)}",
-                    style = MaterialTheme.typography.bodySmall)
-                methodName?.let { Text("Método: $it", style = MaterialTheme.typography.bodySmall) }
-                if (payment.reference.isNotBlank()) {
-                    Text("Referencia: ${payment.reference}", style = MaterialTheme.typography.bodySmall)
+                // Importe destacado + chip de estado.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val eff0 = payment.effectiveAmount.takeIf { it.isNotBlank() } ?: payment.amount
+                    Text(
+                        eff0,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    PaymentStatusChip(
+                        PaymentAssignmentStatus.valueOf(payment.assignmentStatus),
+                        payment.annulled,
+                    )
                 }
-                if (payment.notes.isNotBlank()) {
-                    Text("Notas: ${payment.notes}", style = MaterialTheme.typography.bodySmall)
+            }
+            item {
+                // Datos del pago: cliente, fecha, método, referencia, notas.
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Cliente: $clientName", style = MaterialTheme.typography.bodySmall)
+                        Text("Fecha: ${LocalDate.ofEpochDay(payment.paidAtEpochDay)}",
+                            style = MaterialTheme.typography.bodySmall)
+                        methodName?.let { Text("Método: $it", style = MaterialTheme.typography.bodySmall) }
+                        if (payment.reference.isNotBlank()) {
+                            Text("Referencia: ${payment.reference}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (payment.notes.isNotBlank()) {
+                            Text("Notas: ${payment.notes}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
+            }
+            item {
+                // Saldos locales del pago.
                 val eff = payment.effectiveAmount.takeIf { it.isNotBlank() } ?: payment.amount
-                if (eff != payment.amount) {
-                    Text("Importe recibido: ${payment.amount}", style = MaterialTheme.typography.bodySmall)
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Efectivo: $eff")
+                        if (eff != payment.amount) {
+                            Text("Importe recibido: ${payment.amount}",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text("Aplicado: ${payment.appliedAmount} · Reembolsado: ${payment.refundedAmount}",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("Disponible: ${payment.unassignedAmount}",
+                            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    }
                 }
-                Text(
-                    "Efectivo: $eff · Aplicado: ${payment.appliedAmount} · " +
-                        "Reembolsado: ${payment.refundedAmount} · Disponible: ${payment.unassignedAmount}",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Text(
-                    "Confirmado por el servidor: aplicado ${payment.serverAppliedAmount} · " +
-                        "reembolsado ${payment.serverRefundedAmount} · " +
-                        "disponible ${payment.serverUnassignedAmount}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary,
-                )
+            }
+            item {
+                // Confirmado por el servidor, separado del saldo local.
+                Card(Modifier.fillMaxWidth()) {
+                    Text(
+                        "Confirmado por el servidor: aplicado ${payment.serverAppliedAmount} · " +
+                            "reembolsado ${payment.serverRefundedAmount} · " +
+                            "disponible ${payment.serverUnassignedAmount}",
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
+                }
                 latestOps[
                     com.cotixgo.app.data.EntityTypes.PAYMENT to payment.id,
                 ]?.let { payOp ->
@@ -1354,13 +1570,21 @@ fun PaymentDetailScreen(
                         )
                     }
                 }
-                account?.let {
-                    Text("Aplicado a: ${it.officialNumber ?: it.provisionalNumber}",
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                consolidated?.let {
-                    Text("Aplicado a consolidado: ${it.officialNumber ?: it.provisionalNumber}",
-                        style = MaterialTheme.typography.bodySmall)
+            }
+            if (account != null || consolidated != null) {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            account?.let {
+                                Text("Aplicado a: ${it.officialNumber ?: it.provisionalNumber}",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            consolidated?.let {
+                                Text("Aplicado a consolidado: ${it.officialNumber ?: it.provisionalNumber}",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
                 }
             }
             if (assignments.isNotEmpty()) {
@@ -1432,7 +1656,13 @@ fun PaymentDetailScreen(
                             if (payment.unassignedAmount.toMoney().signum() > 0) {
                                 OutlinedButton(onClick = { dialog = "refund" }) { Text("Reembolsar") }
                             }
-                            OutlinedButton(onClick = { dialog = "annul" }) { Text("Anular") }
+                        }
+                        // Anular: acción destructiva, separada del resto.
+                        TextButton(
+                            onClick = { dialog = "annul" },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Anular pago", color = MaterialTheme.colorScheme.error)
                         }
                     }
                 }

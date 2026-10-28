@@ -211,6 +211,11 @@ fun AccountScreen(
                         Button(onClick = { mode = "register" }, modifier = Modifier.fillMaxWidth()) {
                             Text("Crear cuenta")
                         }
+                        Text(
+                            "Crea una cuenta CotixGo para sincronizar el trabajo entre tus dispositivos.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
                         OutlinedButton(onClick = { mode = "login" }, modifier = Modifier.fillMaxWidth()) {
                             Text("Iniciar sesión")
                         }
@@ -220,7 +225,7 @@ fun AccountScreen(
                 Text("Cuenta vinculada", style = MaterialTheme.typography.titleMedium)
                 Text(boundEmail, color = MaterialTheme.colorScheme.secondary)
                 Text(
-                    "Pendientes: $pendingOps · Requieren atención: $pausedOps",
+                    "Pendientes: $pendingOps · Por revisar: $pausedOps",
                     color = if (pausedOps > 0) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.secondary,
                 )
@@ -267,13 +272,16 @@ fun AccountScreen(
                     }
                 }
             }
-            HorizontalDivider()
-            Text("Servidor (desarrollo local)", style = MaterialTheme.typography.titleSmall)
-            OutlinedTextField(
-                value = baseUrl, onValueChange = { baseUrl = it },
-                label = { Text("URL base de la API") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-            )
-            OutlinedButton(onClick = { onSetBaseUrl(baseUrl) }) { Text("Guardar URL") }
+            // La edición de la URL base solo existe en builds de desarrollo.
+            if (com.cotixgo.app.BuildConfig.DEBUG) {
+                HorizontalDivider()
+                Text("Servidor (desarrollo local)", style = MaterialTheme.typography.titleSmall)
+                OutlinedTextField(
+                    value = baseUrl, onValueChange = { baseUrl = it },
+                    label = { Text("URL base de la API") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                )
+                OutlinedButton(onClick = { onSetBaseUrl(baseUrl) }) { Text("Guardar URL") }
+            }
             lastMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             TextButton(onClick = onBack) { Text("Volver") }
         }

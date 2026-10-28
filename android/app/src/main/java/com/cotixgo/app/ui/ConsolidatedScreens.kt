@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -30,6 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.cotixgo.app.core.CollectionAccountStatus
 import com.cotixgo.app.core.toMoney
@@ -129,24 +132,30 @@ fun ConsolidatedEditorScreen(
                 item { Text("No hay cuentas elegibles.", style = MaterialTheme.typography.bodySmall) }
             } else {
                 items(eligible, key = { it.id }) { a ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    val isSel = a.id in selected
+                    // Toda la fila selecciona; el Checkbox solo refleja el estado
+                    // (onCheckedChange = null → la semántica vive en la fila).
+                    Card(
+                        modifier = Modifier.fillMaxWidth().selectable(
+                            selected = isSel,
+                            role = Role.Checkbox,
+                            onClick = {
+                                if (isSel) {
+                                    selected.remove(a.id)
+                                    if (selected.isEmpty()) currency = ""
+                                } else {
+                                    if (currency.isBlank()) currency = a.currency
+                                    selected.add(a.id)
+                                }
+                            },
+                        ),
+                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Checkbox(
-                                checked = a.id in selected,
-                                onCheckedChange = {
-                                    if (a.id in selected) {
-                                        selected.remove(a.id)
-                                        if (selected.isEmpty()) currency = ""
-                                    } else {
-                                        if (currency.isBlank()) currency = a.currency
-                                        selected.add(a.id)
-                                    }
-                                },
-                            )
+                            Checkbox(checked = isSel, onCheckedChange = null)
                             Column {
                                 Text(a.officialNumber ?: a.provisionalNumber)
                                 Text(
@@ -233,7 +242,29 @@ fun ConsolidatedDetailScreen(
     val editable = status == CollectionAccountStatus.PENDIENTE &&
         consolidated.appliedAmount.toMoney().signum() <= 0
     var confirmCancel by remember { mutableStateOf(false) }
+    var confirmEdit by remember { mutableStateOf(false) }
     var cancelError by remember { mutableStateOf<String?>(null) }
+
+    // Editar miembros: confirmación previa — puede liberar cuentas y
+    // cambiar qué documento recibe los pagos.
+    if (confirmEdit) {
+        AlertDialog(
+            onDismissRequest = { confirmEdit = false },
+            title = { Text("Editar miembros") },
+            text = {
+                Text(
+                    "Cambiar los miembros puede liberar cuentas del consolidado y " +
+                        "modificar qué documento recibe los pagos futuros.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = { confirmEdit = false; onEdit() }) { Text("Continuar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmEdit = false }) { Text("Cancelar") }
+            },
+        )
+    }
 
     if (confirmCancel) {
         AlertDialog(
@@ -265,39 +296,66 @@ fun ConsolidatedDetailScreen(
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(consolidated.officialNumber ?: consolidated.provisionalNumber) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("‹") } },
-            )
-        },
+        topBar = { CollectionTopBar("Consolidado", onBack) },
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Text(
-                    "${consolidatedLabel(status)}${if (consolidated.archived) " · Archivado" else ""}",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text("Cliente: ${consolidated.clientNameSnapshot}", style = MaterialTheme.typography.bodySmall)
-                Text(
-                    "Total: ${consolidated.currency} ${consolidated.totalAmount} · " +
-                        "Aplicado: ${consolidated.appliedAmount} · Saldo: ${consolidated.balance}",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                val eff = effects["CONSOLIDATED:${consolidated.id}"]
-                Text(
-                    "Confirmado por el servidor: saldo ${consolidated.serverBalance} · " +
-                        "aplicado ${consolidated.serverAppliedAmount}" +
-                        (eff?.let {
-                            (if (it.pending.signum() != 0) " · pendiente ${it.pending.toPlainString()}" else "") +
-                                (if (it.rejected.signum() != 0) " · rechazado ${it.rejected.toPlainString()}" else "")
-                        } ?: ""),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary,
-                )
+                // Número en el contenido + chip de estado.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        consolidated.officialNumber ?: consolidated.provisionalNumber,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    CollectionStatusChip(status, consolidated.archived)
+                }
+            }
+            item {
+                // Datos base del consolidado.
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Cliente: ${consolidated.clientNameSnapshot}", style = MaterialTheme.typography.bodySmall)
+                        Text("Moneda: ${consolidated.currency}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            item {
+                // Tarjeta de totales (local).
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Total: ${consolidated.currency} ${consolidated.totalAmount}")
+                        Text("Aplicado a pagos: ${consolidated.appliedAmount} ${consolidated.currency}")
+                        Text("Saldo pendiente de cobro: ${consolidated.balance} ${consolidated.currency}",
+                            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            item {
+                // Lo confirmado por el servidor, separado del saldo local.
+                Card(Modifier.fillMaxWidth()) {
+                    val eff = effects["CONSOLIDATED:${consolidated.id}"]
+                    Text(
+                        "Confirmado por el servidor: saldo ${consolidated.serverBalance} · " +
+                            "aplicado ${consolidated.serverAppliedAmount}" +
+                            (eff?.let {
+                                (if (it.pending.signum() != 0) " · pendiente ${it.pending.toPlainString()}" else "") +
+                                    (if (it.rejected.signum() != 0) " · rechazado ${it.rejected.toPlainString()}" else "")
+                            } ?: ""),
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
+                }
             }
             item { Text("Cuentas miembro", style = MaterialTheme.typography.titleSmall) }
             items(memberAccounts, key = { it.id }) { a ->
@@ -328,12 +386,21 @@ fun ConsolidatedDetailScreen(
                 }
             }
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Editar secundaria; Cancelar consolidado destructiva;
+                // Archivar separada.
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (editable) {
-                        OutlinedButton(onClick = onEdit) { Text("Editar miembros") }
-                        OutlinedButton(onClick = { confirmCancel = true }) { Text("Cancelar consolidado") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { confirmEdit = true }) { Text("Editar miembros") }
+                            TextButton(onClick = { confirmCancel = true }) {
+                                Text("Cancelar consolidado", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
                     }
-                    OutlinedButton(onClick = { onSetArchived(!consolidated.archived) }) {
+                    OutlinedButton(
+                        onClick = { onSetArchived(!consolidated.archived) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Text(if (consolidated.archived) "Desarchivar" else "Archivar")
                     }
                 }

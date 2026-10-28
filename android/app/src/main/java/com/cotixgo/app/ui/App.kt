@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import com.cotixgo.app.BuildConfig
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -512,14 +514,46 @@ private fun CotixGoNavHost(
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
-                val snapshot by androidx.compose.runtime.produceState<com.cotixgo.app.data.QuoteSnapshot?>(
+                var editFailed by remember(id) { mutableStateOf(false) }
+                val editSrc by androidx.compose.runtime.produceState<com.cotixgo.app.data.AppRepository.QuoteEditSource?>(
                     initialValue = null, id,
-                ) { value = vm.getQuoteSnapshot(id) }
-                if (snapshot == null) return@composable
+                ) {
+                    value = try {
+                        vm.getQuoteSnapshotForEdit(id)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (value == null) editFailed = true
+                }
+                val src = editSrc
+                if (src == null) {
+                    if (editFailed) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                "No se puede editar esta cotización.",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                "Faltan datos para reconstruir el formulario.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                            OutlinedButton(onClick = { nav.popBackStack() }) {
+                                Text("Volver")
+                            }
+                        }
+                    }
+                    return@composable
+                }
                 QuoteEditorScreen(
-                    initial = snapshot,
+                    initial = src.snapshot,
+                    lacksVersionSnapshot = !src.fromVersion,
                     clients = clients,
-                    profile = profiles.firstOrNull { it.id == snapshot?.profile?.id } ?: profiles.firstOrNull(),
+                    profile = profiles.firstOrNull { it.id == src.snapshot.profile.id } ?: profiles.firstOrNull(),
                     user = user,
                     retentions = retentions,
                     services = services,
@@ -545,6 +579,7 @@ private fun CotixGoNavHost(
                     quote = quote,
                     versions = versions,
                     latestSnapshot = snapshot,
+                    profileName = profiles.firstOrNull { it.id == quote?.profileId }?.businessName,
                     emitFailed = emitFailed,
                     onEmit = { vm.emitQuote(id) { emitFailed = !it } },
                     onApprove = { vm.setQuoteStatus(id, com.cotixgo.app.core.QuoteStatus.APROBADA) {} },
@@ -653,6 +688,8 @@ private fun CotixGoNavHost(
                 val materials by vm.observeJobMaterials(id).collectAsStateWithLifecycle(emptyList())
                 val links by vm.observeJobQuotes(id).collectAsStateWithLifecycle(emptyList())
                 val linkedReports by vm.observeReportsForJob(id).collectAsStateWithLifecycle(emptyList())
+                val jobPhotos by vm.observeJobPhotos(id).collectAsStateWithLifecycle(emptyList())
+                val jobCtx = androidx.compose.ui.platform.LocalContext.current
                 var transitionError by androidx.compose.runtime.remember {
                     androidx.compose.runtime.mutableStateOf<String?>(null)
                 }
@@ -663,6 +700,7 @@ private fun CotixGoNavHost(
                     links = links,
                     linkedQuotes = quotes,
                     linkedReports = linkedReports,
+                    photos = jobPhotos,
                     transitionError = transitionError,
                     onTransition = { target ->
                         vm.setJobStatus(id, target) { transitionError = it }
@@ -683,6 +721,10 @@ private fun CotixGoNavHost(
                     },
                     onNewReport = { nav.navigate(Routes.reportNew(jobId = id)) },
                     onOpenReport = { nav.navigate(Routes.reportDetail(it)) },
+                    onPhotoCaptured = { file -> vm.addJobPhoto(jobCtx.applicationContext, id, file) },
+                    onDeletePhoto = { pid -> vm.deleteJobPhoto(jobCtx.applicationContext, pid) },
+                    onRetryPhotoDownload = { pid -> vm.retryJobPhotoDownload(pid) },
+                    onRepairPhotoDownload = { pid -> vm.repairJobPhotoDownload(pid) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -793,9 +835,11 @@ private fun CotixGoNavHost(
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val v = entry.arguments?.getInt("v") ?: return@composable
                 val versions by vm.observeReportVersions(id).collectAsStateWithLifecycle(emptyList())
+                val report by vm.observeReport(id).collectAsStateWithLifecycle(null)
                 ReportVersionScreen(
                     snapshot = versions.firstOrNull { it.version == v }
                         ?.let { com.cotixgo.app.data.SnapshotJson.decodeReport(it.snapshotJson) },
+                    currentOfficialNumber = report?.officialNumber,
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -1158,6 +1202,7 @@ private fun CotixGoNavHost(
                     initialItems = emptyList(),
                     materials = materials.filter { !it.archived },
                     confirmError = null,
+                    currency = user?.mainCurrency ?: "COP",
                     onSave = { input, confirm, done ->
                         vm.savePurchase(input, null, confirm) { err ->
                             if (err == null) nav.popBackStack()
@@ -1193,6 +1238,7 @@ private fun CotixGoNavHost(
                     initialItems = loadedItems,
                     materials = materials.filter { !it.archived },
                     confirmError = null,
+                    currency = user?.mainCurrency ?: "COP",
                     onSave = { input, confirm, done ->
                         vm.savePurchase(input, id, confirm) { err ->
                             if (err == null) nav.popBackStack()
@@ -1327,6 +1373,7 @@ private fun CotixGoNavHost(
             composable(Routes.SERVICES) {
                 ServicesScreen(
                     services = services,
+                    currency = user?.mainCurrency ?: "COP",
                     onSave = { input, id -> vm.saveService(input, id) {} },
                     onArchive = { id, archived -> vm.setServiceArchived(id, archived) },
                 )
@@ -1340,6 +1387,7 @@ private fun CotixGoNavHost(
             }
             composable(Routes.PROFILE) {
                 ProfileScreen(
+
                     profile = profiles.firstOrNull(),
                     onSave = { name, desc, info, vigencia ->
                         profiles.firstOrNull()?.let { p ->
