@@ -14,6 +14,7 @@ require_once __DIR__ . '/../src/bootstrap.php';
 require_once __DIR__ . '/../src/auth.php';
 require_once __DIR__ . '/../src/sync.php';
 require_once __DIR__ . '/../src/domain.php';
+require_once __DIR__ . '/../src/photos.php';
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
@@ -44,6 +45,14 @@ try {
     }
     if ($method === 'GET' && $path === '/sync/pull') {
         handlePull();
+    }
+    if ($method === 'POST' && $path === '/photos/upload') {
+        // El binario viaja fuera del JSON: el header JSON del front controller
+        // no aplica al stream de descarga, pero sí a las respuestas de error.
+        handlePhotoUpload();
+    }
+    if ($method === 'GET' && $path === '/photos/download') {
+        handlePhotoDownload();
     }
     fail(404, 'NOT_FOUND', 'Endpoint no encontrado.');
 } catch (Throwable $e) {

@@ -21,7 +21,7 @@ require_once __DIR__ . '/domain.php';
 const ENTITY_TYPES = [
     'user', 'profile', 'client', 'service', 'retention_config',
     'quote', 'quote_version',
-    'job', 'job_quote', 'job_activity', 'job_material',
+    'job', 'job_quote', 'job_activity', 'job_material', 'job_photo',
     'report', 'report_job', 'report_version',
     'collection_account', 'collection_method', 'payment', 'payment_assignment',
     // F7
@@ -42,6 +42,7 @@ const DEPENDENCIES = [
     'job_quote'        => [['job', 'jobId'], ['quote', 'quoteId']],
     'job_activity'     => [['job', 'jobId']],
     'job_material'     => [['job', 'jobId']],
+    'job_photo'        => [['job', 'jobId']],
     'report'           => [['client', 'clientId'], ['profile', 'profileId']],
     'report_job'       => [['report', 'reportId'], ['job', 'jobId']],
     'report_version'   => [['report', 'reportId']],
@@ -89,6 +90,13 @@ function withAuthoritativeStatus(array $row, array $state): array
     if (in_array((string) ($row['entity_type'] ?? ''), DOC_STATUS_TYPES, true)
         && ($row['status'] ?? null) !== null) {
         $state['status'] = $row['status'];
+    }
+    // Propietario autoritativo: la columna user_id de la entidad manda —
+    // los payloads derivados por el servidor (movimientos de compra,
+    // ajustes/reembolsos) no lo incluyen y el cliente lo necesita para
+    // filtrar por cuenta; nunca se toma de un userId arbitrario del JSON.
+    if (($row['user_id'] ?? null) !== null) {
+        $state['userId'] = (string) $row['user_id'];
     }
     return $state;
 }
@@ -260,6 +268,15 @@ function applyOperation(PDO $pdo, string $userId, string $deviceId, string $opId
                 ->execute([$opId, $userId, $payloadHash, json_encode($res, JSON_UNESCAPED_UNICODE), nowUtc()]);
         }
         $pdo->commit();
+        // Tombstone de foto aceptado: el binario remoto se elimina (sin
+        // huérfanos ni URLs públicas); la fila deleted:true se conserva para
+        // propagar el borrado a los demás dispositivos.
+        if ($type === 'job_photo'
+            && ($res['status'] ?? '') === 'APPLIED'
+            && ($payload['deleted'] ?? false) === true
+            && function_exists('photoDeleteStoredBinary')) {
+            photoDeleteStoredBinary($userId, $entityId);
+        }
         return $res;
     } catch (Throwable $e) {
         $pdo->rollBack();
@@ -366,6 +383,14 @@ function applyOperationTx(PDO $pdo, string $userId, string $deviceId, string $op
     if ($type === 'collection_method' && trim((string) ($payload['name'] ?? '')) === '') {
         return result($opId, 'REJECTED', 'VALIDATION_ERROR',
             'El nombre del método de cobro es obligatorio.');
+    }
+
+    // Perfil: vigenciaDias nullable (sin default) o entero >= 1. Un 0
+    // precargaría cotizaciones que luego el editor rechaza.
+    if ($type === 'profile' && array_key_exists('vigenciaDias', $payload)
+        && $payload['vigenciaDias'] !== null && (int) $payload['vigenciaDias'] < 1) {
+        return result($opId, 'REJECTED', 'VALIDATION_ERROR',
+            'La vigencia predeterminada debe ser de al menos 1 día.');
     }
 
     // Vínculo Informe↔Trabajo (F5): validado sobre las entidades ya
@@ -2688,7 +2713,7 @@ function handlePull(): void
     $userId = authUserId();
     $cursor = (int) ($_GET['cursor'] ?? 0);
     $stmt = db()->prepare(
-        'SELECT entity_type, id, server_version, server_seq, server_order, official_number,
+        'SELECT entity_type, id, user_id, server_version, server_seq, server_order, official_number,
                 has_version_conflict, status, payload
          FROM entities WHERE user_id = ? AND server_seq > ?
          ORDER BY server_seq ASC LIMIT 500'

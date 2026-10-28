@@ -8,6 +8,12 @@ declare(strict_types=1);
  *   COTIXGO_DB_DSN, COTIXGO_DB_USER, COTIXGO_DB_PASS
  */
 
+// Los errores PHP se registran, nunca se imprimen: un warning antes de los
+// headers rompería los códigos de respuesta (413/415/500 saldrían como 200).
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+error_reporting(E_ALL);
+
 function db(): PDO
 {
     static $pdo = null;
@@ -47,7 +53,9 @@ function jsonBody(): array
 
 function respond(int $code, array $body): void
 {
-    http_response_code($code);
+    if (!headers_sent()) {
+        http_response_code($code);
+    }
     echo json_encode($body, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
     exit;
 }
