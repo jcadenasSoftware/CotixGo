@@ -257,7 +257,7 @@ Representa a la persona o empresa para quien se presta el servicio.
 - estado
 - fechas
 
-Mínimos aprobados para F1: `nombre` obligatorio; `tipo` persona/empresa; `teléfono`, `correo`, `dirección` y `notas` opcionales; `archivado`.
+Mínimos aprobados para F1: `nombre` obligatorio; `tipo` persona/empresa; `teléfono`, `correo`, `dirección` y `notas` opcionales; `archivado`. Además, `tipo de documento` y `número de documento` de identidad son **obligatorios** al guardar (Persona: CC, CE, Pasaporte u Otro; Empresa: NIT u Otro). Los Clientes migrados desde versiones anteriores conservan estos campos vacíos hasta su próxima edición.
 
 La cartera de Clientes pertenece globalmente al Usuario/Titular. El mismo Cliente puede utilizarse desde varios Perfiles Profesionales del usuario; cada operación/documento identifica el Perfil que corresponde. No se duplica el Cliente por Perfil.
 
@@ -385,6 +385,7 @@ Representa la propuesta comercial presentada al cliente.
 - `client_id`
 - `professional_profile_id`
 - número documental
+- título del trabajo cotizado (obligatorio al guardar; ej.: "Instalación de cámaras")
 - fecha de emisión
 - fecha de vencimiento
 - período de vigencia
