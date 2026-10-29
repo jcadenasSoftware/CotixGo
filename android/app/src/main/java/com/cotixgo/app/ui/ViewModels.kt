@@ -32,6 +32,7 @@ import com.cotixgo.app.data.PurchaseInput
 import com.cotixgo.app.data.ProfileEntity
 import com.cotixgo.app.data.QuoteEntity
 import com.cotixgo.app.data.QuoteInput
+import com.cotixgo.app.data.QuoteLineInput
 import com.cotixgo.app.data.ReportEntity
 import com.cotixgo.app.data.ReportInput
 import com.cotixgo.app.data.RetentionConfigEntity
@@ -47,9 +48,11 @@ import com.cotixgo.app.data.UserEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -166,6 +169,32 @@ class AppViewModel(
 
     fun saveJobMaterial(input: JobMaterialInput) {
         viewModelScope.launch { repo.saveJobMaterial(input) }
+    }
+
+    fun observeJobPhotos(jobId: String) = repo.observeJobPhotos(jobId)
+
+    fun addJobPhoto(context: android.content.Context, jobId: String, src: java.io.File) {
+        // La importación (decodificación + compresión JPEG + I/O) es pesada:
+        // fuera del hilo principal para no congelar la UI tras la cámara.
+        viewModelScope.launch(Dispatchers.IO) { repo.saveJobPhoto(context, jobId, src) }
+    }
+
+    fun retryJobPhotoDownload(photoId: String) {
+        viewModelScope.launch {
+            repo.retryJobPhotoDownload(photoId)
+            syncNow()
+        }
+    }
+
+    fun repairJobPhotoDownload(photoId: String) {
+        viewModelScope.launch {
+            repo.repairJobPhotoDownload(photoId)
+            syncNow()
+        }
+    }
+
+    fun deleteJobPhoto(context: android.content.Context, photoId: String) {
+        viewModelScope.launch { repo.deleteJobPhoto(context, photoId) }
     }
 
     fun linkQuoteToJob(jobId: String, quoteId: String) {
@@ -528,9 +557,18 @@ class AppViewModel(
 
     suspend fun getQuoteSnapshot(id: String) = repo.getQuoteSnapshot(id)
 
-    fun completeOnboarding(userName: String, profileName: String) {
-        viewModelScope.launch { repo.completeOnboarding(userName, profileName) }
+    suspend fun getQuoteSnapshotForEdit(id: String) = repo.getQuoteSnapshotForEdit(id)
+
+    fun completeOnboarding(userName: String, profileName: String, logoRef: String? = null) {
+        viewModelScope.launch { repo.completeOnboarding(userName, profileName, logoRef) }
     }
+
+    fun setProfileLogo(id: String, logoRef: String?) {
+        viewModelScope.launch { repo.setProfileLogo(id, logoRef) }
+    }
+
+    /** Descarga bajo demanda del logo referenciado por un snapshot. */
+    suspend fun fetchLogo(ref: String): Boolean = repo.fetchLogo(ref)
 
     fun saveClient(input: ClientInput, existingId: String?, onDone: () -> Unit) {
         viewModelScope.launch {
@@ -553,6 +591,8 @@ class AppViewModel(
             onDone()
         }
     }
+
+
 
     fun saveService(input: ServiceInput, existingId: String?, onDone: () -> Unit) {
         viewModelScope.launch {

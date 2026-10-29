@@ -51,6 +51,8 @@ data class ClientEntity(
     val userId: String,
     val type: String,
     val name: String,
+    val docType: String = "",
+    val docNumber: String = "",
     val phone: String = "",
     val email: String = "",
     val address: String = "",
@@ -132,6 +134,7 @@ data class QuoteEntity(
     val clientId: String,
     val profileId: String,
     val provisionalNumber: String,
+    val title: String = "",
     val status: String,
     val issueDateEpochDay: Long,
     val validityDays: Int,
@@ -265,6 +268,32 @@ data class JobMaterialEntity(
     // los registros históricos F4 quedan descriptivos (materialId = null).
     val materialId: String? = null,
     val condition: String? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pendingSync: Boolean = true,
+    val serverVersion: Int = 0,
+)
+
+/**
+ * Foto de evidencia vinculada a un Trabajo. Room guarda solo metadatos; el
+ * binario vive en filesDir/photos/{jobId}/{fileName} y viaja por un endpoint
+ * dedicado, nunca dentro del payload JSON de sync.
+ * `fileReady`: el binario está en disco local (descargado o capturado).
+ * `fileSynced`: el binario ya subió al servidor.
+ * `fileUnavailable`: la descarga remota respondió 404 definitivo — se
+ * muestra "no disponible" y solo se reintenta explícitamente.
+ * `deleted`: tombstone — se sincroniza para que no reaparezca en otros
+ * dispositivos; la fila se conserva hasta que el servidor lo confirma.
+ */
+@Entity(tableName = "job_photos", indices = [Index("jobId")])
+data class JobPhotoEntity(
+    @PrimaryKey val id: String,
+    val jobId: String,
+    val fileName: String,
+    val fileReady: Boolean = true,
+    val fileSynced: Boolean = false,
+    val fileUnavailable: Boolean = false,
+    val deleted: Boolean = false,
     val createdAt: Long,
     val updatedAt: Long,
     val pendingSync: Boolean = true,
@@ -422,6 +451,54 @@ interface JobMaterialDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(material: JobMaterialEntity)
+}
+
+@Dao
+interface JobPhotoDao {
+    @Query("SELECT * FROM job_photos WHERE jobId = :jobId AND deleted = 0 ORDER BY createdAt DESC")
+    fun observeForJob(jobId: String): Flow<List<JobPhotoEntity>>
+
+    @Query("SELECT * FROM job_photos WHERE id = :id")
+    suspend fun get(id: String): JobPhotoEntity?
+
+    /** Metadato ya sincronizado y binario local pendiente de subir. */
+    @Query("SELECT * FROM job_photos WHERE pendingSync = 0 AND deleted = 0 AND fileReady = 1 AND fileSynced = 0")
+    suspend fun pendingUploads(): List<JobPhotoEntity>
+
+    /** Metadato remoto sin binario local (otro dispositivo la capturó).
+     *  Las marcadas no disponibles (404) no reentran solas: solo por
+     *  reintento explícito del usuario. */
+    @Query("SELECT * FROM job_photos WHERE deleted = 0 AND fileReady = 0 AND fileUnavailable = 0")
+    suspend fun pendingDownloads(): List<JobPhotoEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(photo: JobPhotoEntity)
+
+    @Query("UPDATE job_photos SET pendingSync = 0, serverVersion = :v, updatedAt = :now WHERE id = :id")
+    suspend fun markSynced(id: String, v: Int, now: Long)
+
+    @Query("UPDATE job_photos SET fileSynced = 1, updatedAt = :now WHERE id = :id")
+    suspend fun markFileSynced(id: String, now: Long)
+
+    @Query("UPDATE job_photos SET fileReady = 1, updatedAt = :now WHERE id = :id")
+    suspend fun markFileReady(id: String, now: Long)
+
+    /** 404 definitivo del servidor: el binario no está disponible. */
+    @Query("UPDATE job_photos SET fileUnavailable = 1, updatedAt = :now WHERE id = :id")
+    suspend fun markFileUnavailable(id: String, now: Long)
+
+    /** Reintento explícito del usuario: vuelve a la cola de descargas. */
+    @Query("UPDATE job_photos SET fileUnavailable = 0, updatedAt = :now WHERE id = :id")
+    suspend fun clearFileUnavailable(id: String, now: Long)
+
+    /** Recuperación de copia local dañada: re-entra a la cola de descargas.
+     *  El archivo corrupto se conserva hasta que una descarga válida lo
+     *  sobrescriba; metadatos y fileSynced no se tocan. */
+    @Query("UPDATE job_photos SET fileReady = 0, fileUnavailable = 0, updatedAt = :now WHERE id = :id")
+    suspend fun resetFileForRedownload(id: String, now: Long)
+
+    @Query("UPDATE job_photos SET deleted = 1, pendingSync = 1, updatedAt = :now WHERE id = :id")
+    suspend fun markDeleted(id: String, now: Long)
 }
 
 @Dao
@@ -1566,7 +1643,7 @@ interface QuoteVersionDao {
         ServiceEntity::class, RetentionConfigEntity::class,
         QuoteEntity::class, QuoteVersionEntity::class,
         JobEntity::class, JobQuoteEntity::class,
-        JobActivityEntity::class, JobMaterialEntity::class,
+        JobActivityEntity::class, JobMaterialEntity::class, JobPhotoEntity::class,
         ReportEntity::class, ReportJobEntity::class, ReportVersionEntity::class,
         CollectionAccountEntity::class, CollectionAccountItemEntity::class,
         CollectionAccountJobEntity::class, CollectionAccountQuoteEntity::class,
@@ -1579,7 +1656,7 @@ interface QuoteVersionDao {
         SyncOperationEntity::class, SyncConflictEntity::class,
         SyncMetaEntity::class,
     ],
-    version = 10,
+    version = 14,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1594,6 +1671,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun jobQuoteDao(): JobQuoteDao
     abstract fun jobActivityDao(): JobActivityDao
     abstract fun jobMaterialDao(): JobMaterialDao
+
+    abstract fun jobPhotoDao(): JobPhotoDao
     abstract fun reportDao(): ReportDao
     abstract fun reportJobDao(): ReportJobDao
     abstract fun reportVersionDao(): ReportVersionDao
@@ -2173,10 +2252,56 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_10_11 = object : androidx.room.migration.Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Clientes existentes: documento queda vacío; el formulario
+                // lo exige al guardar la próxima edición (no se fabrican datos).
+                db.execSQL("ALTER TABLE `clients` ADD COLUMN `docType` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `clients` ADD COLUMN `docNumber` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        internal val MIGRATION_11_12 = object : androidx.room.migration.Migration(11, 12) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Cotizaciones existentes: título queda vacío; el editor lo
+                // exige al guardar la próxima edición (no se fabrican datos).
+                db.execSQL("ALTER TABLE `quotes` ADD COLUMN `title` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        internal val MIGRATION_12_13 = object : androidx.room.migration.Migration(12, 13) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Fotos de evidencia de Trabajos: solo metadatos en Room.
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `job_photos` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `jobId` TEXT NOT NULL,
+                        `fileName` TEXT NOT NULL,
+                        `fileReady` INTEGER NOT NULL DEFAULT 1,
+                        `fileSynced` INTEGER NOT NULL DEFAULT 0,
+                        `deleted` INTEGER NOT NULL DEFAULT 0,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `pendingSync` INTEGER NOT NULL DEFAULT 1,
+                        `serverVersion` INTEGER NOT NULL DEFAULT 0
+                    )""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_job_photos_jobId` ON `job_photos` (`jobId`)")
+            }
+        }
+
+        internal val MIGRATION_13_14 = object : androidx.room.migration.Migration(13, 14) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // 404 de descarga → marca "no disponible" (reintento manual).
+                db.execSQL("ALTER TABLE `job_photos` ADD COLUMN `fileUnavailable` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         internal val ALL_MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
             MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
-            MIGRATION_9_10,
+            MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
+            MIGRATION_13_14,
         )
 
         fun get(context: Context): AppDatabase {

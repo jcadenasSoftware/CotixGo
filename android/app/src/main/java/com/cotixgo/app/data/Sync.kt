@@ -37,6 +37,7 @@ object EntityTypes {
     const val JOB_QUOTE = "job_quote"
     const val JOB_ACTIVITY = "job_activity"
     const val JOB_MATERIAL = "job_material"
+    const val JOB_PHOTO = "job_photo"
     const val REPORT = "report"
     const val REPORT_JOB = "report_job"
     const val REPORT_VERSION = "report_version"
@@ -102,6 +103,7 @@ object Rejections {
         EntityTypes.USER, EntityTypes.PROFILE, EntityTypes.CLIENT,
         EntityTypes.SERVICE, EntityTypes.RETENTION, EntityTypes.QUOTE,
         EntityTypes.JOB, EntityTypes.JOB_ACTIVITY, EntityTypes.JOB_MATERIAL,
+        EntityTypes.JOB_PHOTO,
         EntityTypes.REPORT, EntityTypes.COLLECTION_ACCOUNT,
         EntityTypes.COLLECTION_METHOD, EntityTypes.CONSOLIDATED_COLLECTION,
         EntityTypes.MATERIAL, EntityTypes.PURCHASE,
@@ -124,6 +126,7 @@ object Rejections {
         EntityTypes.JOB_QUOTE to listOf(EntityTypes.JOB to "jobId", EntityTypes.QUOTE to "quoteId"),
         EntityTypes.JOB_ACTIVITY to listOf(EntityTypes.JOB to "jobId"),
         EntityTypes.JOB_MATERIAL to listOf(EntityTypes.JOB to "jobId", EntityTypes.MATERIAL to "materialId"),
+        EntityTypes.JOB_PHOTO to listOf(EntityTypes.JOB to "jobId"),
         EntityTypes.REPORT to listOf(EntityTypes.CLIENT to "clientId", EntityTypes.PROFILE to "profileId"),
         EntityTypes.REPORT_JOB to listOf(EntityTypes.REPORT to "reportId", EntityTypes.JOB to "jobId"),
         EntityTypes.REPORT_VERSION to listOf(EntityTypes.REPORT to "reportId"),
@@ -329,8 +332,20 @@ class Session(
             plain.edit().putString("device_id", it).apply()
         }
 
+    /** Marca de "el servidor ya tiene este binario de logo" (subido o descargado). */
+    fun logoUploadDone(ref: String): Boolean = plain.getBoolean("logo_up:$ref", false)
+    fun markLogoUploadDone(ref: String) { plain.edit().putBoolean("logo_up:$ref", true).apply() }
+
     var apiBaseUrl: String
-        get() = plain.getString("api_base_url", null) ?: DEFAULT_API_BASE
+        // La URL guardada solo aplica en debug: una URL de desarrollo nunca
+        // puede filtrarse a release, que siempre usa su endpoint compilado.
+        get() = if (com.cotixgo.app.BuildConfig.DEBUG) {
+            plain.getString("api_base_url", null) ?: DEFAULT_API_BASE
+        } else {
+            // Vacía mientras no exista endpoint de producción: syncNow/pullAll
+            // la validan y la muestran como error de interfaz (sin crash).
+            com.cotixgo.app.BuildConfig.API_BASE_URL
+        }
         set(v) = plain.edit().putString("api_base_url", v).apply()
 
     suspend fun cursor(): Long = db.syncDao().meta("sync_cursor")?.toLongOrNull() ?: 0L
@@ -367,6 +382,7 @@ object SyncPayloads {
     }
     fun client(e: ClientEntity) = buildJsonObject {
         put("id", e.id); put("userId", e.userId); put("type", e.type); put("name", e.name)
+        put("docType", e.docType); put("docNumber", e.docNumber)
         put("phone", e.phone); put("email", e.email); put("address", e.address)
         put("notes", e.notes); put("archived", e.archived)
         put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
@@ -385,6 +401,7 @@ object SyncPayloads {
     fun quote(e: QuoteEntity) = buildJsonObject {
         put("id", e.id); put("userId", e.userId); put("clientId", e.clientId)
         put("profileId", e.profileId); put("provisionalNumber", e.provisionalNumber)
+        put("title", e.title)
         put("status", e.status); put("issueDateEpochDay", e.issueDateEpochDay)
         put("validityDays", e.validityDays); put("expiryDateEpochDay", e.expiryDateEpochDay)
         put("currency", e.currency); put("notes", e.notes)
@@ -423,6 +440,12 @@ object SyncPayloads {
         put("notes", e.notes)
         // F8: vínculo opcional al catálogo (solo registros nuevos).
         put("materialId", e.materialId); put("condition", e.condition)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+    fun jobPhoto(e: JobPhotoEntity) = buildJsonObject {
+        // Solo metadatos: el binario viaja por /photos (fuera del JSON).
+        put("id", e.id); put("jobId", e.jobId); put("fileName", e.fileName)
+        put("deleted", e.deleted)
         put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
     }
     fun report(e: ReportEntity) = buildJsonObject {
@@ -650,6 +673,9 @@ class SyncRepository(
      */
     suspend fun syncNow(): SyncSummary {
         require(session.isBound) { "No hay cuenta vinculada." }
+        check(session.apiBaseUrl.isNotEmpty()) {
+            "El servidor de producción no está configurado en esta compilación."
+        }
         var pushed = 0; var paused = 0; var pulled = 0
         // Push por tandas en orden de cola. Solo la primera operación pendiente
         // de cada entidad viaja en el lote: las posteriores se escribieron
@@ -711,7 +737,90 @@ class SyncRepository(
             releaseReadyPaused()
         }
         pulled += pullAll()
+        // Binarios de fotos: fuera del JSON, tras el sync de metadatos. Un
+        // fallo de archivo no debe pausar ni perder otras entidades.
+        syncPhotoBinaries()
+        // Ídem para el logo del perfil: su referencia viaja en el payload
+        // JSON del perfil; el binario viaja por /logos.
+        syncLogoBinaries()
         return SyncSummary(pushed = pushed, paused = paused, pulled = pulled)
+    }
+
+    /**
+     * Subida/descarga de binarios job_photo: se sube solo cuando el metadato
+     * ya fue aceptado por el servidor (pendingSync=0) y el archivo existe;
+     * se descarga lo que el pull registró sin archivo local. Cada foto es
+     * independiente — un fallo deja su bandera pendiente para el próximo
+     * ciclo sin afectar el resto.
+     */
+    private suspend fun syncPhotoBinaries() {
+        if (session.token == null) return
+        db.jobPhotoDao().pendingUploads().forEach { p ->
+            val bytes = PhotoStore.fileBytes(session.context, p)
+            if (bytes != null) {
+                runCatching { api.uploadPhoto(p.id, bytes) }
+                    .onSuccess { db.jobPhotoDao().markFileSynced(p.id, nowEpochMillis()) }
+            }
+        }
+        db.jobPhotoDao().pendingDownloads().forEach { p ->
+            runCatching { api.downloadPhoto(p.id) }
+                .onSuccess { bytes ->
+                    when {
+                        bytes != null && PhotoStore.saveRemote(session.context, p, bytes) ->
+                            db.jobPhotoDao().markFileReady(p.id, nowEpochMillis())
+                        // 404 definitivo: el servidor no tiene el binario — la
+                        // tarjeta pasa a "no disponible" y solo se reintenta
+                        // de forma explícita (no hay reintentos infinitos).
+                        bytes == null ->
+                            db.jobPhotoDao().markFileUnavailable(p.id, nowEpochMillis())
+                    }
+                }
+        }
+    }
+
+    /**
+     * Binarios del logo del perfil: se sube el archivo local cuando el
+     * servidor aún no lo tiene (marca por ref) y se descarga la referencia
+     * que el pull del perfil trajo sin archivo local. Un fallo deja el
+     * reintento para el próximo ciclo; refs históricas de snapshots viejos
+     * se descargan bajo demanda (fetchLogoBinary).
+     */
+    private suspend fun syncLogoBinaries() {
+        if (session.token == null) return
+        val user = db.userDao().get() ?: return
+        db.profileDao().observeForUser(user.id).first().forEach { p ->
+            val ref = p.logoRef?.takeIf { LogoStore.isValidRef(it) } ?: return@forEach
+            if (LogoStore.exists(session.context, ref)) {
+                if (!session.logoUploadDone(ref)) {
+                    val bytes = LogoStore.bytes(session.context, ref)
+                    if (bytes != null) {
+                        runCatching { api.uploadLogo(ref, bytes) }
+                            .onSuccess { session.markLogoUploadDone(ref) }
+                    }
+                }
+            } else {
+                runCatching { api.downloadLogo(ref) }
+                    .onSuccess { bytes ->
+                        if (bytes != null &&
+                            LogoStore.saveRemote(session.context, ref, bytes)) {
+                            session.markLogoUploadDone(ref)
+                        }
+                    }
+            }
+        }
+    }
+
+    /**
+     * Descarga bajo demanda de un logo (p. ej. snapshot que referencia un
+     * logo anterior al actual). false si no hay sesión, falla o 404.
+     */
+    suspend fun fetchLogoBinary(ref: String): Boolean {
+        if (session.token == null || !LogoStore.isValidRef(ref)) return false
+        if (LogoStore.exists(session.context, ref)) return true
+        return runCatching {
+            api.downloadLogo(ref)
+                ?.let { LogoStore.saveRemote(session.context, ref, it) } == true
+        }.getOrDefault(false)
     }
 
     /** Programa el reintento automático de un INTERNAL_ERROR (mismo opId). */
@@ -746,12 +855,19 @@ class SyncRepository(
         val payload = currentPayload(op.entityType, op.entityId)
             ?: runCatching { json.parseToJsonElement(op.payloadJson).jsonObject }.getOrNull()
             ?: return
-        val base = op.resultJson?.let {
-            runCatching {
-                json.parseToJsonElement(it).jsonObject["server_state"]
-                    ?.jsonObject?.intOr("server_version")
-            }.getOrNull()
-        }?.takeIf { it > 0 } ?: op.baseServerVersion
+        val resObj = op.resultJson?.let {
+            runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull()
+        }
+        val remoteBase = runCatching {
+            resObj?.get("server_state")?.jsonObject?.intOr("server_version")
+        }.getOrNull()?.takeIf { it > 0 }
+        // STALE_BASE_VERSION sin server_state: la entidad no existe en el
+        // servidor — la base correcta es 0. Recaer en op.baseServerVersion
+        // reemitiría indefinidamente la misma base inválida (bucle).
+        val base = remoteBase ?: when {
+            resObj?.str("code") == "STALE_BASE_VERSION" -> 0
+            else -> getLocal(op.entityType, op.entityId)?.second ?: op.baseServerVersion
+        }
         db.syncDao().updateOpResult(op.opId, "DONE", resolutionResult(op, "REISSUED", now), Rejections.RES_REISSUED, now)
         enqueue(op.entityType, op.entityId, payload, base, opType = op.opType, supersedes = op.opId)
     }
@@ -769,6 +885,7 @@ class SyncRepository(
         EntityTypes.JOB_QUOTE -> db.jobQuoteDao().get(id)?.let { SyncPayloads.jobQuote(it) }
         EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().get(id)?.let { SyncPayloads.jobActivity(it) }
         EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().get(id)?.let { SyncPayloads.jobMaterial(it) }
+        EntityTypes.JOB_PHOTO -> db.jobPhotoDao().get(id)?.let { SyncPayloads.jobPhoto(it) }
         EntityTypes.REPORT -> db.reportDao().get(id)?.let { SyncPayloads.report(it) }
         EntityTypes.REPORT_JOB -> db.reportJobDao().get(id)?.let { SyncPayloads.reportJob(it) }
         EntityTypes.REPORT_VERSION -> db.reportVersionDao().get(id)?.let { SyncPayloads.reportVersion(it) }
@@ -1171,6 +1288,7 @@ class SyncRepository(
                 EntityTypes.JOB_QUOTE -> db.jobQuoteDao().markSynced(op.entityId, sv)
                 EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().markSynced(op.entityId, sv, now)
                 EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().markSynced(op.entityId, sv, now)
+                EntityTypes.JOB_PHOTO -> db.jobPhotoDao().markSynced(op.entityId, sv, now)
                 EntityTypes.REPORT -> {
                     db.reportDao().markSynced(op.entityId, sv, now)
                     if (official != null || versionConflict) {
@@ -1263,6 +1381,9 @@ class SyncRepository(
     // ---------- Pull ----------
 
     suspend fun pullAll(): Int {
+        check(session.apiBaseUrl.isNotEmpty()) {
+            "El servidor de producción no está configurado en esta compilación."
+        }
         var cursor = session.cursor()
         var applied = 0
         while (true) {
@@ -1398,6 +1519,7 @@ class SyncRepository(
         EntityTypes.JOB_QUOTE -> db.jobQuoteDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.JOB_ACTIVITY -> db.jobActivityDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.JOB_MATERIAL -> db.jobMaterialDao().get(id)?.let { it.pendingSync to it.serverVersion }
+        EntityTypes.JOB_PHOTO -> db.jobPhotoDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.REPORT -> db.reportDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.REPORT_JOB -> db.reportJobDao().get(id)?.let { it.pendingSync to it.serverVersion }
         EntityTypes.COLLECTION_ACCOUNT -> db.collectionAccountDao().get(id)?.let { it.pendingSync to it.serverVersion }
@@ -1416,6 +1538,9 @@ class SyncRepository(
     }
 
     private suspend fun upsertFromPayload(type: String, id: String, p: JsonObject, sv: Int) {
+        // Propietario del cambio: el payload puede no traer userId (entidades
+        // derivadas del servidor); nunca persistir con cadena vacía.
+        val ownerId = db.userDao().get()?.id.orEmpty()
         val now = nowEpochMillis()
         when (type) {
             EntityTypes.USER -> {
@@ -1451,7 +1576,7 @@ class SyncRepository(
             }
             EntityTypes.PROFILE -> db.profileDao().insert(
                 ProfileEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     businessName = p.str("businessName") ?: "",
                     description = p.str("description") ?: "",
                     commercialInfo = p.str("commercialInfo") ?: "",
@@ -1463,23 +1588,30 @@ class SyncRepository(
                     serverVersion = sv,
                 ),
             )
-            EntityTypes.CLIENT -> db.clientDao().upsert(
-                ClientEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
-                    type = p.str("type") ?: "NATURAL",
-                    name = p.str("name") ?: "",
-                    phone = p.str("phone") ?: "", email = p.str("email") ?: "",
-                    address = p.str("address") ?: "", notes = p.str("notes") ?: "",
-                    archived = p.boolOr("archived"),
-                    createdAt = p.longOr("createdAt") ?: now,
-                    updatedAt = now,
-                    pendingSync = false,
-                    serverVersion = sv,
-                ),
-            )
+            EntityTypes.CLIENT -> {
+                // Payloads antiguos sin documento conservan el ya guardado
+                // localmente; solo una clave presente lo reemplaza.
+                val existing = db.clientDao().get(p.str("id") ?: id)
+                db.clientDao().upsert(
+                    ClientEntity(
+                        id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
+                        type = p.str("type") ?: "NATURAL",
+                        name = p.str("name") ?: "",
+                        docType = p.str("docType") ?: existing?.docType ?: "",
+                        docNumber = p.str("docNumber") ?: existing?.docNumber ?: "",
+                        phone = p.str("phone") ?: "", email = p.str("email") ?: "",
+                        address = p.str("address") ?: "", notes = p.str("notes") ?: "",
+                        archived = p.boolOr("archived"),
+                        createdAt = p.longOr("createdAt") ?: now,
+                        updatedAt = now,
+                        pendingSync = false,
+                        serverVersion = sv,
+                    ),
+                )
+            }
             EntityTypes.SERVICE -> db.serviceDao().upsert(
                 ServiceEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     profileId = p.str("profileId") ?: "",
                     name = p.str("name") ?: "",
                     description = p.str("description") ?: "",
@@ -1493,7 +1625,7 @@ class SyncRepository(
             )
             EntityTypes.RETENTION -> db.retentionDao().upsert(
                 RetentionConfigEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     name = p.str("name") ?: "",
                     ratePercent = p.str("ratePercent") ?: "0",
                     appliesTo = p.str("appliesTo") ?: "SERVICIO",
@@ -1504,33 +1636,39 @@ class SyncRepository(
                     serverVersion = sv,
                 ),
             )
-            EntityTypes.QUOTE -> db.quoteDao().upsert(
-                QuoteEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
-                    clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
-                    provisionalNumber = p.str("provisionalNumber") ?: "",
-                    status = p.str("status") ?: "BORRADOR",
-                    issueDateEpochDay = p.longOr("issueDateEpochDay") ?: 0,
-                    validityDays = p.longOr("validityDays")?.toInt() ?: 15,
-                    expiryDateEpochDay = p.longOr("expiryDateEpochDay") ?: 0,
-                    currency = p.str("currency") ?: "COP",
-                    notes = p.str("notes") ?: "",
-                    currentVersion = p.longOr("currentVersion")?.toInt() ?: 1,
-                    emittedVersion = p.longOr("emittedVersion")?.toInt() ?: 0,
-                    gross = p.str("gross") ?: "0", totalRetained = p.str("totalRetained") ?: "0",
-                    net = p.str("net") ?: "0",
-                    clientNameSnapshot = p.str("clientNameSnapshot") ?: "",
-                    archived = p.boolOr("archived"),
-                    officialNumber = p.str("officialNumber"),
-                    createdAt = p.longOr("createdAt") ?: now,
-                    updatedAt = now,
-                    pendingSync = false,
-                    serverVersion = sv,
-                ),
-            )
+            EntityTypes.QUOTE -> {
+                // Payloads antiguos sin título conservan el ya guardado
+                // localmente; solo una clave presente lo reemplaza.
+                val existing = db.quoteDao().get(p.str("id") ?: id)
+                db.quoteDao().upsert(
+                    QuoteEntity(
+                        id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
+                        clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
+                        provisionalNumber = p.str("provisionalNumber") ?: "",
+                        title = p.str("title") ?: existing?.title ?: "",
+                        status = p.str("status") ?: "BORRADOR",
+                        issueDateEpochDay = p.longOr("issueDateEpochDay") ?: 0,
+                        validityDays = p.longOr("validityDays")?.toInt() ?: 15,
+                        expiryDateEpochDay = p.longOr("expiryDateEpochDay") ?: 0,
+                        currency = p.str("currency") ?: "COP",
+                        notes = p.str("notes") ?: "",
+                        currentVersion = p.longOr("currentVersion")?.toInt() ?: 1,
+                        emittedVersion = p.longOr("emittedVersion")?.toInt() ?: 0,
+                        gross = p.str("gross") ?: "0", totalRetained = p.str("totalRetained") ?: "0",
+                        net = p.str("net") ?: "0",
+                        clientNameSnapshot = p.str("clientNameSnapshot") ?: "",
+                        archived = p.boolOr("archived"),
+                        officialNumber = p.str("officialNumber"),
+                        createdAt = p.longOr("createdAt") ?: now,
+                        updatedAt = now,
+                        pendingSync = false,
+                        serverVersion = sv,
+                    ),
+                )
+            }
             EntityTypes.JOB -> db.jobDao().upsert(
                 JobEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
                     provisionalNumber = p.str("provisionalNumber") ?: "",
                     status = p.str("status") ?: "BORRADOR",
@@ -1586,9 +1724,32 @@ class SyncRepository(
                     serverVersion = sv,
                 ),
             )
+            EntityTypes.JOB_PHOTO -> {
+                val existing = db.jobPhotoDao().get(id)
+                val deletedRemote = p.boolOr("deleted") ?: false
+                val e = JobPhotoEntity(
+                    id = p.str("id") ?: id,
+                    jobId = p.str("jobId") ?: existing?.jobId ?: "",
+                    fileName = p.str("fileName") ?: existing?.fileName ?: "",
+                    // El binario llega por /photos/download solo si falta en
+                    // disco; conservar las banderas de archivo ya presentes.
+                    fileReady = if (deletedRemote) false else (existing?.fileReady ?: false),
+                    fileSynced = existing?.fileSynced ?: false,
+                    fileUnavailable = existing?.fileUnavailable ?: false,
+                    deleted = deletedRemote,
+                    createdAt = p.longOr("createdAt") ?: existing?.createdAt ?: now,
+                    updatedAt = now,
+                    pendingSync = false,
+                    serverVersion = sv,
+                )
+                db.jobPhotoDao().insert(e)
+                // Tombstone remoto: la evidencia desaparece en este dispositivo
+                // también (no reaparece — el payload ya la marca borrada).
+                if (deletedRemote) PhotoStore.delete(session.context, e)
+            }
             EntityTypes.REPORT -> db.reportDao().upsert(
                 ReportEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
                     provisionalNumber = p.str("provisionalNumber") ?: "",
                     status = p.str("status") ?: "BORRADOR",
@@ -1622,7 +1783,7 @@ class SyncRepository(
                 val accountId = p.str("id") ?: id
                 db.collectionAccountDao().upsert(
                     CollectionAccountEntity(
-                        id = accountId, userId = p.str("userId") ?: "",
+                        id = accountId, userId = p.str("userId") ?: ownerId,
                         clientId = p.str("clientId") ?: "", profileId = p.str("profileId") ?: "",
                         provisionalNumber = p.str("provisionalNumber") ?: "",
                         status = p.str("status") ?: "PENDIENTE",
@@ -1687,7 +1848,7 @@ class SyncRepository(
             }
             EntityTypes.COLLECTION_METHOD -> db.collectionMethodDao().upsert(
                 CollectionMethodEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     name = p.str("name") ?: "", detail = p.str("detail") ?: "",
                     archived = p.boolOr("archived"),
                     createdAt = p.longOr("createdAt") ?: now,
@@ -1698,7 +1859,7 @@ class SyncRepository(
             )
             EntityTypes.PAYMENT -> db.paymentDao().upsert(
                 PaymentEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     clientId = p.str("clientId") ?: "",
                     collectionMethodId = p.str("collectionMethodId"),
                     amount = p.str("amount") ?: "0",
@@ -1728,7 +1889,7 @@ class SyncRepository(
             )
             EntityTypes.PAYMENT_ASSIGNMENT -> db.paymentAssignmentDao().upsert(
                 PaymentAssignmentEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     paymentId = p.str("paymentId") ?: "",
                     action = (p.str("action") ?: "assign").uppercase(),
                     targetType = (p.str("targetType") ?: "account").uppercase(),
@@ -1751,7 +1912,7 @@ class SyncRepository(
                 val consId = p.str("id") ?: id
                 db.consolidatedCollectionDao().upsert(
                     ConsolidatedCollectionEntity(
-                        id = consId, userId = p.str("userId") ?: "",
+                        id = consId, userId = p.str("userId") ?: ownerId,
                         clientId = p.str("clientId") ?: "",
                         provisionalNumber = p.str("provisionalNumber") ?: "",
                         status = p.str("status") ?: "PENDIENTE",
@@ -1784,7 +1945,7 @@ class SyncRepository(
             }
             EntityTypes.PAYMENT_ADJUSTMENT -> db.paymentAdjustmentDao().upsert(
                 PaymentAdjustmentEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     paymentId = p.str("paymentId") ?: "",
                     kind = p.str("kind") ?: "CORRECTION",
                     reason = p.str("reason") ?: "",
@@ -1802,7 +1963,7 @@ class SyncRepository(
             )
             EntityTypes.PAYMENT_REFUND -> db.paymentRefundDao().upsert(
                 PaymentRefundEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     paymentId = p.str("paymentId") ?: "",
                     amount = p.str("amount") ?: "0",
                     refundedAtEpochDay = p.longOr("refundedAtEpochDay") ?: 0,
@@ -1816,7 +1977,7 @@ class SyncRepository(
             )
             EntityTypes.MATERIAL -> db.materialDao().upsert(
                 MaterialEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     name = p.str("name") ?: "", unit = p.str("unit") ?: "",
                     description = p.str("description") ?: "",
                     archived = p.boolOr("archived"),
@@ -1833,7 +1994,7 @@ class SyncRepository(
                 val purchaseId = p.str("id") ?: id
                 db.purchaseDao().upsert(
                     PurchaseEntity(
-                        id = purchaseId, userId = p.str("userId") ?: "",
+                        id = purchaseId, userId = p.str("userId") ?: ownerId,
                         provisionalNumber = p.str("provisionalNumber") ?: "",
                         status = p.str("status") ?: "BORRADOR",
                         purchaseDateEpochDay = p.longOr("purchaseDateEpochDay") ?: 0,
@@ -1870,7 +2031,7 @@ class SyncRepository(
             }
             EntityTypes.INVENTORY_MOVEMENT -> db.inventoryMovementDao().upsert(
                 InventoryMovementEntity(
-                    id = p.str("id") ?: id, userId = p.str("userId") ?: "",
+                    id = p.str("id") ?: id, userId = p.str("userId") ?: ownerId,
                     materialId = p.str("materialId") ?: "",
                     condition = p.str("condition") ?: "NUEVO",
                     movementType = p.str("movementType") ?: "ADJUSTMENT_IN",

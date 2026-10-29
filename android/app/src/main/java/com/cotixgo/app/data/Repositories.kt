@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.cotixgo.app.core.CalcLine
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.core.CollectionAccountStatus
+import com.cotixgo.app.core.isValidCurrencyCode
 import com.cotixgo.app.core.CollectionAccountTransitions
 import com.cotixgo.app.core.ConceptType
 import com.cotixgo.app.core.Ids
@@ -59,7 +60,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
 
     fun observeClient(id: String): Flow<ClientEntity?> = db.clientDao().observeOne(id)
 
-    suspend fun completeOnboarding(userName: String, profileName: String) {
+    suspend fun completeOnboarding(userName: String, profileName: String, logoRef: String? = null) {
         val now = nowEpochMillis()
         val user = UserEntity(
             id = Ids.new(),
@@ -71,6 +72,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             id = Ids.new(),
             userId = user.id,
             businessName = profileName.trim(),
+            logoRef = logoRef,
             createdAt = now,
             updatedAt = now,
         )
@@ -94,6 +96,8 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             userId = existing?.userId ?: user.id,
             type = input.type.name,
             name = input.name.trim(),
+            docType = input.docType.trim(),
+            docNumber = input.docNumber.trim(),
             phone = input.phone.trim(),
             email = input.email.trim(),
             address = input.address.trim(),
@@ -122,6 +126,9 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
     // ---------- Usuario / Perfil (F2) ----------
 
     suspend fun setMainCurrency(code: String) {
+        // ISO 4217 real (tabla del JDK), no solo 3 letras: ninguna ruta puede
+        // persistir un código inexistente; los valores históricos no se tocan.
+        require(isValidCurrencyCode(code)) { "Código de moneda no válido." }
         val user = db.userDao().observe().first() ?: return
         val updated = user.copy(mainCurrency = code.uppercase(), updatedAt = nowEpochMillis())
         db.withTransaction {
@@ -131,6 +138,11 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
     }
 
     suspend fun updateProfile(id: String, businessName: String, description: String, commercialInfo: String, vigenciaDias: Int?) {
+        // null = sin default válido; con valor debe ser >= 1 (un 0 rechazaría
+        // después el editor de cotización). Ninguna ruta persiste < 1.
+        require(vigenciaDias == null || vigenciaDias >= 1) {
+            "La vigencia predeterminada debe ser de al menos 1 día."
+        }
         val profile = db.profileDao().observeForUser(requireUser().id).first()
             .firstOrNull { it.id == id } ?: return
         val updated = profile.copy(
@@ -145,6 +157,25 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             sync?.enqueue(EntityTypes.PROFILE, updated.id, SyncPayloads.profile(updated), profile.serverVersion)
         }
     }
+
+    /**
+     * Cambia/quita el logo del perfil (logoRef = archivo inmutable en
+     * filesDir/logos). Los snapshots emitidos conservan la referencia que
+     * tenían al crearse — quitar el logo solo afecta documentos nuevos y la
+     * imagen anterior nunca se borra aquí.
+     */
+    suspend fun setProfileLogo(id: String, logoRef: String?) {
+        val profile = db.profileDao().observeForUser(requireUser().id).first()
+            .firstOrNull { it.id == id } ?: return
+        val updated = profile.copy(logoRef = logoRef, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.profileDao().insert(updated)
+            sync?.enqueue(EntityTypes.PROFILE, updated.id, SyncPayloads.profile(updated), profile.serverVersion)
+        }
+    }
+
+    /** Descarga bajo demanda de un logo referenciado por un snapshot. */
+    suspend fun fetchLogo(ref: String): Boolean = sync?.fetchLogoBinary(ref) ?: false
 
     // ---------- Catálogo de servicios (por Perfil) ----------
 
@@ -235,6 +266,52 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
     suspend fun getQuoteSnapshot(quoteId: String): QuoteSnapshot? =
         db.quoteVersionDao().getLatest(quoteId)?.let { SnapshotJson.decodeQuote(it.snapshotJson) }
 
+    /** Origen del editor: si el snapshot vino de una versión persistida o se
+     *  reconstruyó desde la entidad (sin líneas/retenciones recuperables). */
+    data class QuoteEditSource(val snapshot: QuoteSnapshot, val fromVersion: Boolean)
+
+    /**
+     * Snapshot para el editor: la última versión si existe. Si la Cotización
+     * no tiene versiones (p. ej. datos sembrados), reconstruye el formulario
+     * desde la fila actual de la entidad — sin fabricar una versión
+     * histórica. Devuelve null si faltan datos para editar (cotización,
+     * cliente o perfil inexistentes).
+     */
+    suspend fun getQuoteSnapshotForEdit(quoteId: String): QuoteEditSource? {
+        db.quoteVersionDao().getLatest(quoteId)
+            ?.let { return QuoteEditSource(SnapshotJson.decodeQuote(it.snapshotJson), fromVersion = true) }
+        val q = db.quoteDao().get(quoteId) ?: return null
+        val client = db.clientDao().get(q.clientId) ?: return null
+        val profile = db.profileDao().get(q.profileId) ?: return null
+        return QuoteEditSource(
+            QuoteSnapshot(
+                version = q.currentVersion,
+                provisionalNumber = q.provisionalNumber,
+                title = q.title,
+                client = ClientSnapshot(
+                    client.id, client.name, client.type,
+                    client.phone, client.email, client.address, client.notes,
+                ),
+                profile = ProfileSnapshot(
+                    profile.id, profile.businessName, profile.description,
+                    profile.commercialInfo, profile.logoRef,
+                ),
+                issueDate = LocalDate.ofEpochDay(q.issueDateEpochDay).toString(),
+                validityDays = q.validityDays,
+                expiryDate = LocalDate.ofEpochDay(q.expiryDateEpochDay).toString(),
+                currency = q.currency,
+                notes = q.notes,
+                lines = emptyList(),
+                retentions = emptyList(),
+                gross = q.gross,
+                totalRetained = q.totalRetained,
+                net = q.net,
+                savedAtEpochMs = q.updatedAt,
+            ),
+            fromVersion = false,
+        )
+    }
+
     /** Número provisional único entre las Cotizaciones del usuario. */
     private suspend fun uniqueProvisionalNumber(): String {
         var candidate = newProvisionalNumber("COT")
@@ -272,6 +349,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         val snapshot = QuoteSnapshot(
             version = (existing?.currentVersion ?: 0) + 1,
             provisionalNumber = existing?.provisionalNumber ?: uniqueProvisionalNumber(),
+            title = input.title.trim(),
             client = ClientSnapshot(client.id, client.name, client.type, client.phone, client.email, client.address, client.notes),
             profile = ProfileSnapshot(profile.id, profile.businessName, profile.description, profile.commercialInfo, profile.logoRef),
             issueDate = LocalDate.ofEpochDay(input.issueDateEpochDay).toString(),
@@ -341,6 +419,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             clientId = input.clientId,
             profileId = input.profileId,
             provisionalNumber = snapshot.provisionalNumber,
+            title = snapshot.title,
             status = status.name,
             issueDateEpochDay = input.issueDateEpochDay,
             validityDays = input.validityDays,
@@ -460,6 +539,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
         val input = QuoteInput(
             clientId = old.client.id,
             profileId = old.profile.id,
+            title = old.title,
             issueDateEpochDay = LocalDate.now().toEpochDay(),
             validityDays = validityDays,
             currency = old.currency,
@@ -657,6 +737,79 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
 
     private suspend fun jobEditable(jobId: String): Boolean =
         db.jobDao().get(jobId)?.let { JobTransitions.isEditable(JobStatus.valueOf(it.status)) } ?: false
+
+    // --- Fotos de evidencia (metadatos en Room; binario en filesDir) ---
+
+    fun observeJobPhotos(jobId: String): Flow<List<JobPhotoEntity>> =
+        db.jobPhotoDao().observeForJob(jobId)
+
+    /**
+     * Registra una foto capturada: importa el temporal de cámara al
+     * almacenamiento privado (redimensionado a máx. 1600 px JPEG) y encola su
+     * metadato para sync. Captura solo con el Trabajo EN PROCESO.
+     */
+    suspend fun saveJobPhoto(context: android.content.Context, jobId: String, src: java.io.File): String? {
+        val job = db.jobDao().get(jobId) ?: return null
+        if (JobStatus.valueOf(job.status) != JobStatus.EN_PROCESO || job.archived) return null
+        val id = Ids.new()
+        val fileName = PhotoStore.import(context, jobId, src, id) ?: return null
+        val now = nowEpochMillis()
+        val photo = JobPhotoEntity(
+            id = id, jobId = jobId, fileName = fileName,
+            fileReady = true, fileSynced = false, deleted = false,
+            createdAt = now, updatedAt = now,
+            pendingSync = true, serverVersion = 0,
+        )
+        db.withTransaction {
+            db.jobPhotoDao().insert(photo)
+            // Entidad NUEVA: la base es 0 (la versión del Trabajo padre solo
+            // ordena dependencias; usarla como base rompe la creación con
+            // STALE_BASE_VERSION cuando el Trabajo ya está sincronizado).
+            sync?.enqueue(
+                EntityTypes.JOB_PHOTO, photo.id,
+                SyncPayloads.jobPhoto(photo), photo.serverVersion,
+            )
+        }
+        src.delete() // limpiar el temporal de cámara tras importar
+        return id
+    }
+
+    /**
+     * Tombstone local + op de sync: la foto desaparece de la UI ya y su
+     * borrado se propaga al servidor y a los demás dispositivos en el
+     * próximo ciclo (sin conexión queda pendiente, no reaparece al pullear).
+     */
+    suspend fun deleteJobPhoto(context: android.content.Context, photoId: String) {
+        val p = db.jobPhotoDao().get(photoId) ?: return
+        val now = nowEpochMillis()
+        db.withTransaction {
+            db.jobPhotoDao().markDeleted(photoId, now)
+            sync?.enqueue(
+                EntityTypes.JOB_PHOTO, photoId,
+                SyncPayloads.jobPhoto(p.copy(deleted = true)), p.serverVersion,
+            )
+        }
+        PhotoStore.delete(context, p)
+    }
+
+    /**
+     * Reintento explícito de una descarga marcada "no disponible" (404): el
+     * metadato y el resto de datos se conservan; el binario vuelve a la cola
+     * y se intenta en el próximo ciclo de sync.
+     */
+    suspend fun retryJobPhotoDownload(photoId: String) {
+        db.jobPhotoDao().clearFileUnavailable(photoId, nowEpochMillis())
+    }
+
+    /**
+     * Copia local dañada: la devuelve a la cola de descargas sin borrar el
+     * archivo (la descarga válida lo sobrescribe) ni tocar metadatos ni
+     * fileSynced. Si el servidor no tiene copia, el 404 la marca como no
+     * disponible — recuperación siempre segura.
+     */
+    suspend fun repairJobPhotoDownload(photoId: String) {
+        db.jobPhotoDao().resetFileForRedownload(photoId, nowEpochMillis())
+    }
 
     suspend fun saveJobActivity(input: JobActivityInput, existingId: String? = null): String? {
         if (!jobEditable(input.jobId)) return null
@@ -2617,6 +2770,7 @@ data class QuoteLineInput(
 data class QuoteInput(
     val clientId: String,
     val profileId: String,
+    val title: String = "",
     val issueDateEpochDay: Long,
     val validityDays: Int,
     val currency: String,

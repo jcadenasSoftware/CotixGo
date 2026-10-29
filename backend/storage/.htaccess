@@ -1,0 +1,2 @@
+# Protección: los binarios de evidencia solo salen por /photos/download (con auth).
+Require all denied

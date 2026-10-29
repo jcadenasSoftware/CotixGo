@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="480" viewBox="0 0 400 400">
+  <rect width="400" height="400" fill="#ffffff"/>
+  <!-- Navy corner strokes: the selected, original-weight option. -->
+  <path d="M29 174 V92 Q29 23 98 23 H309" fill="none" stroke="#082b63" stroke-width="43" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M207 378 H280 Q375 378 375 283 V253" fill="none" stroke="#082b63" stroke-width="43" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Blue and amber blocks use softly rounded, offset contours. -->
+  <path d="M62 160 H160 Q190 160 190 190 V203 C173 220 159 239 143 256 Q124 278 98 278 H72 Q51 278 51 299 V340 Q51 374 85 374 H180 Q215 374 215 340 V196 Q215 160 180 160 Z" fill="#0875f9"/>
+  <path d="M223 61 H326 Q379 61 379 114 V207 Q379 260 326 260 H243 Q220 260 220 237 V204 C239 184 255 163 278 147 C299 132 318 123 335 123 Q352 123 352 106 Q352 89 335 89 H315 C283 89 257 113 220 164 V114 Q220 61 223 61 Z" fill="#ff9f1c"/>
+  <!-- White flowing connection across both blocks. -->
+  <path d="M72 309 C114 318 143 300 168 270 C195 238 216 204 246 177 C269 156 293 143 320 142" fill="none" stroke="#ffffff" stroke-width="29" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

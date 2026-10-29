@@ -1,18 +1,49 @@
 package com.cotixgo.app.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import com.cotixgo.app.BuildConfig
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -112,6 +143,50 @@ fun CotixGoApp(repo: AppRepository, sync: SyncRepository, auth: AuthRepository) 
     }
 }
 
+/**
+ * Fila del menú "Más": solo enlaza pantallas ya existentes; no agrega
+ * funciones ni datos nuevos (referencia visual: navegación con "Más").
+ */
+@Composable
+private fun MoreSheetRow(
+    label: String,
+    tileColor: Color,
+    leading: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.Transparent,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Surface(
+                modifier = Modifier.size(38.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = tileColor,
+            ) {
+                Box(contentAlignment = Alignment.Center) { leading() }
+            }
+            Text(
+                label,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CotixGoNavHost(
     nav: NavHostController,
@@ -145,6 +220,8 @@ private fun CotixGoNavHost(
     Scaffold(
         bottomBar = {
             if (showBar) {
+                var showMore by remember { mutableStateOf(false) }
+                // Referencia: Inicio, Clientes, Cotizaciones, Trabajos, Más.
                 NavigationBar {
                     NavigationBarItem(
                         selected = currentRoute == Routes.DASHBOARD,
@@ -154,7 +231,7 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("⌂") },
+                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
                         label = { Text("Inicio") },
                     )
                     NavigationBarItem(
@@ -165,7 +242,7 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("◎") },
+                        icon = { Icon(Icons.Filled.Person, contentDescription = null) },
                         label = { Text("Clientes") },
                     )
                     NavigationBarItem(
@@ -176,7 +253,12 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("▤") },
+                        icon = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.List,
+                                contentDescription = null,
+                            )
+                        },
                         label = { Text("Cotiz.") },
                     )
                     NavigationBarItem(
@@ -187,42 +269,116 @@ private fun CotixGoNavHost(
                                 launchSingleTop = true
                             }
                         },
-                        icon = { Text("⚒") },
+                        icon = { Icon(Icons.Filled.Build, contentDescription = null) },
                         label = { Text("Trabajos") },
                     )
                     NavigationBarItem(
-                        selected = currentRoute == Routes.REPORTS,
-                        onClick = {
-                            nav.navigate(Routes.REPORTS) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Text("▣") },
-                        label = { Text("Informes") },
+                        selected = currentRoute == Routes.REPORTS ||
+                            currentRoute == Routes.COLLECTIONS ||
+                            currentRoute == Routes.INVENTORY,
+                        onClick = { showMore = true },
+                        icon = { Icon(Icons.Filled.Menu, contentDescription = null) },
+                        label = { Text("Más") },
                     )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.COLLECTIONS,
-                        onClick = {
-                            nav.navigate(Routes.COLLECTIONS) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Text("$") },
-                        label = { Text("Cobros") },
-                    )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.INVENTORY,
-                        onClick = {
-                            nav.navigate(Routes.INVENTORY) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Text("▦") },
-                        label = { Text("Inventario") },
-                    )
+                }
+                // "Más" como bottom sheet: solo enlaza pantallas existentes.
+                if (showMore) {
+                    ModalBottomSheet(onDismissRequest = { showMore = false }) {
+                        Column(Modifier.padding(bottom = 24.dp)) {
+                            Text(
+                                "Más",
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            MoreSheetRow(
+                                label = "Informes",
+                                tileColor = CotixGoBlueSoft,
+                                leading = {
+                                    Icon(Icons.Filled.Create, contentDescription = null,
+                                        tint = CotixGoBlue, modifier = Modifier.size(20.dp))
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.REPORTS) {
+                                        popUpTo(Routes.DASHBOARD)
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Cobros",
+                                tileColor = CotixGoAmberSoft,
+                                leading = {
+                                    Text(
+                                        "$",
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.COLLECTIONS) {
+                                        popUpTo(Routes.DASHBOARD)
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Inventario",
+                                tileColor = MaterialTheme.colorScheme.secondaryContainer,
+                                leading = {
+                                    Icon(
+                                        Icons.Filled.ShoppingCart,
+                                        contentDescription = null,
+                                        tint = CotixGoNavy,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.INVENTORY) {
+                                        popUpTo(Routes.DASHBOARD)
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Cuenta y sincronización",
+                                tileColor = MaterialTheme.colorScheme.secondaryContainer,
+                                leading = {
+                                    Icon(
+                                        Icons.Filled.AccountCircle,
+                                        contentDescription = null,
+                                        tint = CotixGoNavy,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.ACCOUNT)
+                                },
+                            )
+                            MoreSheetRow(
+                                label = "Ajustes",
+                                tileColor = MaterialTheme.colorScheme.secondaryContainer,
+                                leading = {
+                                    Icon(
+                                        Icons.Filled.Settings,
+                                        contentDescription = null,
+                                        tint = CotixGoNavy,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                },
+                                onClick = {
+                                    showMore = false
+                                    nav.navigate(Routes.SETTINGS)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         },
@@ -244,8 +400,8 @@ private fun CotixGoNavHost(
             modifier = Modifier.padding(padding),
         ) {
             composable(Routes.ONBOARDING) {
-                OnboardingScreen { name, profile ->
-                    vm.completeOnboarding(name, profile)
+                OnboardingScreen { name, profile, logoRef ->
+                    vm.completeOnboarding(name, profile, logoRef)
                 }
             }
             composable(Routes.DASHBOARD) {
@@ -273,6 +429,7 @@ private fun CotixGoNavHost(
                     onOpenAccount = { nav.navigate(Routes.collectionDetail(it)) },
                     onSyncAttention = { nav.navigate(Routes.CONFLICTS) },
                     onSettings = { nav.navigate(Routes.SETTINGS) },
+                    onAccount = { nav.navigate(Routes.ACCOUNT) },
                 )
             }
             composable(Routes.CLIENTS) {
@@ -357,14 +514,46 @@ private fun CotixGoNavHost(
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
-                val snapshot by androidx.compose.runtime.produceState<com.cotixgo.app.data.QuoteSnapshot?>(
+                var editFailed by remember(id) { mutableStateOf(false) }
+                val editSrc by androidx.compose.runtime.produceState<com.cotixgo.app.data.AppRepository.QuoteEditSource?>(
                     initialValue = null, id,
-                ) { value = vm.getQuoteSnapshot(id) }
-                if (snapshot == null) return@composable
+                ) {
+                    value = try {
+                        vm.getQuoteSnapshotForEdit(id)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (value == null) editFailed = true
+                }
+                val src = editSrc
+                if (src == null) {
+                    if (editFailed) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                "No se puede editar esta cotización.",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                "Faltan datos para reconstruir el formulario.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                            OutlinedButton(onClick = { nav.popBackStack() }) {
+                                Text("Volver")
+                            }
+                        }
+                    }
+                    return@composable
+                }
                 QuoteEditorScreen(
-                    initial = snapshot,
+                    initial = src.snapshot,
+                    lacksVersionSnapshot = !src.fromVersion,
                     clients = clients,
-                    profile = profiles.firstOrNull { it.id == snapshot?.profile?.id } ?: profiles.firstOrNull(),
+                    profile = profiles.firstOrNull { it.id == src.snapshot.profile.id } ?: profiles.firstOrNull(),
                     user = user,
                     retentions = retentions,
                     services = services,
@@ -390,6 +579,7 @@ private fun CotixGoNavHost(
                     quote = quote,
                     versions = versions,
                     latestSnapshot = snapshot,
+                    profileName = profiles.firstOrNull { it.id == quote?.profileId }?.businessName,
                     emitFailed = emitFailed,
                     onEmit = { vm.emitQuote(id) { emitFailed = !it } },
                     onApprove = { vm.setQuoteStatus(id, com.cotixgo.app.core.QuoteStatus.APROBADA) {} },
@@ -421,6 +611,7 @@ private fun CotixGoNavHost(
                 QuoteVersionScreen(
                     snapshot = versions.firstOrNull { it.version == v }
                         ?.let { com.cotixgo.app.data.SnapshotJson.decodeQuote(it.snapshotJson) },
+                    onFetchLogo = { ref -> vm.fetchLogo(ref) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -498,6 +689,8 @@ private fun CotixGoNavHost(
                 val materials by vm.observeJobMaterials(id).collectAsStateWithLifecycle(emptyList())
                 val links by vm.observeJobQuotes(id).collectAsStateWithLifecycle(emptyList())
                 val linkedReports by vm.observeReportsForJob(id).collectAsStateWithLifecycle(emptyList())
+                val jobPhotos by vm.observeJobPhotos(id).collectAsStateWithLifecycle(emptyList())
+                val jobCtx = androidx.compose.ui.platform.LocalContext.current
                 var transitionError by androidx.compose.runtime.remember {
                     androidx.compose.runtime.mutableStateOf<String?>(null)
                 }
@@ -508,6 +701,7 @@ private fun CotixGoNavHost(
                     links = links,
                     linkedQuotes = quotes,
                     linkedReports = linkedReports,
+                    photos = jobPhotos,
                     transitionError = transitionError,
                     onTransition = { target ->
                         vm.setJobStatus(id, target) { transitionError = it }
@@ -528,6 +722,10 @@ private fun CotixGoNavHost(
                     },
                     onNewReport = { nav.navigate(Routes.reportNew(jobId = id)) },
                     onOpenReport = { nav.navigate(Routes.reportDetail(it)) },
+                    onPhotoCaptured = { file -> vm.addJobPhoto(jobCtx.applicationContext, id, file) },
+                    onDeletePhoto = { pid -> vm.deleteJobPhoto(jobCtx.applicationContext, pid) },
+                    onRetryPhotoDownload = { pid -> vm.retryJobPhotoDownload(pid) },
+                    onRepairPhotoDownload = { pid -> vm.repairJobPhotoDownload(pid) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -638,9 +836,12 @@ private fun CotixGoNavHost(
                 val id = entry.arguments?.getString("id") ?: return@composable
                 val v = entry.arguments?.getInt("v") ?: return@composable
                 val versions by vm.observeReportVersions(id).collectAsStateWithLifecycle(emptyList())
+                val report by vm.observeReport(id).collectAsStateWithLifecycle(null)
                 ReportVersionScreen(
                     snapshot = versions.firstOrNull { it.version == v }
                         ?.let { com.cotixgo.app.data.SnapshotJson.decodeReport(it.snapshotJson) },
+                    currentOfficialNumber = report?.officialNumber,
+                    onFetchLogo = { ref -> vm.fetchLogo(ref) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -863,6 +1064,7 @@ private fun CotixGoNavHost(
                     activeConsolidated = consolidateds.firstOrNull { it.id == activeConsolidatedId },
                     effects = accountEffects,
                     latestOps = accountOps,
+                    onFetchLogo = { ref -> vm.fetchLogo(ref) },
                     onEdit = { nav.navigate(Routes.collectionEdit(id)) },
                     onCancelAccount = { vm.cancelCollectionAccount(id) {} },
                     onSetArchived = { archived -> vm.setCollectionAccountArchived(id, archived) },
@@ -1003,6 +1205,7 @@ private fun CotixGoNavHost(
                     initialItems = emptyList(),
                     materials = materials.filter { !it.archived },
                     confirmError = null,
+                    currency = user?.mainCurrency ?: "COP",
                     onSave = { input, confirm, done ->
                         vm.savePurchase(input, null, confirm) { err ->
                             if (err == null) nav.popBackStack()
@@ -1038,6 +1241,7 @@ private fun CotixGoNavHost(
                     initialItems = loadedItems,
                     materials = materials.filter { !it.archived },
                     confirmError = null,
+                    currency = user?.mainCurrency ?: "COP",
                     onSave = { input, confirm, done ->
                         vm.savePurchase(input, id, confirm) { err ->
                             if (err == null) nav.popBackStack()
@@ -1172,6 +1376,7 @@ private fun CotixGoNavHost(
             composable(Routes.SERVICES) {
                 ServicesScreen(
                     services = services,
+                    currency = user?.mainCurrency ?: "COP",
                     onSave = { input, id -> vm.saveService(input, id) {} },
                     onArchive = { id, archived -> vm.setServiceArchived(id, archived) },
                 )
@@ -1185,11 +1390,15 @@ private fun CotixGoNavHost(
             }
             composable(Routes.PROFILE) {
                 ProfileScreen(
+
                     profile = profiles.firstOrNull(),
                     onSave = { name, desc, info, vigencia ->
                         profiles.firstOrNull()?.let { p ->
                             vm.updateProfile(p.id, name, desc, info, vigencia) { nav.popBackStack() }
                         }
+                    },
+                    onSetLogo = { ref ->
+                        profiles.firstOrNull()?.let { p -> vm.setProfileLogo(p.id, ref) }
                     },
                     onBack = { nav.popBackStack() },
                 )
