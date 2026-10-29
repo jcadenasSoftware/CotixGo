@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -647,6 +648,7 @@ fun ReportDetailScreen(
 fun ReportVersionScreen(
     snapshot: ReportSnapshot?,
     currentOfficialNumber: String? = null,
+    onFetchLogo: suspend (String) -> Boolean = { false },
     onBack: () -> Unit,
 ) {
     Scaffold(
@@ -713,6 +715,32 @@ fun ReportVersionScreen(
                             }
                         }
                     }
+                }
+                // Vista previa PDF del snapshot congelado de la versión.
+                val pdfCtx = androidx.compose.ui.platform.LocalContext.current
+                val pdfScope = androidx.compose.runtime.rememberCoroutineScope()
+                val logoRef = snapshot.profile.logoRef
+                var logoMissing by remember(logoRef) {
+                    mutableStateOf(logoRef != null &&
+                        !com.cotixgo.app.data.LogoStore.exists(pdfCtx, logoRef))
+                }
+                if (logoMissing) {
+                    Text(
+                        "Vista previa no disponible: el logo referenciado por esta" +
+                            " versión aún no se descargó a este dispositivo.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    TextButton(onClick = {
+                        pdfScope.launch {
+                            if (logoRef != null && onFetchLogo(logoRef)) logoMissing = false
+                        }
+                    }) { Text("Reintentar descarga") }
+                } else {
+                    Button(
+                        onClick = { printReportPdf(pdfCtx, snapshot) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Vista previa (PDF)") }
                 }
                 TextButton(onClick = onBack) { Text("Volver") }
             }

@@ -559,9 +559,16 @@ class AppViewModel(
 
     suspend fun getQuoteSnapshotForEdit(id: String) = repo.getQuoteSnapshotForEdit(id)
 
-    fun completeOnboarding(userName: String, profileName: String) {
-        viewModelScope.launch { repo.completeOnboarding(userName, profileName) }
+    fun completeOnboarding(userName: String, profileName: String, logoRef: String? = null) {
+        viewModelScope.launch { repo.completeOnboarding(userName, profileName, logoRef) }
     }
+
+    fun setProfileLogo(id: String, logoRef: String?) {
+        viewModelScope.launch { repo.setProfileLogo(id, logoRef) }
+    }
+
+    /** Descarga bajo demanda del logo referenciado por un snapshot. */
+    suspend fun fetchLogo(ref: String): Boolean = repo.fetchLogo(ref)
 
     fun saveClient(input: ClientInput, existingId: String?, onDone: () -> Unit) {
         viewModelScope.launch {

@@ -1,5 +1,6 @@
 package com.cotixgo.app.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +55,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -1209,7 +1213,11 @@ private fun QuoteDetailEmpty(message: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QuoteVersionScreen(snapshot: QuoteSnapshot?, onBack: () -> Unit) {
+fun QuoteVersionScreen(
+    snapshot: QuoteSnapshot?,
+    onFetchLogo: suspend (String) -> Boolean = { false },
+    onBack: () -> Unit,
+) {
     Scaffold(
         topBar = { TopAppBar(title = { Text(snapshot?.let { "${it.provisionalNumber} v${it.version}" } ?: "Versión") }) },
     ) { padding ->
@@ -1228,9 +1236,32 @@ fun QuoteVersionScreen(snapshot: QuoteSnapshot?, onBack: () -> Unit) {
             }
             item {
                 val context = androidx.compose.ui.platform.LocalContext.current
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
                 snapshot?.let { s ->
-                    Button(onClick = { printQuotePdf(context, s) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Vista previa (PDF)")
+                    val logoRef = s.profile.logoRef
+                    // El PDF solo usa el archivo de la referencia congelada;
+                    // si aún no llegó a este dispositivo, no se sustituye
+                    // por el logo actual — se ofrece reintento de descarga.
+                    var logoMissing by remember(logoRef) {
+                        mutableStateOf(logoRef != null &&
+                            !com.cotixgo.app.data.LogoStore.exists(context, logoRef))
+                    }
+                    if (logoMissing) {
+                        Text(
+                            "Vista previa no disponible: el logo referenciado por esta" +
+                                " versión aún no se descargó a este dispositivo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = {
+                            scope.launch {
+                                if (logoRef != null && onFetchLogo(logoRef)) logoMissing = false
+                            }
+                        }) { Text("Reintentar descarga") }
+                    } else {
+                        Button(onClick = { printQuotePdf(context, s) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Vista previa (PDF)")
+                        }
                     }
                 }
             }
@@ -1457,6 +1488,7 @@ fun RetentionsScreen(
 fun ProfileScreen(
     profile: ProfileEntity?,
     onSave: (String, String, String, Int?) -> Unit,
+    onSetLogo: (String?) -> Unit = {},
     onBack: () -> Unit,
 ) {
     var name by remember { mutableStateOf(profile?.businessName ?: "") }
@@ -1467,6 +1499,19 @@ fun ProfileScreen(
     // default (válido), con valor debe ser >= 1.
     var vigenciaError by remember {
         mutableStateOf(vigencia.isNotEmpty() && (vigencia.toIntOrNull() ?: 0) < 1)
+    }
+    // Logo del perfil — referencia inmutable en almacenamiento privado.
+    val logoCtx = androidx.compose.ui.platform.LocalContext.current
+    var logoRef by remember { mutableStateOf(profile?.logoRef) }
+    var logoBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(logoRef) {
+        logoBitmap = logoRef?.let { com.cotixgo.app.data.LogoStore.decode(logoCtx, it) }
+    }
+    val pickLogo = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri?.let { com.cotixgo.app.data.LogoStore.import(logoCtx, it) }
+            ?.also { ref -> logoRef = ref; onSetLogo(ref) }
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Perfil profesional") }) }) { padding ->
@@ -1493,6 +1538,21 @@ fun ProfileScreen(
                 },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
+            // Logo — selector del sistema (sin permiso de cámara); se guarda
+            // como archivo inmutable y los documentos congelan su referencia.
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                logoBitmap?.let {
+                    Image(bitmap = it.asImageBitmap(), contentDescription = "Logo del perfil",
+                        modifier = Modifier.height(56.dp))
+                }
+                OutlinedButton(onClick = { pickLogo.launch("image/*") }) {
+                    Text(if (logoRef == null) "Elegir logo" else "Cambiar logo")
+                }
+                if (logoRef != null) {
+                    TextButton(onClick = { logoRef = null; onSetLogo(null) }) { Text("Quitar") }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = {
                     val invalid = vigencia.isNotEmpty() && (vigencia.toIntOrNull() ?: 0) < 1

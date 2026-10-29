@@ -36,7 +36,12 @@ function db(): PDO
         // espera por un bloqueo de fila quedaría invisible para los chequeos
         // de membresía posteriores (revisión PR #15, hallazgo M1). Las
         // mutaciones financieras ya se serializan con lecturas FOR UPDATE.
-        $pdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        // El nivel de aislamiento se ajusta solo en MySQL: otros drivers
+        // locales de desarrollo (p. ej. SQLite para pruebas de transporte)
+        // no aceptan la sintaxis SET SESSION.
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+            $pdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        }
     }
     return $pdo;
 }

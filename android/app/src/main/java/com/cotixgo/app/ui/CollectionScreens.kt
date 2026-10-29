@@ -37,6 +37,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -878,6 +879,7 @@ fun CollectionAccountDetailScreen(
     activeConsolidated: ConsolidatedCollectionEntity?,
     effects: Map<String, com.cotixgo.app.data.DestEffect>,
     latestOps: Map<Pair<String, String>, com.cotixgo.app.data.LatestOpState>,
+    onFetchLogo: suspend (String) -> Boolean = { false },
     onEdit: () -> Unit,
     onCancelAccount: () -> Unit,
     onSetArchived: (Boolean) -> Unit,
@@ -1071,6 +1073,43 @@ fun CollectionAccountDetailScreen(
                             }
                         }
                     }
+                }
+            }
+            item {
+                // Vista previa PDF desde el snapshot congelado del documento.
+                val pdfCtx = androidx.compose.ui.platform.LocalContext.current
+                val pdfScope = androidx.compose.runtime.rememberCoroutineScope()
+                val pdfDoc = collectionPdfDoc(account, items)
+                if (pdfDoc != null) {
+                    val logoRef = pdfDoc.profile.logoRef
+                    var logoMissing by remember(logoRef) {
+                        mutableStateOf(logoRef != null &&
+                            !com.cotixgo.app.data.LogoStore.exists(pdfCtx, logoRef))
+                    }
+                    if (logoMissing) {
+                        Text(
+                            "Vista previa no disponible: el logo referenciado por este" +
+                                " documento aún no se descargó a este dispositivo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = {
+                            pdfScope.launch {
+                                if (logoRef != null && onFetchLogo(logoRef)) logoMissing = false
+                            }
+                        }) { Text("Reintentar descarga") }
+                    } else {
+                        Button(
+                            onClick = { printCollectionPdf(pdfCtx, pdfDoc) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Vista previa (PDF)") }
+                    }
+                } else {
+                    Text(
+                        "Vista previa PDF no disponible: el documento no conserva un snapshot completo.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
             }
             item {

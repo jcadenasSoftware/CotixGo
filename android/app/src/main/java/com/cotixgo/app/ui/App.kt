@@ -400,8 +400,8 @@ private fun CotixGoNavHost(
             modifier = Modifier.padding(padding),
         ) {
             composable(Routes.ONBOARDING) {
-                OnboardingScreen { name, profile ->
-                    vm.completeOnboarding(name, profile)
+                OnboardingScreen { name, profile, logoRef ->
+                    vm.completeOnboarding(name, profile, logoRef)
                 }
             }
             composable(Routes.DASHBOARD) {
@@ -611,6 +611,7 @@ private fun CotixGoNavHost(
                 QuoteVersionScreen(
                     snapshot = versions.firstOrNull { it.version == v }
                         ?.let { com.cotixgo.app.data.SnapshotJson.decodeQuote(it.snapshotJson) },
+                    onFetchLogo = { ref -> vm.fetchLogo(ref) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -840,6 +841,7 @@ private fun CotixGoNavHost(
                     snapshot = versions.firstOrNull { it.version == v }
                         ?.let { com.cotixgo.app.data.SnapshotJson.decodeReport(it.snapshotJson) },
                     currentOfficialNumber = report?.officialNumber,
+                    onFetchLogo = { ref -> vm.fetchLogo(ref) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -1062,6 +1064,7 @@ private fun CotixGoNavHost(
                     activeConsolidated = consolidateds.firstOrNull { it.id == activeConsolidatedId },
                     effects = accountEffects,
                     latestOps = accountOps,
+                    onFetchLogo = { ref -> vm.fetchLogo(ref) },
                     onEdit = { nav.navigate(Routes.collectionEdit(id)) },
                     onCancelAccount = { vm.cancelCollectionAccount(id) {} },
                     onSetArchived = { archived -> vm.setCollectionAccountArchived(id, archived) },
@@ -1393,6 +1396,9 @@ private fun CotixGoNavHost(
                         profiles.firstOrNull()?.let { p ->
                             vm.updateProfile(p.id, name, desc, info, vigencia) { nav.popBackStack() }
                         }
+                    },
+                    onSetLogo = { ref ->
+                        profiles.firstOrNull()?.let { p -> vm.setProfileLogo(p.id, ref) }
                     },
                     onBack = { nav.popBackStack() },
                 )

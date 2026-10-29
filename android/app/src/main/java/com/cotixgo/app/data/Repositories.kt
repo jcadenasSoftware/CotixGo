@@ -60,7 +60,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
 
     fun observeClient(id: String): Flow<ClientEntity?> = db.clientDao().observeOne(id)
 
-    suspend fun completeOnboarding(userName: String, profileName: String) {
+    suspend fun completeOnboarding(userName: String, profileName: String, logoRef: String? = null) {
         val now = nowEpochMillis()
         val user = UserEntity(
             id = Ids.new(),
@@ -72,6 +72,7 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             id = Ids.new(),
             userId = user.id,
             businessName = profileName.trim(),
+            logoRef = logoRef,
             createdAt = now,
             updatedAt = now,
         )
@@ -156,6 +157,25 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
             sync?.enqueue(EntityTypes.PROFILE, updated.id, SyncPayloads.profile(updated), profile.serverVersion)
         }
     }
+
+    /**
+     * Cambia/quita el logo del perfil (logoRef = archivo inmutable en
+     * filesDir/logos). Los snapshots emitidos conservan la referencia que
+     * tenían al crearse — quitar el logo solo afecta documentos nuevos y la
+     * imagen anterior nunca se borra aquí.
+     */
+    suspend fun setProfileLogo(id: String, logoRef: String?) {
+        val profile = db.profileDao().observeForUser(requireUser().id).first()
+            .firstOrNull { it.id == id } ?: return
+        val updated = profile.copy(logoRef = logoRef, updatedAt = nowEpochMillis())
+        db.withTransaction {
+            db.profileDao().insert(updated)
+            sync?.enqueue(EntityTypes.PROFILE, updated.id, SyncPayloads.profile(updated), profile.serverVersion)
+        }
+    }
+
+    /** Descarga bajo demanda de un logo referenciado por un snapshot. */
+    suspend fun fetchLogo(ref: String): Boolean = sync?.fetchLogoBinary(ref) ?: false
 
     // ---------- Catálogo de servicios (por Perfil) ----------
 

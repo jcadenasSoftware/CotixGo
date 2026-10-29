@@ -43,3 +43,4 @@ desktop.ini
 
 # Backend — binarios subidos en runtime (el .htaccess de protección sí va)
 backend/storage/photos/
+backend/storage/logos/

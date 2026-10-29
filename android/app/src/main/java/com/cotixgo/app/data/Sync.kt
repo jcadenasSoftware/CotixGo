@@ -332,6 +332,10 @@ class Session(
             plain.edit().putString("device_id", it).apply()
         }
 
+    /** Marca de "el servidor ya tiene este binario de logo" (subido o descargado). */
+    fun logoUploadDone(ref: String): Boolean = plain.getBoolean("logo_up:$ref", false)
+    fun markLogoUploadDone(ref: String) { plain.edit().putBoolean("logo_up:$ref", true).apply() }
+
     var apiBaseUrl: String
         // La URL guardada solo aplica en debug: una URL de desarrollo nunca
         // puede filtrarse a release, que siempre usa su endpoint compilado.
@@ -736,6 +740,9 @@ class SyncRepository(
         // Binarios de fotos: fuera del JSON, tras el sync de metadatos. Un
         // fallo de archivo no debe pausar ni perder otras entidades.
         syncPhotoBinaries()
+        // Ídem para el logo del perfil: su referencia viaja en el payload
+        // JSON del perfil; el binario viaja por /logos.
+        syncLogoBinaries()
         return SyncSummary(pushed = pushed, paused = paused, pulled = pulled)
     }
 
@@ -769,6 +776,51 @@ class SyncRepository(
                     }
                 }
         }
+    }
+
+    /**
+     * Binarios del logo del perfil: se sube el archivo local cuando el
+     * servidor aún no lo tiene (marca por ref) y se descarga la referencia
+     * que el pull del perfil trajo sin archivo local. Un fallo deja el
+     * reintento para el próximo ciclo; refs históricas de snapshots viejos
+     * se descargan bajo demanda (fetchLogoBinary).
+     */
+    private suspend fun syncLogoBinaries() {
+        if (session.token == null) return
+        val user = db.userDao().get() ?: return
+        db.profileDao().observeForUser(user.id).first().forEach { p ->
+            val ref = p.logoRef?.takeIf { LogoStore.isValidRef(it) } ?: return@forEach
+            if (LogoStore.exists(session.context, ref)) {
+                if (!session.logoUploadDone(ref)) {
+                    val bytes = LogoStore.bytes(session.context, ref)
+                    if (bytes != null) {
+                        runCatching { api.uploadLogo(ref, bytes) }
+                            .onSuccess { session.markLogoUploadDone(ref) }
+                    }
+                }
+            } else {
+                runCatching { api.downloadLogo(ref) }
+                    .onSuccess { bytes ->
+                        if (bytes != null &&
+                            LogoStore.saveRemote(session.context, ref, bytes)) {
+                            session.markLogoUploadDone(ref)
+                        }
+                    }
+            }
+        }
+    }
+
+    /**
+     * Descarga bajo demanda de un logo (p. ej. snapshot que referencia un
+     * logo anterior al actual). false si no hay sesión, falla o 404.
+     */
+    suspend fun fetchLogoBinary(ref: String): Boolean {
+        if (session.token == null || !LogoStore.isValidRef(ref)) return false
+        if (LogoStore.exists(session.context, ref)) return true
+        return runCatching {
+            api.downloadLogo(ref)
+                ?.let { LogoStore.saveRemote(session.context, ref, it) } == true
+        }.getOrDefault(false)
     }
 
     /** Programa el reintento automático de un INTERNAL_ERROR (mismo opId). */

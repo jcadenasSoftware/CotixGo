@@ -68,6 +68,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -92,10 +93,20 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OnboardingScreen(onComplete: (String, String) -> Unit) {
+fun OnboardingScreen(onComplete: (String, String, String?) -> Unit) {
     var userName by remember { mutableStateOf("") }
     var profileName by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    // Logo opcional del primer perfil — se guarda como archivo inmutable.
+    val logoCtx = androidx.compose.ui.platform.LocalContext.current
+    var logoRef by remember { mutableStateOf<String?>(null) }
+    var logoBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    val pickLogo = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri?.let { com.cotixgo.app.data.LogoStore.import(logoCtx, it) }
+            ?.also { ref -> logoRef = ref; logoBitmap = com.cotixgo.app.data.LogoStore.decode(logoCtx, ref) }
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("CotixGo") }) },
@@ -122,11 +133,25 @@ fun OnboardingScreen(onComplete: (String, String) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                logoBitmap?.let {
+                    androidx.compose.foundation.Image(
+                        bitmap = it.asImageBitmap(), contentDescription = "Logo del perfil",
+                        modifier = Modifier.height(48.dp))
+                }
+                OutlinedButton(onClick = { pickLogo.launch("image/*") }) {
+                    Text(if (logoRef == null) "Logo del perfil (opcional)" else "Cambiar logo")
+                }
+                if (logoRef != null) {
+                    TextButton(onClick = { logoRef = null; logoBitmap = null }) { Text("Quitar") }
+                }
+            }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(
                 onClick = {
                     val issue = validateOnboarding(userName, profileName)
-                    if (issue != null) error = issue else onComplete(userName, profileName)
+                    if (issue != null) error = issue else onComplete(userName, profileName, logoRef)
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Empezar") }

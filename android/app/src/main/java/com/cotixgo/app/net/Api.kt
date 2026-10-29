@@ -38,6 +38,10 @@ interface SyncApi {
     /** Binarios de evidencia — el JSON de sync solo lleva sus metadatos. */
     suspend fun uploadPhoto(photoId: String, bytes: ByteArray): JsonObject
     suspend fun downloadPhoto(photoId: String): ByteArray?
+
+    /** Binarios de logo de perfil — la referencia viaja en el JSON del perfil. */
+    suspend fun uploadLogo(ref: String, bytes: ByteArray): JsonObject
+    suspend fun downloadLogo(ref: String): ByteArray?
 }
 
 /**
@@ -131,6 +135,37 @@ class ApiClient(
         withContext(Dispatchers.IO) {
             val rb = Request.Builder()
                 .url(baseUrl.trimEnd('/') + "/photos/download?id=$photoId")
+            token()?.let { rb.header("Authorization", "Bearer $it") }
+            http.newCall(rb.get().build()).execute().use { res ->
+                when {
+                    res.code == 404 -> null
+                    !res.isSuccessful -> throw parseApiError(res.code, JsonObject(emptyMap()))
+                    else -> res.body?.bytes()
+                }
+            }
+        }
+
+    override suspend fun uploadLogo(ref: String, bytes: ByteArray): JsonObject =
+        withContext(Dispatchers.IO) {
+            val rb = Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/logos/upload?ref=$ref")
+                .post(bytes.toRequestBody("application/octet-stream".toMediaType()))
+            token()?.let { rb.header("Authorization", "Bearer $it") }
+            http.newCall(rb.build()).execute().use { res ->
+                val text = res.body?.string().orEmpty()
+                val obj = text.takeIf { it.isNotBlank() }?.let {
+                    runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull()
+                } ?: JsonObject(emptyMap())
+                if (!res.isSuccessful) throw parseApiError(res.code, obj)
+                if (obj.str("status") != "ok") throw parseApiError(res.code, obj)
+                obj
+            }
+        }
+
+    override suspend fun downloadLogo(ref: String): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val rb = Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/logos/download?ref=$ref")
             token()?.let { rb.header("Authorization", "Bearer $it") }
             http.newCall(rb.get().build()).execute().use { res ->
                 when {

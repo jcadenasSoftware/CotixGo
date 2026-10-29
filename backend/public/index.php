@@ -15,6 +15,7 @@ require_once __DIR__ . '/../src/auth.php';
 require_once __DIR__ . '/../src/sync.php';
 require_once __DIR__ . '/../src/domain.php';
 require_once __DIR__ . '/../src/photos.php';
+require_once __DIR__ . '/../src/logos.php';
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
@@ -53,6 +54,14 @@ try {
     }
     if ($method === 'GET' && $path === '/photos/download') {
         handlePhotoDownload();
+    }
+    if ($method === 'POST' && $path === '/logos/upload') {
+        // Igual que las fotos: la referencia viaja en el JSON del perfil,
+        // el binario por este stream autenticado.
+        handleLogoUpload();
+    }
+    if ($method === 'GET' && $path === '/logos/download') {
+        handleLogoDownload();
     }
     fail(404, 'NOT_FOUND', 'Endpoint no encontrado.');
 } catch (Throwable $e) {
