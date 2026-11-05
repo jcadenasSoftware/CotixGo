@@ -94,6 +94,7 @@ class EditorAsyncLoadTest {
                     initialItems = loaded,
                     materials = listOf(matCemento, matVarilla),
                     confirmError = null,
+                    currency = "COP",
                     onSave = { input, _, done -> saved = input; done(null) },
                     onBack = {},
                 )

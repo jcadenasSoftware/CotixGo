@@ -60,11 +60,15 @@ class AppRepository(private val db: AppDatabase, private val sync: SyncRepositor
 
     fun observeClient(id: String): Flow<ClientEntity?> = db.clientDao().observeOne(id)
 
-    suspend fun completeOnboarding(userName: String, profileName: String, logoRef: String? = null) {
+    suspend fun completeOnboarding(userName: String, profileName: String, currency: String = "COP", logoRef: String? = null) {
+        // La moneda principal se elige una sola vez aquí: se precarga en
+        // los documentos nuevos sin obligar a reescribirla (ISO 4217 real).
+        require(isValidCurrencyCode(currency)) { "Código de moneda no válido." }
         val now = nowEpochMillis()
         val user = UserEntity(
             id = Ids.new(),
             name = userName.trim(),
+            mainCurrency = currency.uppercase(),
             createdAt = now,
             updatedAt = now,
         )

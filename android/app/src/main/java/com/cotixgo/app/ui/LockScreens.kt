@@ -1,5 +1,9 @@
 package com.cotixgo.app.ui
 
+import android.app.Activity
+import android.app.KeyguardManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
@@ -23,8 +27,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
 import com.cotixgo.app.data.DbMigrationManager
 import com.cotixgo.app.data.security.AppLock
+import kotlinx.coroutines.flow.first
 
 /**
  * Pantalla bloqueante cuando la migración/cifrado de la base falla o la
@@ -77,8 +83,35 @@ fun DbBlockedScreen(
 @Composable
 fun AppLockGate(onUnlocked: () -> Unit) {
     val activity = LocalContext.current as FragmentActivity
-    var promptShown by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+
+    // Vía garantizada de PIN/patrón/contraseña del dispositivo, independiente
+    // del BiometricPrompt: en MIUI el prompt combinado puede no ofrecer la
+    // credencial del dispositivo o perder el callback de resultado.
+    val credentialLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        android.util.Log.i("AppLockGate", "credential result code=${result.resultCode}")
+        if (result.resultCode == Activity.RESULT_OK) {
+            AppLock.markUnlocked(); onUnlocked()
+        } else {
+            status = "Credencial no verificada. Inténtalo de nuevo."
+        }
+    }
+
+    fun launchCredential() {
+        val km = activity.getSystemService(KeyguardManager::class.java)
+        val intent = km?.createConfirmDeviceCredentialIntent(
+            "Desbloquear CotixGo",
+            "Usa el PIN, patrón o contraseña del dispositivo",
+        )
+        if (intent != null) {
+            credentialLauncher.launch(intent)
+        } else {
+            // Sin credencial de dispositivo no hay barrera posible.
+            AppLock.markUnlocked(); onUnlocked()
+        }
+    }
 
     fun launch() {
         val bm = BiometricManager.from(activity)
@@ -87,19 +120,39 @@ fun AppLockGate(onUnlocked: () -> Unit) {
                 BiometricManager.Authenticators.DEVICE_CREDENTIAL,
         )
         if (can != BiometricManager.BIOMETRIC_SUCCESS) {
-            // Sin credenciales de dispositivo no hay barrera posible:
-            // se desbloquea la interfaz (la base sigue cifrada igualmente).
-            AppLock.markUnlocked(); onUnlocked(); return
+            val km = activity.getSystemService(KeyguardManager::class.java)
+            if (km?.isDeviceSecure == true) launchCredential()
+            else { AppLock.markUnlocked(); onUnlocked() }
+            return
         }
         val executor = ContextCompat.getMainExecutor(activity)
         val prompt = BiometricPrompt(
             activity, executor,
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    android.util.Log.i("AppLockGate", "onAuthenticationSucceeded authType=${result.authenticationType}")
                     AppLock.markUnlocked(); onUnlocked()
                 }
+                override fun onAuthenticationFailed() {
+                    android.util.Log.i("AppLockGate", "onAuthenticationFailed")
+                    status = "Huella no reconocida. Inténtalo de nuevo o usa tu PIN, patrón o contraseña."
+                }
                 override fun onAuthenticationError(code: Int, err: CharSequence) {
-                    failed = true; promptShown = false
+                    android.util.Log.i("AppLockGate", "onAuthenticationError code=$code err=$err")
+                    status = when (code) {
+                        BiometricPrompt.ERROR_USER_CANCELED,
+                        BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+                        BiometricPrompt.ERROR_CANCELED ->
+                            "Autenticación cancelada. Toca «Desbloquear» para reintentar."
+                        BiometricPrompt.ERROR_LOCKOUT,
+                        BiometricPrompt.ERROR_LOCKOUT_PERMANENT ->
+                            "Demasiados intentos de huella. Usa tu PIN, patrón o contraseña."
+                        BiometricPrompt.ERROR_NO_BIOMETRICS,
+                        BiometricPrompt.ERROR_HW_NOT_PRESENT,
+                        BiometricPrompt.ERROR_HW_UNAVAILABLE ->
+                            "La huella no está disponible. Usa tu PIN, patrón o contraseña."
+                        else -> err.toString().ifBlank { "No se pudo verificar tu identidad." }
+                    }
                 }
             },
         )
@@ -111,22 +164,33 @@ fun AppLockGate(onUnlocked: () -> Unit) {
                     BiometricManager.Authenticators.DEVICE_CREDENTIAL,
             )
             .build()
-        promptShown = true
+        android.util.Log.i("AppLockGate", "authenticate() lifecycle=${activity.lifecycle.currentState}")
         prompt.authenticate(info)
     }
 
-    LaunchedEffect(Unit) { if (!promptShown) launch() }
+    // En MIUI el BiometricPrompt lanzado antes de ON_RESUME puede perder el
+    // resultado: el sistema autentica pero el callback nunca llega a la app.
+    // Se espera a RESUMED antes de invocar authenticate().
+    LaunchedEffect(Unit) {
+        activity.lifecycle.currentStateFlow
+            .first { it.isAtLeast(Lifecycle.State.RESUMED) }
+        launch()
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
     ) {
         Text("CotixGo bloqueado", style = MaterialTheme.typography.headlineSmall)
-        if (failed) {
-            Text("No se pudo verificar tu identidad.", Modifier.padding(top = 8.dp))
-        }
+        status?.let { Text(it, Modifier.padding(top = 8.dp)) }
         Button(onClick = { launch() }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
             Text("Desbloquear")
+        }
+        OutlinedButton(
+            onClick = { launchCredential() },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Usar PIN, patrón o contraseña")
         }
     }
 }

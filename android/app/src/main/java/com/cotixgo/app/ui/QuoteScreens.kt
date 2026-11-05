@@ -343,7 +343,7 @@ private fun fmtQuoteAmount(amount: String): String = try {
 }
 
 /** Formato visual del importe: `$ 180.000,00 COP`. Solo presentación. */
-private fun quoteAmountLabel(amount: String, currency: String): String {
+fun quoteAmountLabel(amount: String, currency: String): String {
     val formatted = fmtQuoteAmount(amount)
     val symbol = quoteCurrencySymbol(currency)
     return if (symbol.isEmpty()) "$formatted $currency" else "$symbol $formatted $currency"
@@ -390,7 +390,12 @@ fun QuoteEditorScreen(
         mutableStateOf(initial?.validityDays?.toString()
             ?: (profile?.vigenciaDias?.takeIf { it >= 1 }?.toString() ?: ""))
     }
-    var currency by remember { mutableStateOf(initial?.currency ?: (user?.mainCurrency ?: "")) }
+    // Documento nuevo: precarga la moneda principal del perfil (COP si el
+    // usuario aún no la configuró); editable por documento.
+    var currency by remember {
+        mutableStateOf(initial?.currency
+            ?: (user?.mainCurrency?.takeIf { it.isNotBlank() } ?: "COP"))
+    }
     var notes by remember { mutableStateOf(initial?.notes ?: "") }
     val lines = remember {
         mutableStateListOf<LineDraft>().apply {
@@ -707,15 +712,31 @@ fun QuoteEditorScreen(
                         OutlinedTextField(
                             value = targetNet, onValueChange = { targetNet = it },
                             label = { Text("Neto que quiero recibir") },
-                            supportingText = { Text("Calcula el bruto necesario para alcanzar el neto indicado") },
+                            supportingText = { Text("Calcula el bruto necesario y lo reparte entre las líneas sujetas a las retenciones marcadas") },
                             modifier = Modifier.weight(1f),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         )
                         OutlinedButton(onClick = {
-                            val serviceRates = calcSpecs.filter { ConceptType.SERVICIO in it.appliesTo }.map { it.ratePercent }
-                            inverseResult = QuoteCalc.requiredGrossForNet(targetNet.toMoney(), serviceRates)
-                                ?.let { "Bruto requerido: ${QuoteCalc.format(it)}" }
-                                ?: "No se puede calcular (tasas >= 100%)"
+                            val target = targetNet.toMoney()
+                            inverseResult = when {
+                                target.signum() <= 0 ->
+                                    "Indica el neto que quieres recibir (mayor que cero)."
+                                lines.isEmpty() ->
+                                    "Agrega al menos una línea antes de calcular el bruto."
+                                else -> {
+                                    val dist = QuoteCalc.distributeGrossForNet(calcLines, calcSpecs, target)
+                                    if (dist == null) {
+                                        "No se puede repartir: las tasas marcadas suman ≥ 100 % sobre las líneas sujetas o el objetivo es menor que el total de las líneas no sujetas."
+                                    } else {
+                                        dist.lines.forEach { r ->
+                                            lines[r.index].unitPrice = QuoteCalc.format(r.unitPrice)
+                                        }
+                                        "Bruto repartido: $ ${fmtQuoteAmount(QuoteCalc.format(dist.gross))} $currency" +
+                                            if (dist.exact) ""
+                                            else " · neto resultante $ ${fmtQuoteAmount(QuoteCalc.format(dist.net))} $currency (aproximado)"
+                                    }
+                                }
+                            }
                         }) { Text("Calcular bruto") }
                     }
                     inverseResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -798,8 +819,10 @@ fun QuoteDetailScreen(
     quote: QuoteEntity?,
     versions: List<QuoteVersionEntity>,
     latestSnapshot: QuoteSnapshot?,
+    emittedSnapshot: QuoteSnapshot? = null,
     profileName: String? = null,
     emitFailed: Boolean,
+    onFetchLogo: suspend (String) -> Boolean = { false },
     onEmit: () -> Unit,
     onApprove: () -> Unit,
     onReject: () -> Unit,
@@ -1038,6 +1061,14 @@ fun QuoteDetailScreen(
                 item { Text("La cotización necesita al menos una línea para emitirse.", color = MaterialTheme.colorScheme.error) }
             }
             item {
+                Text(
+                    "Acciones",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = CotixGoNavy,
+                )
+            }
+            item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     when (effective) {
                         QuoteStatus.BORRADOR -> {
@@ -1055,9 +1086,51 @@ fun QuoteDetailScreen(
                         else -> {}
                     }
                     // Creación manual del Trabajo desde APROBADA (F4):
-                    // nunca automática — la acción la decide el usuario.
+                    // acción principal del estado, antes de las secundarias;
+                    // nunca automática — la decide el usuario.
                     if (effective == QuoteStatus.APROBADA) {
                         Button(onClick = onCreateJob, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Crear trabajo") }
+                    }
+                    // Vista previa del documento EMITIDO (siempre el snapshot
+                    // congelado de `emittedVersion`, nunca entidades vivas).
+                    // Disponible desde EMITIDA sin exigir la aprobación.
+                    if (quote.emittedVersion > 0) {
+                        val pdfCtx = androidx.compose.ui.platform.LocalContext.current
+                        val pdfScope = androidx.compose.runtime.rememberCoroutineScope()
+                        val s = emittedSnapshot
+                        if (s == null) {
+                            Text(
+                                "Vista previa PDF no disponible: el snapshot de la versión emitida falta o no se puede leer.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        } else {
+                            val logoRef = s.profile.logoRef
+                            // Mismo criterio que la vista de versión: si el
+                            // logo congelado aún no llegó al dispositivo, se
+                            // ofrece reintento; nunca se usa el perfil vivo.
+                            var logoMissing by remember(logoRef) {
+                                mutableStateOf(logoRef != null &&
+                                    !com.cotixgo.app.data.LogoStore.exists(pdfCtx, logoRef))
+                            }
+                            if (logoMissing) {
+                                Text(
+                                    "Vista previa PDF no disponible: el logo de la versión emitida aún no se descargó a este dispositivo.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                TextButton(onClick = {
+                                    pdfScope.launch {
+                                        if (logoRef != null && onFetchLogo(logoRef)) logoMissing = false
+                                    }
+                                }) { Text("Reintentar descarga") }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { printQuotePdf(pdfCtx, s) },
+                                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                                ) { Text("Vista previa PDF") }
+                            }
+                        }
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1109,11 +1182,15 @@ fun QuoteDetailScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                             if (v.version == quote.emittedVersion) {
-                                Text(
-                                    "emitida",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.secondary,
-                                )
+                                Surface(shape = RoundedCornerShape(50), color = CotixGoBlueSoft) {
+                                    Text(
+                                        "emitida",
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = CotixGoBlue,
+                                    )
+                                }
                             }
                             Icon(
                                 Icons.AutoMirrored.Filled.KeyboardArrowRight,

@@ -101,6 +101,18 @@ class TerminalJobOrderingTest {
             }
         }
 
+        override suspend fun uploadPhoto(photoId: String, bytes: ByteArray): JsonObject =
+            real.uploadPhoto(photoId, bytes)
+
+        override suspend fun downloadPhoto(photoId: String): ByteArray? =
+            real.downloadPhoto(photoId)
+
+        override suspend fun uploadLogo(ref: String, bytes: ByteArray): JsonObject =
+            real.uploadLogo(ref, bytes)
+
+        override suspend fun downloadLogo(ref: String): ByteArray? =
+            real.downloadLogo(ref)
+
         fun sentFor(entityType: String, entityId: String): List<JsonObject> =
             pushedOps.filter {
                 it.str("entity_type") == entityType && it.str("entity_id") == entityId

@@ -3,7 +3,6 @@ package com.cotixgo.app
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -27,7 +26,12 @@ class MainActivity : FragmentActivity() {
         setContent {
             var blockedReason by remember { mutableStateOf<String?>(null) }
             var appReady by remember { mutableStateOf<AppReady?>(null) }
-            var lockNonce by remember { mutableIntStateOf(0) }
+            // Estado leído durante la composición: un nonce que nadie lee en
+            // la rama de bloqueo no reprogramaría recomposición y la puerta
+            // quedaría visible pese a una autenticación exitosa.
+            var appLocked by remember {
+                mutableStateOf(AppLock.needsUnlock(applicationContext))
+            }
 
             if (blockedReason == null && appReady == null) {
                 try {
@@ -67,13 +71,10 @@ class MainActivity : FragmentActivity() {
                     },
                 )
                 ready == null -> Unit
-                AppLock.needsUnlock(applicationContext) -> AppLockGate {
-                    lockNonce++ // recomponer: needsUnlock() ya es false
+                appLocked -> AppLockGate {
+                    appLocked = false // markUnlocked() ya lo hizo el gate
                 }
-                else -> {
-                    @Suppress("UNUSED_EXPRESSION") lockNonce
-                    CotixGoApp(ready.repo, ready.sync, ready.auth)
-                }
+                else -> CotixGoApp(ready.repo, ready.sync, ready.auth)
             }
         }
     }

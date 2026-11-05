@@ -536,7 +536,12 @@ fun CollectionAccountEditorScreen(
     onBack: () -> Unit,
 ) {
     var clientId by remember { mutableStateOf(initial?.clientId ?: "") }
-    var currency by remember { mutableStateOf(initial?.currency ?: (user?.mainCurrency ?: "")) }
+    // Documento nuevo: precarga la moneda principal del perfil (COP si el
+    // usuario aún no la configuró); editable por documento.
+    var currency by remember {
+        mutableStateOf(initial?.currency
+            ?: (user?.mainCurrency?.takeIf { it.isNotBlank() } ?: "COP"))
+    }
     var dueDate by remember { mutableStateOf(initial?.dueDateEpochDay?.let { LocalDate.ofEpochDay(it).toString() } ?: "") }
     var conditions by remember { mutableStateOf(initial?.conditions ?: "") }
     // Origen: Trabajos o Cotizaciones (nunca ambos — la Cuenta no mezcla).

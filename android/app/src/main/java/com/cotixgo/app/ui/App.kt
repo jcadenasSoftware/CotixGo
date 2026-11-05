@@ -28,8 +28,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -138,8 +140,8 @@ fun CotixGoApp(repo: AppRepository, sync: SyncRepository, auth: AuthRepository) 
         val vm: AppViewModel = viewModel(factory = AppViewModel.factory(repo, sync, auth))
         val nav = rememberNavController()
         val user by vm.user.collectAsStateWithLifecycle()
-        val bootstrapped by vm.bootstrapped.collectAsStateWithLifecycle()
-        CotixGoNavHost(nav, vm, user?.name, bootstrapped)
+        val startRoute by vm.startRoute.collectAsStateWithLifecycle()
+        CotixGoNavHost(nav, vm, user?.name, startRoute)
     }
 }
 
@@ -192,7 +194,7 @@ private fun CotixGoNavHost(
     nav: NavHostController,
     vm: AppViewModel,
     userName: String?,
-    bootstrapped: Boolean,
+    startRoute: String?,
 ) {
     val backStack by nav.currentBackStackEntryAsState()
     val clients by vm.clients.collectAsStateWithLifecycle()
@@ -222,64 +224,100 @@ private fun CotixGoNavHost(
             if (showBar) {
                 var showMore by remember { mutableStateOf(false) }
                 // Referencia: Inicio, Clientes, Cotizaciones, Trabajos, Más.
-                NavigationBar {
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.DASHBOARD,
-                        onClick = {
-                            nav.navigate(Routes.DASHBOARD) {
-                                popUpTo(Routes.DASHBOARD) { inclusive = false }
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                        label = { Text("Inicio") },
+                // Barra clara: superficie blanca plana, separador superior
+                // sutil y destino activo en azul de marca sobre pastilla suave.
+                val navItemColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = CotixGoBlue,
+                    selectedTextColor = CotixGoBlue,
+                    indicatorColor = CotixGoBlueSoft,
+                    unselectedIconColor = CotixGoSlate,
+                    unselectedTextColor = CotixGoSlate,
+                )
+                Column {
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
                     )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.CLIENTS,
-                        onClick = {
-                            nav.navigate(Routes.CLIENTS) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Icon(Icons.Filled.Person, contentDescription = null) },
-                        label = { Text("Clientes") },
-                    )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.QUOTES,
-                        onClick = {
-                            nav.navigate(Routes.QUOTES) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = {
-                            Icon(
-                                Icons.AutoMirrored.Filled.List,
-                                contentDescription = null,
-                            )
-                        },
-                        label = { Text("Cotiz.") },
-                    )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.JOBS,
-                        onClick = {
-                            nav.navigate(Routes.JOBS) {
-                                popUpTo(Routes.DASHBOARD)
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Icon(Icons.Filled.Build, contentDescription = null) },
-                        label = { Text("Trabajos") },
-                    )
-                    NavigationBarItem(
-                        selected = currentRoute == Routes.REPORTS ||
-                            currentRoute == Routes.COLLECTIONS ||
-                            currentRoute == Routes.INVENTORY,
-                        onClick = { showMore = true },
-                        icon = { Icon(Icons.Filled.Menu, contentDescription = null) },
-                        label = { Text("Más") },
-                    )
+                    NavigationBar(
+                        containerColor = Color.White,
+                        tonalElevation = 0.dp,
+                    ) {
+                        NavigationBarItem(
+                            selected = currentRoute == Routes.DASHBOARD,
+                            onClick = {
+                                nav.navigate(Routes.DASHBOARD) {
+                                    popUpTo(Routes.DASHBOARD) { inclusive = false }
+                                    launchSingleTop = true
+                                }
+                            },
+                            icon = {
+                                Icon(Icons.Filled.Home, contentDescription = null,
+                                    modifier = Modifier.size(24.dp))
+                            },
+                            label = { Text("Inicio") },
+                            colors = navItemColors,
+                        )
+                        NavigationBarItem(
+                            selected = currentRoute == Routes.CLIENTS,
+                            onClick = {
+                                nav.navigate(Routes.CLIENTS) {
+                                    popUpTo(Routes.DASHBOARD)
+                                    launchSingleTop = true
+                                }
+                            },
+                            icon = {
+                                Icon(Icons.Filled.Person, contentDescription = null,
+                                    modifier = Modifier.size(24.dp))
+                            },
+                            label = { Text("Clientes") },
+                            colors = navItemColors,
+                        )
+                        NavigationBarItem(
+                            selected = currentRoute == Routes.QUOTES,
+                            onClick = {
+                                nav.navigate(Routes.QUOTES) {
+                                    popUpTo(Routes.DASHBOARD)
+                                    launchSingleTop = true
+                                }
+                            },
+                            icon = {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.List,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            },
+                            label = { Text("Cotiz.") },
+                            colors = navItemColors,
+                        )
+                        NavigationBarItem(
+                            selected = currentRoute == Routes.JOBS,
+                            onClick = {
+                                nav.navigate(Routes.JOBS) {
+                                    popUpTo(Routes.DASHBOARD)
+                                    launchSingleTop = true
+                                }
+                            },
+                            icon = {
+                                Icon(Icons.Filled.Build, contentDescription = null,
+                                    modifier = Modifier.size(24.dp))
+                            },
+                            label = { Text("Trabajos") },
+                            colors = navItemColors,
+                        )
+                        NavigationBarItem(
+                            selected = currentRoute == Routes.REPORTS ||
+                                currentRoute == Routes.COLLECTIONS ||
+                                currentRoute == Routes.INVENTORY,
+                            onClick = { showMore = true },
+                            icon = {
+                                Icon(Icons.Filled.Menu, contentDescription = null,
+                                    modifier = Modifier.size(24.dp))
+                            },
+                            label = { Text("Más") },
+                            colors = navItemColors,
+                        )
+                    }
                 }
                 // "Más" como bottom sheet: solo enlaza pantallas existentes.
                 if (showMore) {
@@ -387,7 +425,8 @@ private fun CotixGoNavHost(
         // onboarding→dashboard la dispara el cambio del Usuario persistido,
         // que recrea el grafo con startDestination=DASHBOARD. Sin esa
         // dependencia temporal entre navigate() y la composición del grafo.
-        if (!bootstrapped) {
+        val route = startRoute
+        if (route == null) {
             Box(
                 Modifier.fillMaxSize().padding(padding),
                 contentAlignment = Alignment.Center,
@@ -396,22 +435,29 @@ private fun CotixGoNavHost(
         }
         NavHost(
             navController = nav,
-            startDestination = if (userName == null) Routes.ONBOARDING else Routes.DASHBOARD,
+            startDestination = route,
             modifier = Modifier.padding(padding),
         ) {
             composable(Routes.ONBOARDING) {
-                OnboardingScreen { name, profile, logoRef ->
-                    vm.completeOnboarding(name, profile, logoRef)
+                OnboardingScreen { name, profile, currency, logoRef, goToAccount ->
+                    vm.completeOnboarding(name, profile, currency, logoRef)
+                    if (goToAccount) vm.requestPostOnboarding(Routes.ACCOUNT)
                 }
             }
             composable(Routes.DASHBOARD) {
+                // Tras onboarding con "vincular cuenta": el grafo se recreó
+                // con startDestination=DASHBOARD y la navegación a la cuenta
+                // ocurre aquí, una sola vez.
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    vm.consumePostOnboarding()?.let { nav.navigate(it) }
+                }
                 val today = java.time.LocalDate.now().toEpochDay()
                 val pending by vm.pendingOps.collectAsStateWithLifecycle()
                 val pausedCount by vm.pausedOps.collectAsStateWithLifecycle()
                 val boundEmail by vm.accountEmail.collectAsStateWithLifecycle()
                 DashboardScreen(
                     userName = userName.orEmpty(),
-                    loading = !bootstrapped,
+                    loading = false,
                     items = com.cotixgo.app.core.dashboardItems(
                         quotes, jobs, reports, collectionAccounts, today,
                     ),
@@ -575,12 +621,26 @@ private fun CotixGoNavHost(
                     initialValue = null, id, versions.size,
                 ) { value = vm.getQuoteSnapshot(id) }
                 var emitFailed by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                // Snapshot congelado de la versión EMITIDA para la vista
+                // previa PDF: nunca el perfil vivo ni valores editados. Un
+                // snapshot ausente o ilegible llega como null y el detalle
+                // muestra el aviso en lugar de generar un PDF incompleto.
+                val emittedSnapshot = quote?.takeIf { it.emittedVersion > 0 }?.let { q ->
+                    versions.firstOrNull { it.version == q.emittedVersion }
+                        ?.let {
+                            runCatching {
+                                com.cotixgo.app.data.SnapshotJson.decodeQuote(it.snapshotJson)
+                            }.getOrNull()
+                        }
+                }
                 QuoteDetailScreen(
                     quote = quote,
                     versions = versions,
                     latestSnapshot = snapshot,
+                    emittedSnapshot = emittedSnapshot,
                     profileName = profiles.firstOrNull { it.id == quote?.profileId }?.businessName,
                     emitFailed = emitFailed,
+                    onFetchLogo = { ref -> vm.fetchLogo(ref) },
                     onEmit = { vm.emitQuote(id) { emitFailed = !it } },
                     onApprove = { vm.setQuoteStatus(id, com.cotixgo.app.core.QuoteStatus.APROBADA) {} },
                     onReject = { vm.setQuoteStatus(id, com.cotixgo.app.core.QuoteStatus.RECHAZADA) {} },
@@ -594,7 +654,7 @@ private fun CotixGoNavHost(
                     onEdit = { nav.navigate(Routes.quoteEdit(id)) },
                     onArchive = { archived -> vm.setQuoteArchived(id, archived) },
                     onOpenVersion = { v -> nav.navigate(Routes.quoteVersion(id, v)) },
-                    onCreateJob = { nav.navigate(Routes.jobNew(quoteId = id)) },
+                    onCreateJob = { nav.navigate(Routes.jobNew(clientId = quote?.clientId, quoteId = id)) },
                     onBack = { nav.popBackStack() },
                 )
             }
@@ -635,16 +695,24 @@ private fun CotixGoNavHost(
             ) { entry ->
                 val preClient = entry.arguments?.getString("clientId")
                 val preQuote = entry.arguments?.getString("quoteId")
+                // La cotización de origen aporta cliente y perfil cuando la
+                // ruta solo trae quoteId; clientId explícito tiene prioridad.
+                val srcQuote = quotes.firstOrNull { it.id == preQuote }
+                val effectiveClient = preClient ?: srcQuote?.clientId
                 JobFormScreen(
                     initial = null,
                     clients = clients,
-                    profile = profiles.firstOrNull(),
+                    profile = profiles.firstOrNull { it.id == srcQuote?.profileId }
+                        ?: profiles.firstOrNull(),
                     linkableQuotes = quotes.filter { q ->
                         q.status == com.cotixgo.app.core.QuoteStatus.APROBADA.name &&
-                            (preClient == null || q.clientId == preClient) &&
-                            (preQuote == null || q.clientId == quotes.firstOrNull { it.id == preQuote }?.clientId)
+                            (effectiveClient == null || q.clientId == effectiveClient)
                     },
-                    preselectedClientId = preClient,
+                    preselectedClientId = effectiveClient,
+                    preselectedClientName = effectiveClient?.let { cid ->
+                        clients.firstOrNull { it.id == cid }?.name
+                            ?: srcQuote?.takeIf { it.clientId == cid }?.clientNameSnapshot
+                    },
                     preselectedQuoteId = preQuote,
                     onSave = { input, onDone -> vm.saveJob(input, null, onDone) },
                     onSaved = { id ->
