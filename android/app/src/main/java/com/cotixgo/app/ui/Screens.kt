@@ -83,6 +83,7 @@ import com.cotixgo.app.core.ClientDocTypes
 import com.cotixgo.app.core.ClientInput
 import com.cotixgo.app.core.ClientType
 import com.cotixgo.app.core.validateClient
+import com.cotixgo.app.core.isValidCurrencyCode
 import com.cotixgo.app.core.validateOnboarding
 import com.cotixgo.app.data.ClientEntity
 import java.time.LocalDate
@@ -93,9 +94,13 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OnboardingScreen(onComplete: (String, String, String?) -> Unit) {
+fun OnboardingScreen(onComplete: (String, String, String, String?, Boolean) -> Unit) {
     var userName by remember { mutableStateOf("") }
     var profileName by remember { mutableStateOf("") }
+    // Moneda principal elegida una sola vez aquí; se precarga en cada
+    // documento nuevo y sigue siendo editable por documento.
+    var currency by remember { mutableStateOf("COP") }
+    var step by remember { mutableStateOf(1) }
     var error by remember { mutableStateOf<String?>(null) }
     // Logo opcional del primer perfil — se guarda como archivo inmutable.
     val logoCtx = androidx.compose.ui.platform.LocalContext.current
@@ -118,43 +123,72 @@ fun OnboardingScreen(onComplete: (String, String, String?) -> Unit) {
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text("Bienvenido. Crea tu usuario local y tu primer perfil profesional para empezar a trabajar sin conexión.")
-            OutlinedTextField(
-                value = userName,
-                onValueChange = { userName = it },
-                label = { Text("Tu nombre") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            OutlinedTextField(
-                value = profileName,
-                onValueChange = { profileName = it },
-                label = { Text("Nombre comercial del primer perfil") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                logoBitmap?.let {
-                    androidx.compose.foundation.Image(
-                        bitmap = it.asImageBitmap(), contentDescription = "Logo del perfil",
-                        modifier = Modifier.height(48.dp))
+            if (step == 1) {
+                Text("Bienvenido. Crea tu usuario local y tu primer perfil profesional para empezar a trabajar sin conexión.")
+                OutlinedTextField(
+                    value = userName,
+                    onValueChange = { userName = it },
+                    label = { Text("Tu nombre") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = profileName,
+                    onValueChange = { profileName = it },
+                    label = { Text("Nombre comercial del primer perfil") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = currency,
+                    onValueChange = { currency = it.uppercase().take(3) },
+                    label = { Text("Moneda principal") },
+                    supportingText = {
+                        Text("Código ISO 4217 de 3 letras (COP, USD, EUR…). Se precarga en cotizaciones y cuentas de cobro nuevas.")
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    logoBitmap?.let {
+                        androidx.compose.foundation.Image(
+                            bitmap = it.asImageBitmap(), contentDescription = "Logo del perfil",
+                            modifier = Modifier.height(48.dp))
+                    }
+                    OutlinedButton(onClick = { pickLogo.launch("image/*") }) {
+                        Text(if (logoRef == null) "Logo del perfil (opcional)" else "Cambiar logo")
+                    }
+                    if (logoRef != null) {
+                        TextButton(onClick = { logoRef = null; logoBitmap = null }) { Text("Quitar") }
+                    }
                 }
-                OutlinedButton(onClick = { pickLogo.launch("image/*") }) {
-                    Text(if (logoRef == null) "Logo del perfil (opcional)" else "Cambiar logo")
-                }
-                if (logoRef != null) {
-                    TextButton(onClick = { logoRef = null; logoBitmap = null }) { Text("Quitar") }
-                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Button(
+                    onClick = {
+                        val issue = validateOnboarding(userName, profileName)
+                            ?: if (!isValidCurrencyCode(currency))
+                                "La moneda debe ser un código ISO 4217 válido (COP, USD, EUR…)." else null
+                        if (issue != null) error = issue else { error = null; step = 2 }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Continuar") }
+            } else {
+                Text("Cuenta y sincronización", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Recomendado, pero opcional: vincular una cuenta permite sincronizar tu trabajo entre dispositivos. Puedes seguir trabajando en local sin vincularla y hacerlo después desde Ajustes → Cuenta y sincronización.",
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Button(
+                    onClick = { onComplete(userName, profileName, currency, logoRef, true) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Vincular cuenta ahora") }
+                OutlinedButton(
+                    onClick = { onComplete(userName, profileName, currency, logoRef, false) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Continuar sin vincular") }
+                TextButton(onClick = { step = 1 }) { Text("‹ Volver") }
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(
-                onClick = {
-                    val issue = validateOnboarding(userName, profileName)
-                    if (issue != null) error = issue else onComplete(userName, profileName, logoRef)
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Empezar") }
         }
     }
 }
@@ -472,16 +506,6 @@ fun DashboardScreen(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 DashboardAction(
-                    label = "Trabajo",
-                    container = CotixGoNavy,
-                    content = Color.White,
-                    leading = {
-                        Icon(Icons.Filled.Build, contentDescription = null,
-                            tint = Color.White, modifier = Modifier.size(20.dp))
-                    },
-                    onClick = onNewJob,
-                )
-                DashboardAction(
                     label = "Cuenta de Cobro",
                     container = CotixGoGreen,
                     content = Color.White,
@@ -494,6 +518,16 @@ fun DashboardScreen(
                         )
                     },
                     onClick = onNewAccount,
+                )
+                DashboardAction(
+                    label = "Trabajo",
+                    container = CotixGoNavy,
+                    content = Color.White,
+                    leading = {
+                        Icon(Icons.Filled.Build, contentDescription = null,
+                            tint = Color.White, modifier = Modifier.size(20.dp))
+                    },
+                    onClick = onNewJob,
                 )
             }
             if (loading) {

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fondo del ícono de launcher: el blanco forma parte del arte
+         oficial del símbolo (docs/identidad-visual). -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>

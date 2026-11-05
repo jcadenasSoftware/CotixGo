@@ -240,6 +240,37 @@ class QuoteRepositoryTest {
     }
 
     @Test
+    fun onboarding_storesMainCurrency_forDocumentPreload() = runTest {
+        repo.completeOnboarding("Moneda User", "Perfil Moneda", "USD")
+        assertEquals("USD", db.userDao().observe().first()!!.mainCurrency)
+    }
+
+    @Test
+    fun savedDocumentCurrency_isUnaffectedByMainCurrencyChange() = runTest {
+        val (_, profileId, clientId) = seed()
+        val id = repo.saveQuote(input(profileId, clientId))!!
+        assertEquals("COP", repo.observeQuote(id).first()!!.currency)
+        // Cambiar la moneda principal en Ajustes no toca el documento guardado.
+        repo.setMainCurrency("USD")
+        assertEquals("COP", repo.observeQuote(id).first()!!.currency)
+        assertEquals("COP", repo.getQuoteSnapshot(id)!!.currency)
+    }
+
+    @Test
+    fun emittedVersionSnapshot_isDecodableForPdfPreview() = runTest {
+        val (_, profileId, clientId) = seed()
+        val id = repo.saveQuote(input(profileId, clientId))!!
+        repo.emitQuote(id)
+        val quote = repo.observeQuote(id).first()!!
+        val row = repo.observeQuoteVersions(id).first()
+            .firstOrNull { it.version == quote.emittedVersion }
+        assertNotNull("la versión emitida debe existir", row)
+        val snap = SnapshotJson.decodeQuote(row!!.snapshotJson)
+        assertEquals("1400000.00", snap.gross)
+        assertEquals("1364000.00", snap.net)
+    }
+
+    @Test
     fun archiveTogglesVisibilityWithoutDeleting() = runTest {
         val (_, profileId, clientId) = seed()
         val id = repo.saveQuote(input(profileId, clientId))!!

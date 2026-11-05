@@ -56,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -422,6 +423,7 @@ fun JobFormScreen(
     profile: ProfileEntity?,
     linkableQuotes: List<QuoteEntity>,
     preselectedClientId: String? = null,
+    preselectedClientName: String? = null,
     preselectedQuoteId: String? = null,
     // onSave confirma el resultado del repositorio: solo se navega tras
     // un guardado exitoso; un fallo deja el formulario abierto con error.
@@ -433,6 +435,14 @@ fun JobFormScreen(
     // campos al cargar y conserva lo que el usuario ya escribió ante
     // emisiones posteriores del mismo Trabajo.
     var clientId by remember(initial?.id) { mutableStateOf(initial?.clientId ?: preselectedClientId ?: "") }
+    var clientTouched by remember { mutableStateOf(false) }
+    // Si la preselección llega tarde (listas aún cargando), se aplica solo
+    // sobre un campo vacío y no elegido a mano por el usuario.
+    LaunchedEffect(preselectedClientId) {
+        if (!clientTouched && clientId.isBlank() && preselectedClientId != null) {
+            clientId = preselectedClientId
+        }
+    }
     var startDate by remember(initial?.id) {
         mutableStateOf(initial?.startDateEpochDay?.let { LocalDate.ofEpochDay(it).toString() } ?: "")
     }
@@ -456,20 +466,62 @@ fun JobFormScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             item { JobSectionTitle("Datos") }
+            if (initial == null && preselectedQuoteId != null && preselectedClientId == null && clientId.isBlank()) {
+                item {
+                    JobEmpty(
+                        "No se pudo precargar el cliente de la cotización de origen; selecciónalo manualmente.",
+                    )
+                }
+            }
             item {
                 Box {
-                    OutlinedButton(
+                    val clientName = clients.firstOrNull { it.id == clientId }?.name
+                    Surface(
                         onClick = { clientMenu = true },
                         enabled = initial == null, // el Cliente fija los vínculos; no se recambia
+                        shape = JobCardShape,
+                        color = MaterialTheme.colorScheme.surface,
                         modifier = Modifier.fillMaxWidth().testTag("jobClient"),
                     ) {
-                        Text(clients.firstOrNull { it.id == clientId }?.name ?: "Cliente *")
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Cliente *",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                                Text(
+                                    clientName ?: preselectedClientName
+                                        ?: if (clientId.isBlank()) "Seleccionar cliente" else "Cliente no disponible",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (clientId.isBlank()) MaterialTheme.colorScheme.secondary
+                                        else MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                            if (initial == null) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                        }
                     }
                     DropdownMenu(expanded = clientMenu, onDismissRequest = { clientMenu = false }) {
                         clients.filter { !it.archived }.forEach { c ->
                             DropdownMenuItem(
                                 text = { Text(c.name) },
-                                onClick = { clientId = c.id; selectedQuotes = emptySet(); clientMenu = false },
+                                onClick = {
+                                    clientId = c.id
+                                    clientTouched = true
+                                    selectedQuotes = emptySet()
+                                    clientMenu = false
+                                },
                             )
                         }
                     }
@@ -523,16 +575,41 @@ fun JobFormScreen(
             if (initial == null && linkableQuotes.isNotEmpty()) {
                 item { JobSectionTitle("Cotizaciones aprobadas del cliente") }
                 items(linkableQuotes, key = { it.id }) { q ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = q.id in selectedQuotes,
-                            onCheckedChange = {
-                                selectedQuotes = if (q.id in selectedQuotes) {
-                                    selectedQuotes - q.id
-                                } else selectedQuotes + q.id
-                            },
-                        )
-                        Text("${q.officialNumber ?: q.provisionalNumber} — ${q.net} ${q.currency}")
+                    Surface(
+                        onClick = {
+                            selectedQuotes = if (q.id in selectedQuotes) {
+                                selectedQuotes - q.id
+                            } else selectedQuotes + q.id
+                        },
+                        shape = JobCardShape,
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = q.id in selectedQuotes,
+                                onCheckedChange = {
+                                    selectedQuotes = if (q.id in selectedQuotes) {
+                                        selectedQuotes - q.id
+                                    } else selectedQuotes + q.id
+                                },
+                            )
+                            Column(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
+                                Text(
+                                    q.officialNumber ?: q.provisionalNumber,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    "Neto ${quoteAmountLabel(q.net, q.currency)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                        }
                     }
                 }
             }

@@ -222,3 +222,121 @@ class QuoteDomainTest {
         assertEquals(BigDecimal("1.5"), "1.5".toQty())
     }
 }
+
+/**
+ * Reparto inverso neto→bruto entre líneas sujetas (Calc.distributeGrossForNet):
+ * el caso de aceptación acordado (dos servicios de $450.000 y $360.000,
+ * retención 6 %, neto objetivo $810.000 → bruto $861.702,13 repartido
+ * $478.723,40 + $382.978,73 con el centavo residual en la última línea).
+ */
+class GrossDistributionTest {
+
+    private fun line(type: ConceptType, qty: String, price: String) =
+        CalcLine(type, BigDecimal(qty), BigDecimal(price))
+
+    private fun rebuild(
+        orig: List<CalcLine>,
+        dist: com.cotixgo.app.core.GrossDistribution,
+    ): List<CalcLine> = dist.lines.map {
+        CalcLine(orig[it.index].conceptType, it.quantity, it.unitPrice)
+    }
+
+    @Test
+    fun `acceptance case 6pct two service lines`() {
+        val orig = listOf(
+            line(ConceptType.SERVICIO, "1", "450000"),
+            line(ConceptType.SERVICIO, "1", "360000"),
+        )
+        val rets = listOf(RetentionSpec("Ret 6%", BigDecimal("6"), setOf(ConceptType.SERVICIO)))
+        val d = QuoteCalc.distributeGrossForNet(orig, rets, BigDecimal("810000"))!!
+
+        assertTrue(d.exact)
+        assertEquals(BigDecimal("861702.13"), d.gross)
+        assertEquals(BigDecimal("51702.13"), d.totalRetained)
+        assertEquals(BigDecimal("810000.00"), d.net)
+        // Reparto proporcional con redondeo compensado en la última línea.
+        assertEquals(BigDecimal("478723.40"), d.lines[0].lineTotal)
+        assertEquals(BigDecimal("382978.73"), d.lines[1].lineTotal)
+        assertEquals(d.gross, d.lines.fold(BigDecimal.ZERO) { a, l -> a.add(l.lineTotal) })
+        // Coherencia con el motor: las líneas resultantes reproducen totales.
+        val check = QuoteCalc.compute(rebuild(orig, d), rets)
+        assertEquals(BigDecimal("861702.13"), check.gross)
+        assertEquals(BigDecimal("51702.13"), check.totalRetained)
+        assertEquals(BigDecimal("810000.00"), check.net)
+    }
+
+    @Test
+    fun `non subject lines keep their amounts`() {
+        val orig = listOf(
+            line(ConceptType.MATERIAL, "1", "100000"),
+            line(ConceptType.SERVICIO, "1", "450000"),
+            line(ConceptType.SERVICIO, "1", "360000"),
+        )
+        val rets = listOf(RetentionSpec("Ret 6%", BigDecimal("6"), setOf(ConceptType.SERVICIO)))
+        val d = QuoteCalc.distributeGrossForNet(orig, rets, BigDecimal("810000"))!!
+
+        // La línea MATERIAL no es sujeta: conserva precio y total.
+        assertEquals(BigDecimal("100000"), d.lines[0].unitPrice)
+        assertEquals(BigDecimal("100000.00"), d.lines[0].lineTotal)
+        // El pool sujeto aporta neto 710.000 → bruto sujeto 755.319,15.
+        assertEquals(BigDecimal("419621.74"), d.lines[1].lineTotal)
+        assertEquals(BigDecimal("335697.41"), d.lines[2].lineTotal)
+        assertEquals(BigDecimal("855319.15"), d.gross)
+        assertTrue(d.exact)
+        val check = QuoteCalc.compute(rebuild(orig, d), rets)
+        assertEquals(d.gross, check.gross)
+        assertEquals(BigDecimal("810000.00"), check.net)
+    }
+
+    @Test
+    fun `no retentions scales all lines proportionally`() {
+        val orig = listOf(
+            line(ConceptType.SERVICIO, "1", "450000"),
+            line(ConceptType.MATERIAL, "2", "90000"),
+        )
+        val d = QuoteCalc.distributeGrossForNet(orig, emptyList(), BigDecimal("630000"))!!
+        assertTrue(d.exact)
+        assertEquals(BigDecimal("630000.00"), d.gross)
+        assertEquals(BigDecimal("630000.00"), d.net)
+        val check = QuoteCalc.compute(rebuild(orig, d), emptyList())
+        assertEquals(BigDecimal("630000.00"), check.net)
+    }
+
+    @Test
+    fun `target below non subject total returns null`() {
+        val orig = listOf(
+            line(ConceptType.MATERIAL, "1", "900000"),
+            line(ConceptType.SERVICIO, "1", "100000"),
+        )
+        val rets = listOf(RetentionSpec("Ret 6%", BigDecimal("6"), setOf(ConceptType.SERVICIO)))
+        // Las no sujetas ya suman 900.000: no se puede bajar de ahí.
+        assertNull(QuoteCalc.distributeGrossForNet(orig, rets, BigDecimal("800000")))
+    }
+
+    @Test
+    fun `aggregate rate at 100 percent returns null`() {
+        val orig = listOf(line(ConceptType.SERVICIO, "1", "100000"))
+        val rets = listOf(
+            RetentionSpec("A", BigDecimal("60"), setOf(ConceptType.SERVICIO)),
+            RetentionSpec("B", BigDecimal("45"), setOf(ConceptType.SERVICIO)),
+        )
+        assertNull(QuoteCalc.distributeGrossForNet(orig, rets, BigDecimal("1000")))
+    }
+
+    @Test
+    fun `multi line totals keep exact document sums`() {
+        // Tres líneas sujetas: la suma de importes cuadra con el bruto
+        // y el neto no baja del objetivo aunque el reparto se redondee.
+        val orig = listOf(
+            line(ConceptType.SERVICIO, "1", "333333.33"),
+            line(ConceptType.SERVICIO, "1", "333333.33"),
+            line(ConceptType.SERVICIO, "1", "333333.34"),
+        )
+        val rets = listOf(RetentionSpec("Ret 6%", BigDecimal("6"), setOf(ConceptType.SERVICIO)))
+        val d = QuoteCalc.distributeGrossForNet(orig, rets, BigDecimal("777777.77"))!!
+        assertEquals(d.gross, d.lines.fold(BigDecimal.ZERO) { a, l -> a.add(l.lineTotal) })
+        val check = QuoteCalc.compute(rebuild(orig, d), rets)
+        assertEquals(check.gross, check.lineTotals.fold(BigDecimal.ZERO) { a, t -> a.add(t) })
+        assertTrue(check.net >= BigDecimal("777777.77"))
+    }
+}

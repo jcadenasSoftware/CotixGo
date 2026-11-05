@@ -75,10 +75,15 @@ class AppViewModel(
         if (u == null) flowOf(emptyList()) else repo.observeClients(u.id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    // true cuando Room ya emitió el primer valor de `user` (incluso null):
-    // distingue "sin usuario" de "todavía cargando" en el arranque.
-    val bootstrapped: StateFlow<Boolean> = user.map { true }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    // Ruta inicial del NavHost decidida en una sola emisión atómica:
+    // null = Room aún no emitió (mostrar carga). Se mapea sobre el flujo
+    // crudo de Room — no sobre el StateFlow `user`, cuyo valor inicial
+    // null se replicaría como "onboarding" antes de la primera emisión —
+    // para que no exista un frame con "cargado" y user aún null que
+    // muestre Onboarding un instante aunque el perfil ya exista.
+    val startRoute: StateFlow<String?> = repo.observeUser()
+        .map { u -> if (u == null) Routes.ONBOARDING else Routes.DASHBOARD }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val quotes: StateFlow<List<QuoteEntity>> = user.flatMapLatest { u ->
         if (u == null) flowOf(emptyList()) else repo.observeQuotes(u.id)
@@ -559,9 +564,19 @@ class AppViewModel(
 
     suspend fun getQuoteSnapshotForEdit(id: String) = repo.getQuoteSnapshotForEdit(id)
 
-    fun completeOnboarding(userName: String, profileName: String, logoRef: String? = null) {
-        viewModelScope.launch { repo.completeOnboarding(userName, profileName, logoRef) }
+    fun completeOnboarding(userName: String, profileName: String, currency: String, logoRef: String? = null) {
+        viewModelScope.launch { repo.completeOnboarding(userName, profileName, currency, logoRef) }
     }
+
+    /**
+     * Destino a abrir justo después de completar el onboarding (p. ej.
+     * Cuenta y sincronización). Se consume una sola vez en el primer
+     * Dashboard compuesto — el NavHost se recrea al persistir el Usuario,
+     * así que la navegación no puede lanzarse desde la pantalla anterior.
+     */
+    private var postOnboardingRoute: String? = null
+    fun requestPostOnboarding(route: String) { postOnboardingRoute = route }
+    fun consumePostOnboarding(): String? = postOnboardingRoute.also { postOnboardingRoute = null }
 
     fun setProfileLogo(id: String, logoRef: String?) {
         viewModelScope.launch { repo.setProfileLogo(id, logoRef) }

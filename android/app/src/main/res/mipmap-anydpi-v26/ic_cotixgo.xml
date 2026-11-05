@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Ícono de launcher de CotixGo.
+    Fuente canónica del símbolo: drawable-nodpi/cotixgo_launcher_symbol.png
+    (arte aprobado por el titular, curva continua — variante SÍMBOLO).
+    Derivados por densidad: mipmap-*/ic_cotixgo_foreground.png (imagen
+    completa al 100% — sus márgenes blancos son el margen del ícono) e
+    ic_cotixgo_monochrome.png
+    (silueta alfa del mismo símbolo para íconos temáticos, API 33+).
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background"/>
+    <foreground android:drawable="@mipmap/ic_cotixgo_foreground"/>
+    <monochrome android:drawable="@mipmap/ic_cotixgo_monochrome"/>
+</adaptive-icon>
